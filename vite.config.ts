@@ -46,7 +46,9 @@ export default defineConfig({
   },
   worker: {
     format: "es",
-    exclude: ["@icr/polyseg-wasm"],
-    plugins: [wasm(), topLevelAwait()],
+    rollupOptions: {
+      external: ["@icr/polyseg-wasm"],
+    },
+    plugins: () => [wasm(), topLevelAwait()],
   },
 })
