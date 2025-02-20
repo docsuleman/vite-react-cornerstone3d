@@ -32,23 +32,24 @@ import topLevelAwait from "vite-plugin-top-level-await"
  * ```
  */
 export default defineConfig({
+  // assetsInclude: ["**/*.wasm"],
   plugins: [
     react(),
     // for dicom-parser
     viteCommonjs(),
     wasm(),
-    topLevelAwait(),
+    // topLevelAwait(),
   ],
   // seems like only required in dev mode
   optimizeDeps: {
-    exclude: ["@cornerstonejs/dicom-image-loader"],
-    include: ["dicom-parser"],
+    exclude: ["@cornerstonejs/dicom-image-loader", "@cornerstonejs/tools"],
+    include: ["dicom-parser", "xmlbuilder2"],
   },
   worker: {
     format: "es",
     rollupOptions: {
       external: ["@icr/polyseg-wasm"],
     },
-    plugins: () => [wasm(), topLevelAwait()],
+    // plugins: () => [wasm(), topLevelAwait()],
   },
 })
