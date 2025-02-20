@@ -21,9 +21,7 @@
     "dicom-parser": "1.8.21",
     "dicomweb-client": "0.10.4",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "vite-plugin-top-level-await": "1.5.0",
-    "vite-plugin-wasm": "3.4.1"
+    "react-dom": "^18.2.0"
   },
   "devDependencies": {
     "@babel/preset-react": "^7.25.9",
