@@ -1,6 +1,8 @@
 import { defineConfig } from "vite"
 import react from "@vitejs/plugin-react"
 import { viteCommonjs } from "@originjs/vite-plugin-commonjs"
+import wasm from "vite-plugin-wasm"
+import topLevelAwait from "vite-plugin-top-level-await"
 
 /**
  * Vite configuration for the application.
@@ -34,6 +36,8 @@ export default defineConfig({
     react(),
     // for dicom-parser
     viteCommonjs(),
+    wasm(),
+    topLevelAwait(),
   ],
   // seems like only required in dev mode
   optimizeDeps: {
@@ -42,8 +46,7 @@ export default defineConfig({
   },
   worker: {
     format: "es",
-    rollupOptions: {
-      external: ["@icr/polyseg-wasm"],
-    },
+    exclude: ["@icr/polyseg-wasm"],
+    plugins: [wasm(), topLevelAwait()],
   },
 })
