@@ -93,11 +93,12 @@ function PolySEG() {
       // Create and cache volume
       const imageIds = await createImageIdsAndCacheMetaData({
         StudyInstanceUID:
-          '1.3.12.2.1107.5.2.32.35162.30000015050317233592200000046',
+          "1.3.6.1.4.1.14519.5.2.1.7009.2403.334240657131972136850343327463",
         SeriesInstanceUID:
-          '1.3.12.2.1107.5.2.32.35162.1999123112191238897317963.0.0.0',
-        wadoRsRoot: 'https://d14fa38qiwhyfd.cloudfront.net/dicomweb',
+          "1.3.6.1.4.1.14519.5.2.1.7009.2403.226151125820845824875394858561",
+        wadoRsRoot: "https://d14fa38qiwhyfd.cloudfront.net/dicomweb",
       })
+
 
       const volume = await volumeLoader.createAndCacheVolume(volumeId, {
         imageIds,
@@ -229,32 +230,6 @@ function PolySEG() {
         <button onClick={handleConvertToSurface}>
           Convert labelmap to surface
         </button>
-        <button
-          onClick={() => setBrushActive(prev => !prev)}
-          style={{ marginLeft: '10px' }}
-        >
-          {brushActive ? 'Switch to Eraser' : 'Switch to Brush'}
-        </button>
-        <button
-          onClick={() => setShow3DAnatomy(prev => !prev)}
-          style={{ marginLeft: '10px' }}
-        >
-          {show3DAnatomy ? 'Hide 3D Anatomy' : 'Show 3D Anatomy'}
-        </button>
-        <select
-          value={activeSegmentIndex}
-          onChange={e => setActiveSegmentIndex(Number(e.target.value))}
-          style={{ marginLeft: '10px' }}
-        >
-          {[1, 2, 3, 4, 5].map(index => (
-            <option key={index} value={index}>
-              Segment {index}
-            </option>
-          ))}
-        </select>
-        <span style={{ marginLeft: '10px' }}>
-          Progress: {progress.toFixed(2)}%
-        </span>
       </div>
       <div style={{ display: 'flex', flexDirection: 'row' }}>
         <div
