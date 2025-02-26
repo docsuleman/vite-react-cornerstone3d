@@ -1,6 +1,8 @@
 import { defineConfig } from "vite"
 import react from "@vitejs/plugin-react"
 import { viteCommonjs } from "@originjs/vite-plugin-commonjs"
+import tailwindcss from '@tailwindcss/vite';
+
 
 /**
  * Vite configuration for the application.
@@ -34,6 +36,8 @@ export default defineConfig({
     react(),
     // for dicom-parser
     viteCommonjs(),
+    tailwindcss(),
+
   ],
   // seems like only required in dev mode
   optimizeDeps: {
