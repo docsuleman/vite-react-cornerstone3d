@@ -15,6 +15,8 @@ import { init as csToolsInit } from "@cornerstonejs/tools";
 import { init as dicomImageLoaderInit } from "@cornerstonejs/dicom-image-loader";
 import * as cornerstoneTools from "@cornerstonejs/tools";
 import { FaCrosshairs, FaSearchPlus, FaArrowsAlt, FaAdjust, FaScroll, FaRuler, FaAngleRight, FaRegCircle, FaRegSquare, FaRegDotCircle, FaHandPointer, FaMapMarkerAlt, FaBezierCurve } from "react-icons/fa";
+import SphereMarkerTool from './customTools/Spheremarker';
+import VTKComponent from './VTKComponent.js';
 
 
 const {
@@ -47,6 +49,7 @@ function App() {
     sagittal: useRef(null),
     coronal: useRef(null),
     threeD: useRef(null),
+    cpr: useRef(null),
   };
   const running = useRef(false);
 
@@ -119,6 +122,9 @@ function App() {
       cornerstoneTools.addTool(DragProbeTool);
       cornerstoneTools.addTool(OrientationMarkerTool);
       cornerstoneTools.addTool(SplineROITool);
+      cornerstoneTools.addTool(SphereMarkerTool);
+
+
 
       // Define tool groups to add the segmentation display tool to
       const toolGroup = ToolGroupManager.createToolGroup(toolGroupId);
@@ -211,6 +217,31 @@ function App() {
         bindings: [{ mouseButton: MouseBindings.Primary }],
       });
 
+      toolGroup.addTool(SphereMarkerTool.toolName, {
+        bindings: [{ mouseButton: MouseBindings.Primary }],
+      });
+
+      const sphereTool = toolGroup.getToolInstance(SphereMarkerTool.toolName);
+
+      // Set up the callback
+      sphereTool.setPositionUpdateCallback((spherePositions) => {
+        console.log('Updated sphere positions:', spherePositions);
+        
+        // Example of how you might use the positions
+        if (spherePositions.length === 3) {
+          // Do something with all three positions
+          const [sphere1, sphere2, sphere3] = spherePositions;
+          
+          // Example: calculate distance between points
+          // const distance = calculateDistance(sphere1.pos, sphere2.pos);
+          
+          // Example: update UI with positions
+          // updatePositionDisplay(spherePositions);
+        }
+      });
+
+
+
       // Add viewports to the tool group
       viewports.forEach(({ id }) => {
         toolGroup.addViewport(id, renderingEngineId);
@@ -225,6 +256,7 @@ function App() {
         });
       });
       synchronizer.setEnabled(true);
+
     };
 
     setup();
@@ -243,7 +275,8 @@ function App() {
       { name: "CircleROI", icon: <FaRegDotCircle /> },
       { name: "DragProbe", icon: <FaHandPointer /> },
       { name: "OrientationMarker", icon: <FaMapMarkerAlt /> },
-      { name: "SplineROI", icon: <FaBezierCurve /> }
+      { name: "SplineROI", icon: <FaBezierCurve /> },
+      { name: "SphereMarker", icon: <FaRegDotCircle /> }
     ];
   
     return (
@@ -260,6 +293,8 @@ function App() {
       </div>
     );
   };
+
+  
 
   const activateTool = (toolName) => {
     const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
@@ -308,7 +343,8 @@ function App() {
         <div ref={elementRefs.axial} className="w-64 h-64 bg-black"></div>
         <div ref={elementRefs.sagittal} className="w-64 h-64 bg-black"></div>
         <div ref={elementRefs.coronal} className="w-64 h-64 bg-black"></div>
-        <div className="w-64 h-64 bg-gray-700"></div>
+        <div ref={elementRefs.cpr} className="w-64 h-64 bg-black"></div>
+
       </div>
     );
   };
