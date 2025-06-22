@@ -436,7 +436,7 @@ function App() {
     setOrthancSearchError(null);
 
     const client = new api.DICOMwebClient({
-      url: 'http://localhost:8042/dicom-web',
+      url: 'http://localhost/orthanc/dicom-web',
       // Orthanc by default might use singlepart for QIDO, but it's good to be explicit if needed
       // singlepart: true,
     });
@@ -485,7 +485,7 @@ function App() {
       setSeriesError(null);
       setSelectedSeriesInstanceUID(null); // Reset selected series
 
-      const client = new api.DICOMwebClient({ url: 'http://localhost:8042/dicom-web' });
+      const client = new api.DICOMwebClient({ url: 'http://localhost/orthanc/dicom-web' });
       try {
         // Retrieve all series metadata for the given study
         // Note: dicomweb-client's retrieveStudyMetadata actually returns an array of instances,
@@ -540,7 +540,7 @@ function App() {
       const imageIds = await createImageIdsAndCacheMetaData({
         StudyInstanceUID: selectedStudyInstanceUID,
         SeriesInstanceUID: seriesInstanceUID,
-        wadoRsRoot: 'http://localhost:8042/dicom-web', // Or just http://localhost:8042
+        wadoRsRoot: 'http://localhost/orthanc/dicom-web', // Or just http://localhost:8042
       });
 
       if (imageIds && imageIds.length > 0) {
