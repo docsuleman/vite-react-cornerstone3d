@@ -69,14 +69,11 @@ function App() {
       await csToolsInit();
       dicomImageLoaderInit({ maxWebWorkers: 1 });
 
-      const imageIds = await createImageIdsAndCacheMetaData({
-        StudyInstanceUID:
-          "1.3.6.1.4.1.14519.5.2.1.7009.2403.334240657131972136850343327463",
-        SeriesInstanceUID:
-          "1.3.6.1.4.1.14519.5.2.1.7009.2403.226151125820845824875394858561",
-        wadoRsRoot: "https://d3t6nz73ql33tx.cloudfront.net/dicomweb",
-      });
-
+    const imageIds = await createImageIdsAndCacheMetaData({
+      StudyInstanceUID: "1.3.6.1.4.1.5962.1.1.0.0.0.1194734704.16302.0.1",
+      SeriesInstanceUID: "1.3.6.1.4.1.5962.1.1.0.0.0.1194734704.16302.0.136",
+      wadoRsRoot: "http://localhost/orthanc/dicom-web",
+    });
       const renderingEngine = new RenderingEngine(renderingEngineId);
       const renderingEnginethreeD = new RenderingEngine(renderingEnginethreeDId);
       const volumeId = "streamingImageVolume";
