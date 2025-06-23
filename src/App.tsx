@@ -70,9 +70,9 @@ function App() {
       dicomImageLoaderInit({ maxWebWorkers: 1 });
 
     const imageIds = await createImageIdsAndCacheMetaData({
-      StudyInstanceUID: "1.3.6.1.4.1.5962.1.1.0.0.0.1194734704.16302.0.1",
-      SeriesInstanceUID: "1.3.6.1.4.1.5962.1.1.0.0.0.1194734704.16302.0.136",
-      wadoRsRoot: "http://localhost/orthanc/dicom-web",
+      StudyInstanceUID: "1.2.826.0.1.3802357.101.341000267482",
+      SeriesInstanceUID: "1.2.156.14702.1.1005.128.1.20230328073634983276920731",
+      wadoRsRoot: "http://192.168.2.52/orthanc/dicom-web",
     });
       const renderingEngine = new RenderingEngine(renderingEngineId);
       const renderingEnginethreeD = new RenderingEngine(renderingEnginethreeDId);
@@ -93,7 +93,10 @@ function App() {
           viewportId: id,
           type: Enums.ViewportType.ORTHOGRAPHIC,
           element: elementRefs[id].current,
-          defaultOptions: { orientation },
+          defaultOptions: { 
+            orientation,
+            background: [0, 0, 0] // Set black background
+          },
         });
 
         const viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
@@ -101,9 +104,51 @@ function App() {
         viewport.render();
       });
 
-   
-
-   
+      // Add a small delay and then reset the camera for each viewport with proper fitting
+      setTimeout(() => {
+        viewports.forEach(({ id }) => {
+          const viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
+          
+          try {
+            // Reset camera first
+            viewport.resetCamera();
+            
+            // Get the viewport's current bounds and image data
+            const bounds = viewport.getBounds();
+            const canvas = viewport.getCanvas();
+            
+            if (bounds && canvas) {
+              const { width: canvasWidth, height: canvasHeight } = canvas;
+              
+              // Calculate the bounding box of the image
+              const [xMin, xMax, yMin, yMax, zMin, zMax] = bounds;
+              const imageWidth = Math.abs(xMax - xMin);
+              const imageHeight = Math.abs(yMax - yMin);
+              
+              // Calculate scale factors for both dimensions
+              const scaleX = canvasWidth / imageWidth;
+              const scaleY = canvasHeight / imageHeight;
+              
+              // Use the smaller scale to ensure the entire image fits
+              const scale = Math.min(scaleX, scaleY) * 0.9; // 0.9 for some padding
+              
+              // Set the parallel scale (controls zoom level)
+              viewport.setCamera({
+                parallelScale: Math.max(imageWidth, imageHeight) / (2 * scale),
+              });
+            }
+            
+         
+            
+            viewport.render();
+          } catch (error) {
+            console.warn(`Error setting camera for viewport ${id}:`, error);
+            // Fallback: just reset and render
+            viewport.resetCamera();
+            viewport.render();
+          }
+        });
+      }, 2000);
 
       // Add tools to Cornerstone3D
       cornerstoneTools.addTool(CrosshairsTool);
@@ -120,8 +165,6 @@ function App() {
       cornerstoneTools.addTool(OrientationMarkerTool);
       cornerstoneTools.addTool(SplineROITool);
       cornerstoneTools.addTool(SphereMarkerTool);
-
-
 
       // Define tool groups to add the segmentation display tool to
       const toolGroup = ToolGroupManager.createToolGroup(toolGroupId);
@@ -237,8 +280,6 @@ function App() {
         }
       });
 
-
-
       // Add viewports to the tool group
       viewports.forEach(({ id }) => {
         toolGroup.addViewport(id, renderingEngineId);
@@ -258,6 +299,7 @@ function App() {
 
     setup();
   }, []);
+  
   const ToolMenu = ({ activateTool }) => {
     const tools = [
       { name: "Crosshairs", icon: <FaCrosshairs /> },
@@ -290,8 +332,6 @@ function App() {
       </div>
     );
   };
-
-  
 
   const activateTool = (toolName) => {
     const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
@@ -337,17 +377,14 @@ function App() {
   const GridDisplay = ({ elementRefs }) => {
     return (
       <div className="grid grid-cols-2 grid-rows-2 gap-4 flex-grow p-4">
-        <div ref={elementRefs.axial} className="w-64 h-64 bg-black"></div>
-        <div ref={elementRefs.sagittal} className="w-64 h-64 bg-black"></div>
-        <div ref={elementRefs.coronal} className="w-64 h-64 bg-black"></div>
-        <div ref={elementRefs.cpr} className="w-64 h-64 bg-black"></div>
-
+        {/* Use flex-grow and min-h-0 to allow proper sizing */}
+        <div ref={elementRefs.axial} className="bg-black flex-grow min-h-0"></div>
+        <div ref={elementRefs.sagittal} className="bg-black flex-grow min-h-0"></div>
+        <div ref={elementRefs.coronal} className="bg-black flex-grow min-h-0"></div>
+        <div ref={elementRefs.cpr} className="bg-black flex-grow min-h-0"></div>
       </div>
     );
   };
-  
-  
-
   
   return (
     <div className="flex h-screen flex-col">
@@ -362,8 +399,6 @@ function App() {
       </div>
     </div>
   );
-  
-  };
-
+};
 
 export default App;

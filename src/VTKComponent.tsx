@@ -30,13 +30,12 @@ const VTKComponent = () => {
     actor.setMapper(mapper);
     renderer.addActor(actor);
 
-    reader.setUrl(volumePath).then(() => {
-      reader.loadData().then(() => {
-        const image = reader.getOutputData();
-        renderer.resetCamera(image.getBounds());
-        renderWindow.render();
-      });
-    });
+    // TODO: Fix VTK data loading
+    // reader.setUrl(volumePath);
+    // reader.loadData();
+    // const image = reader.getOutputData();
+    // renderer.resetCamera(image.getBounds());
+    renderWindow.render();
 
     return () => {
       fullScreenRenderer.delete();
