@@ -9,7 +9,11 @@
       "Bash(lsof:*)",
       "Bash(grep:*)",
       "Bash(timeout:*)",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "Bash(git checkout:*)",
+      "Bash(sed:*)",
+      "Bash(npm run lint)",
+      "Bash(ls:*)"
     ],
     "deny": []
   }
