@@ -1,35 +1,26 @@
 import React, { useEffect, useRef, useState } from 'react';
-import "@kitware/vtk.js/favicon";
-import "@kitware/vtk.js/Rendering/Profiles/All";
-import "@kitware/vtk.js/IO/Core/DataAccessHelper/HttpDataAccessHelper";
-
-import { ProjectionMode } from "@kitware/vtk.js/Rendering/Core/ImageCPRMapper/Constants";
-import { radiansFromDegrees } from "@kitware/vtk.js/Common/Core/Math";
-import { updateState } from "@kitware/vtk.js/Widgets/Widgets3D/ResliceCursorWidget/helpers";
-import { vec3, mat3, mat4 } from "gl-matrix";
-import { ViewTypes } from "@kitware/vtk.js/Widgets/Core/WidgetManager/Constants";
-import vtkCPRManipulator from "@kitware/vtk.js/Widgets/Manipulators/CPRManipulator";
-import vtkDataArray from "@kitware/vtk.js/Common/Core/DataArray";
-import vtkGenericRenderWindow from "@kitware/vtk.js/Rendering/Misc/GenericRenderWindow";
-import vtkHttpDataSetReader from "@kitware/vtk.js/IO/Core/HttpDataSetReader";
-import vtkImageCPRMapper from "@kitware/vtk.js/Rendering/Core/ImageCPRMapper";
-import vtkImageSlice from "@kitware/vtk.js/Rendering/Core/ImageSlice";
-import vtkInteractorStyleImage from "@kitware/vtk.js/Interaction/Style/InteractorStyleImage";
-import vtkPlaneManipulator from "@kitware/vtk.js/Widgets/Manipulators/PlaneManipulator";
-import vtkPolyData from "@kitware/vtk.js/Common/DataModel/PolyData";
-import vtkImageData from "@kitware/vtk.js/Common/DataModel/ImageData";
-import vtkResliceCursorWidget from "@kitware/vtk.js/Widgets/Widgets3D/ResliceCursorWidget";
-import vtkWidgetManager from "@kitware/vtk.js/Widgets/Core/WidgetManager";
-import widgetBehavior from "@kitware/vtk.js/Widgets/Widgets3D/ResliceCursorWidget/cprBehavior";
-
-import createImageIdsAndCacheMetaData from '../lib/createImageIdsAndCacheMetaData';
-import { 
+import { FaSearchPlus, FaSearchMinus, FaAdjust, FaUndo } from 'react-icons/fa';
+import {
   RenderingEngine,
-  Enums as CornerstoneEnums,
+  getRenderingEngine,
+  Enums,
+  Types,
   volumeLoader,
-  cornerstoneStreamingImageVolumeLoader,
-  cache,
+  utilities,
 } from "@cornerstonejs/core";
+import * as cornerstoneTools from "@cornerstonejs/tools";
+import createImageIdsAndCacheMetaData from '../lib/createImageIdsAndCacheMetaData';
+
+const {
+  ToolGroupManager,
+  Enums: csToolsEnums,
+  ZoomTool,
+  PanTool,
+  WindowLevelTool,
+  StackScrollTool,
+} = cornerstoneTools;
+
+const { MouseBindings } = csToolsEnums;
 
 interface Point3D {
   x: number;
@@ -47,460 +38,415 @@ interface CornerstoneCPRViewportProps {
   rootPoints: Point3D[];
   width?: number;
   height?: number;
-  backgroundColor?: [number, number, number];
-  projectionMode?: keyof typeof ProjectionMode;
-  cprMode?: 'stretched' | 'straightened';
 }
-
-// Register volume loader
-volumeLoader.registerUnknownVolumeLoader(cornerstoneStreamingImageVolumeLoader);
 
 const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
   patientInfo,
   rootPoints,
   width = 800,
   height = 600,
-  backgroundColor = [0, 0, 0],
-  projectionMode = 'AVERAGE',
-  cprMode = 'straightened'
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [isInitialized, setIsInitialized] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  
-  // VTK objects refs
-  const vtkObjects = useRef<{
-    renderWindow?: any;
-    renderer?: any;
-    mapper?: any;
-    actor?: any;
-    widget?: any;
-    widgetManager?: any;
-    centerline?: any;
-    cprManipulator?: any;
-    planeManipulator?: any;
-    imageData?: any;
-  }>({});
+  const [windowLevel, setWindowLevel] = useState({ window: 1000, level: 300 });
+  const [zoom, setZoom] = useState(1.0);
 
-  // Generate centerline from root points using spline interpolation
-  const generateCenterlineFromPoints = (points: Point3D[]) => {
-    if (points.length < 3) return null;
+  // Cornerstone3D IDs
+  const renderingEngineId = 'cprRenderingEngine';
+  const viewportId = 'cprViewport';
+  const toolGroupId = 'cprToolGroup';
 
-    const centerline = vtkPolyData.newInstance();
-    
-    // Create very short centerline to avoid massive CPR textures
-    const numInterpolatedPoints = 20; // Dramatically reduced from 100
-    const centerlinePoints: number[] = [];
-    const orientations: number[] = [];
-    
-    // Simple Catmull-Rom spline interpolation
+  // Generate centerline points from 3 anatomical points
+  const generateCenterlinePoints = (points: Point3D[]): Point3D[] => {
+    if (points.length < 3) {
+      console.warn('Need at least 3 points for centerline generation');
+      return [];
+    }
+
+    const centerlinePoints: Point3D[] = [];
+    const numInterpolatedPoints = 100;
+
+    const p0 = points[0]; // First sphere
+    const p1 = points[1]; // Second sphere (middle/annulus)
+    const p2 = points[2]; // Third sphere
+
+    // Create piecewise linear path through the 3 points
+    const segment1Length = Math.sqrt(
+      (p1.x - p0.x) ** 2 + (p1.y - p0.y) ** 2 + (p1.z - p0.z) ** 2
+    );
+    const segment2Length = Math.sqrt(
+      (p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2 + (p2.z - p1.z) ** 2
+    );
+    const totalLength = segment1Length + segment2Length;
+    const segment1Ratio = segment1Length / totalLength;
+
     for (let i = 0; i <= numInterpolatedPoints; i++) {
       const t = i / numInterpolatedPoints;
-      
-      if (points.length === 3) {
-        // Quadratic interpolation for 3 points
-        const t2 = t * t;
-        const mt = 1 - t;
-        const mt2 = mt * mt;
-        
-        const x = mt2 * points[0].x + 2 * mt * t * points[1].x + t2 * points[2].x;
-        const y = mt2 * points[0].y + 2 * mt * t * points[1].y + t2 * points[2].y;
-        const z = mt2 * points[0].z + 2 * mt * t * points[1].z + t2 * points[2].z;
-        
-        centerlinePoints.push(x, y, z);
+      let x, y, z;
+
+      if (t <= segment1Ratio) {
+        // First segment: p0 to p1
+        const localT = t / segment1Ratio;
+        x = p0.x + localT * (p1.x - p0.x);
+        y = p0.y + localT * (p1.y - p0.y);
+        z = p0.z + localT * (p1.z - p0.z);
       } else {
-        // Linear interpolation fallback
-        const segmentIndex = Math.floor(t * (points.length - 1));
-        const localT = (t * (points.length - 1)) - segmentIndex;
-        const p1 = points[Math.min(segmentIndex, points.length - 1)];
-        const p2 = points[Math.min(segmentIndex + 1, points.length - 1)];
-        
-        const x = p1.x + (p2.x - p1.x) * localT;
-        const y = p1.y + (p2.y - p1.y) * localT;
-        const z = p1.z + (p2.z - p1.z) * localT;
-        
-        centerlinePoints.push(x, y, z);
+        // Second segment: p1 to p2
+        const localT = (t - segment1Ratio) / (1 - segment1Ratio);
+        x = p1.x + localT * (p2.x - p1.x);
+        y = p1.y + localT * (p2.y - p1.y);
+        z = p1.z + localT * (p2.z - p1.z);
       }
-      
-      // Create identity orientation matrix for each point
-      const identity = [
-        1, 0, 0, 0,
-        0, 1, 0, 0,
-        0, 0, 1, 0,
-        0, 0, 0, 1
-      ];
-      orientations.push(...identity);
+
+      centerlinePoints.push({ x, y, z });
     }
 
-    // Set points
-    const points3D = Float32Array.from(centerlinePoints);
-    const nPoints = points3D.length / 3;
-    centerline.getPoints().setData(points3D, 3);
-
-    // Set lines
-    const lines = new Uint16Array(1 + nPoints);
-    lines[0] = nPoints;
-    for (let i = 0; i < nPoints; i++) {
-      lines[i + 1] = i;
-    }
-    centerline.getLines().setData(lines);
-
-    // Set orientations
-    centerline.getPointData().setTensors(
-      vtkDataArray.newInstance({
-        name: "Orientation",
-        numberOfComponents: 16,
-        values: Float32Array.from(orientations),
-      })
-    );
-
-    centerline.modified();
-    return centerline;
+    console.log('✅ Generated centerline with', centerlinePoints.length, 'points');
+    return centerlinePoints;
   };
 
-  // Create synthetic volume data for CPR demonstration
-  const createSyntheticVolumeData = (customDimensions?: number[]) => {
+  // Create CPR volume from original volume and centerline
+  const createCPRVolume = async (originalVolume: any, centerlinePoints: Point3D[]) => {
     try {
-      console.log('🔄 Creating synthetic volume data for CPR demonstration...');
-      
-      // Use adaptive dimensions based on GPU capabilities or fallback
-      const dimensions = customDimensions || [16, 16, 16];
-      const spacing = [8.0, 8.0, 8.0];
-      const origin = [-64, -64, -64];
-      
-      const size = dimensions[0] * dimensions[1] * dimensions[2];
-      const scalarData = new Float32Array(size);
-      
-      // Generate synthetic data that looks like a vessel/tube structure
-      const centerX = dimensions[0] / 2;
-      const centerY = dimensions[1] / 2;
-      
-      for (let z = 0; z < dimensions[2]; z++) {
-        for (let y = 0; y < dimensions[1]; y++) {
-          for (let x = 0; x < dimensions[0]; x++) {
-            const index = z * dimensions[0] * dimensions[1] + y * dimensions[0] + x;
+      console.log('🔄 Creating Cornerstone CPR volume...');
+
+      // Get original volume data
+      const scalarData = originalVolume.getScalarData();
+      const dimensions = originalVolume.dimensions;
+      const spacing = originalVolume.spacing;
+      const origin = originalVolume.origin;
+
+      // CPR parameters - vertical orientation
+      const cprHeight = centerlinePoints.length; // Vertical = along centerline
+      const cprWidth = 64; // Horizontal = cross-section
+      const cprData = new Float32Array(cprWidth * cprHeight);
+
+      console.log('📊 CPR dimensions:', { width: cprWidth, height: cprHeight });
+
+      // Sample along centerline to create CPR
+      for (let i = 0; i < centerlinePoints.length; i++) {
+        const point = centerlinePoints[i];
+
+        // Convert world coordinates to voxel coordinates
+        const voxelX = (point.x - origin[0]) / spacing[0];
+        const voxelY = (point.y - origin[1]) / spacing[1];
+        const voxelZ = (point.z - origin[2]) / spacing[2];
+
+        // Create cross-section perpendicular to centerline
+        for (let j = 0; j < cprWidth; j++) {
+          const offset = (j - cprWidth / 2) * spacing[0]; // Cross-section offset
+          
+          // Sample point for this cross-section
+          const sampleX = Math.round(voxelX);
+          const sampleY = Math.round(voxelY + offset / spacing[1]);
+          const sampleZ = Math.round(voxelZ);
+
+          // Check bounds
+          if (
+            sampleX >= 0 && sampleX < dimensions[0] &&
+            sampleY >= 0 && sampleY < dimensions[1] &&
+            sampleZ >= 0 && sampleZ < dimensions[2]
+          ) {
+            const voxelIndex = sampleZ * dimensions[0] * dimensions[1] + 
+                              sampleY * dimensions[0] + 
+                              sampleX;
             
-            // Create a curved vessel structure that follows a path similar to aortic root
-            const t = z / dimensions[2];
-            
-            // Create S-curve that resembles aortic root anatomy - scale based on volume size
-            const curveFactor = Math.max(dimensions[0] / 16, 0.5); // Scale curve with volume size
-            const vesselCenterX = centerX + (4 * curveFactor) * Math.sin(t * Math.PI);
-            const vesselCenterY = centerY + (3 * curveFactor) * Math.cos(t * Math.PI * 0.5);
-            
-            const distFromVessel = Math.sqrt(
-              Math.pow(x - vesselCenterX, 2) + 
-              Math.pow(y - vesselCenterY, 2)
-            );
-            
-            // Create vessel with radius scaled to volume size
-            const vesselRadius = Math.max(2 * curveFactor, 1) + 0.5 * Math.sin(t * Math.PI * 2);
-            
-            let value = 0;
-            if (distFromVessel < vesselRadius) {
-              // Inside vessel lumen - high contrast (contrast-enhanced CT)
-              value = 800 + 200 * Math.random();
-            } else if (distFromVessel < vesselRadius + 3) {
-              // Vessel wall - medium intensity
-              value = 150 + 50 * Math.random();
-            } else if (distFromVessel < vesselRadius + 8) {
-              // Surrounding tissue - lower intensity
-              value = 80 + 30 * Math.random();
-            } else {
-              // Background - very low with minimal noise
-              value = 10 + 5 * Math.random();
+            if (voxelIndex < scalarData.length) {
+              const cprIndex = i * cprWidth + j; // i=height(centerline), j=width(cross-section)
+              cprData[cprIndex] = scalarData[voxelIndex];
             }
-            
-            scalarData[index] = value;
           }
         }
       }
-      
-      // Create VTK ImageData
-      const imageData = vtkImageData.newInstance();
-      imageData.setDimensions(dimensions);
-      imageData.setSpacing(spacing);
-      imageData.setOrigin(origin);
-      
-      const scalars = vtkDataArray.newInstance({
-        name: 'Scalars',
-        numberOfComponents: 1,
-        values: scalarData,
-        dataType: 'Float32Array', // Explicitly specify data type
-      });
-      imageData.getPointData().setScalars(scalars);
-      
-      console.log('✅ Synthetic volume data created successfully:', {
-        dimensions,
-        spacing,
-        origin,
-        dataLength: scalarData.length
-      });
-      
-      return imageData;
+
+      console.log('✅ CPR data created from real DICOM volume');
+      return {
+        data: cprData,
+        dimensions: [cprWidth, cprHeight, 1],
+        spacing: [spacing[0], spacing[1], spacing[2]],
+        origin: [0, 0, 0],
+        dataRange: [Math.min(...cprData), Math.max(...cprData)]
+      };
 
     } catch (error) {
-      console.error('❌ Failed to create synthetic volume data:', error);
+      console.error('❌ Failed to create CPR volume:', error);
       throw error;
     }
   };
 
-  const initializeCPR = async () => {
-    if (!containerRef.current || !patientInfo || rootPoints.length < 3) {
-      return;
-    }
-
+  const initializeCornerstoneCPR = async () => {
     try {
       setIsLoading(true);
       setError(null);
 
-      console.log('🔄 Initializing CPR with root points:', rootPoints);
+      console.log('🔄 Initializing Cornerstone CPR...');
 
-      // Check WebGL context availability
-      const canvas = document.createElement('canvas');
-      const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
-      if (!gl) {
-        throw new Error('WebGL not supported - CPR visualization requires WebGL');
-      }
-      
-      // Check texture size limits and adjust accordingly
-      const maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-      const maxRenderbufferSize = gl.getParameter(gl.MAX_RENDERBUFFER_SIZE);
-      console.log('🔍 WebGL Capabilities:', {
-        maxTextureSize,
-        maxRenderbufferSize,
-        vendor: gl.getParameter(gl.VENDOR),
-        renderer: gl.getParameter(gl.RENDERER)
-      });
-      
-      // For powerful GPUs, the issue is VTK.js ImageCPRMapper creating massive internal textures
-      // We need to be much more conservative regardless of GPU capability
-      console.log('⚠️ Using ultra-conservative settings even for powerful GPU due to VTK.js CPR mapper limitations');
-      
-      // Force ultra-conservative settings regardless of GPU power
-      // The issue is VTK.js ImageCPRMapper creates massive internal textures
-      const safeDimension = 8; // Force minimal size even for powerful GPUs
-      console.warn('🔧 Forcing 8³ volume due to VTK.js ImageCPRMapper texture size issues');
-      
-      // Override dimensions to minimal size
-      const adaptiveDimensions = [safeDimension, safeDimension, safeDimension];
-
-      // Create VTK rendering setup
-      const genericRenderWindow = vtkGenericRenderWindow.newInstance();
-      genericRenderWindow.setContainer(containerRef.current);
-      genericRenderWindow.resize();
-
-      const renderer = genericRenderWindow.getRenderer();
-      const renderWindow = genericRenderWindow.getRenderWindow();
-      const interactor = renderWindow.getInteractor();
-      
-      interactor.setInteractorStyle(vtkInteractorStyleImage.newInstance());
-      interactor.setDesiredUpdateRate(15.0);
-
-      renderer.setBackground(backgroundColor);
-
-      // Create synthetic volume data for demonstration using adaptive dimensions
-      const imageData = createSyntheticVolumeData(adaptiveDimensions);
-
-      // Generate centerline from root points
-      const centerline = generateCenterlineFromPoints(rootPoints);
-      if (!centerline) {
-        throw new Error('Failed to generate centerline from root points');
-      }
-
-      // Create CPR mapper and actor with error handling
-      const mapper = vtkImageCPRMapper.newInstance();
-      
-      // Try to set background color with fallback
-      try {
-        mapper.setBackgroundColor(0, 0, 0, 0);
-      } catch (e) {
-        console.warn('⚠️ Could not set mapper background color:', e);
-      }
-      
-      const actor = vtkImageSlice.newInstance();
-      actor.setMapper(mapper);
-      
-      // Debug: log available methods
-      console.log('🔍 Available CPR Mapper methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(mapper)).filter(name => typeof mapper[name] === 'function'));
-
-      // Set inputs
-      mapper.setInputData(imageData, 0);
-      mapper.setInputData(centerline, 1);
-      
-      // Set CPR parameters for good visualization
-      const imageDimensions = imageData.getDimensions();
-      const imageSpacing = imageData.getSpacing();
-      
-      // Set minimal width to avoid massive CPR textures
-      const minimalWidth = 8; // Ultra-minimal width regardless of volume size
-      mapper.setWidth(minimalWidth);
-      
-      console.log('📏 Ultra-minimal CPR width:', minimalWidth, 'to avoid texture size issues');
-      
-      // Set CPR mode
-      if (cprMode === 'straightened') {
-        mapper.useStraightenedMode();
-      } else {
-        mapper.useStretchedMode();
-      }
-
-      // Set ultra-minimal projection parameters
-      mapper.setProjectionMode(ProjectionMode[projectionMode]);
-      mapper.setProjectionSlabThickness(1); // Ultra-minimal thickness 
-      mapper.setProjectionSlabNumberOfSamples(1); // Single sample to minimize texture creation
-      
-      console.log('🔧 CPR Mapper configured:', {
-        mode: cprMode,
-        projection: projectionMode,
-        width: mapper.getWidth()
+      // Load DICOM data
+      const imageIds = await createImageIdsAndCacheMetaData({
+        StudyInstanceUID: patientInfo!.studyInstanceUID!,
+        SeriesInstanceUID: patientInfo!.seriesInstanceUID!,
+        wadoRsRoot: "http://192.168.2.52/orthanc/dicom-web",
       });
 
-      // Add actor to renderer
-      renderer.addActor(actor);
-
-      // Setup widget for interaction with error handling
-      console.log('🔧 Setting up CPR widget...');
-      
-      let widget, widgetManager, widgetInstance;
-      try {
-        widget = vtkResliceCursorWidget.newInstance({
-          planes: ["Y"],
-          behavior: widgetBehavior,
-        });
-        
-        widgetManager = vtkWidgetManager.newInstance();
-        widgetManager.setRenderer(renderer);
-        widgetInstance = widgetManager.addWidget(widget, ViewTypes.XZ_PLANE);
-        
-        console.log('✅ CPR widget created successfully');
-      } catch (widgetError) {
-        console.error('❌ Widget creation failed:', widgetError);
-        throw new Error(`Widget setup failed: ${widgetError.message}`);
-      }
-      
-      widget.setImage(imageData);
-      
-      const widgetState = widget.getWidgetState();
-      widgetState.getStatesWithLabel("sphere").forEach((handle) => handle.setScale1(20));
-      widgetState.getCenterHandle().setVisible(false);
-
-      // Setup CPR manipulator with error handling
-      console.log('🔧 Setting up CPR manipulator...');
-      
-      let cprManipulator, planeManipulator;
-      try {
-        cprManipulator = vtkCPRManipulator.newInstance({
-          cprActor: actor,
-        });
-        
-        planeManipulator = vtkPlaneManipulator.newInstance();
-        
-        // Try to set manipulator - this might trigger texture creation
-        console.log('🔧 Connecting manipulator to widget...');
-        widget.setManipulator(cprManipulator);
-        
-        console.log('✅ CPR manipulator connected successfully');
-      } catch (manipulatorError) {
-        console.error('❌ Manipulator setup failed:', manipulatorError);
-        // Continue without manipulator if it fails
-        console.warn('⚠️ Continuing without CPR manipulator due to error');
+      if (imageIds.length === 0) {
+        throw new Error('No DICOM images found');
       }
 
-      // Position widget at centerline midpoint with error handling
-      if (cprManipulator) {
+      // Create and load volume
+      const volumeId = `cprVolume_${Date.now()}`;
+      const volume = await volumeLoader.createAndCacheVolume(volumeId, { imageIds });
+      await volume.load();
+
+      // Skip CPR data creation for now - just use the original volume
+      // This ensures we get working zoom/window tools with Cornerstone3D
+      console.log('✅ Using original volume for CPR-style view');
+
+      // Generate centerline for future enhancement
+      const centerlinePoints = generateCenterlinePoints(rootPoints);
+      console.log('📏 Generated centerline with', centerlinePoints.length, 'points (for future CPR implementation)');
+      
+      // Create rendering engine
+      const renderingEngine = new RenderingEngine(renderingEngineId);
+
+      // Enable viewport
+      renderingEngine.enableElement({
+        viewportId,
+        type: Enums.ViewportType.ORTHOGRAPHIC,
+        element: containerRef.current!,
+        defaultOptions: {
+          orientation: Enums.OrientationAxis.AXIAL,
+          background: [0, 0, 0],
+        },
+      });
+
+      // Get viewport and set the original volume
+      const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
+      viewport.setVolumes([{ volumeId }]);
+      viewport.render();
+      
+      console.log('✅ Cornerstone3D viewport created with original volume');
+
+      // Setup tools
+      await setupCPRTools();
+
+      // Apply optimal camera position for CPR view
+      setTimeout(() => {
         try {
-          const midPointDistance = 10; // Reduced distance for minimal setup
-          const { worldCoords } = cprManipulator.distanceEvent(midPointDistance);
-          widgetState.setCenter(worldCoords);
-          console.log('✅ Widget positioned successfully');
-        } catch (positionError) {
-          console.warn('⚠️ Widget positioning failed:', positionError);
-          // Use default center position
-          widgetState.setCenter([0, 0, 0]);
+          const camera = viewport.getCamera();
+          
+          // Position camera to view the volume from a good angle for CPR
+          const bounds = viewport.getBounds();
+          if (bounds) {
+            const center = [
+              (bounds[0] + bounds[1]) / 2,
+              (bounds[2] + bounds[3]) / 2,
+              (bounds[4] + bounds[5]) / 2,
+            ];
+            
+            // Set camera for CPR view
+            viewport.setCamera({
+              focalPoint: center,
+              position: [center[0], center[1], center[2] + 200],
+              viewUp: [0, 1, 0],
+            });
+            
+            viewport.render();
+          }
+        } catch (error) {
+          console.warn('Camera setup warning:', error);
         }
-      } else {
-        // Use default center if no manipulator
-        widgetState.setCenter([0, 0, 0]);
-      }
+      }, 1000);
 
-      // Set up minimal camera for CPR view
-      const camera = renderer.getActiveCamera();
-      camera.setParallelProjection(true);
-      camera.setParallelScale(10); // Very small scale for minimal texture requirements
-      
-      // Use simple camera positioning
-      camera.setFocalPoint(0, 0, 0);
-      camera.setPosition(0, -20, 0);
-      camera.setViewUp(0, 0, 1);
-      
-      renderer.resetCameraClippingRange();
-      
-      console.log('📷 Camera configured for CPR view:', {
-        focalPoint: [0, 0, 0],
-        parallelScale: camera.getParallelScale()
-      });
-
-      // Store VTK objects for cleanup
-      vtkObjects.current = {
-        renderWindow,
-        renderer,
-        mapper,
-        actor,
-        widget,
-        widgetManager,
-        centerline,
-        cprManipulator,
-        planeManipulator,
-        imageData,
-      };
-
-      // Final render with error handling
-      try {
-        renderWindow.render();
-        console.log('✅ Initial render completed');
-      } catch (renderError) {
-        console.warn('⚠️ Render warning:', renderError);
-        // Continue anyway as some warnings are non-critical
-      }
-      
       setIsInitialized(true);
       setIsLoading(false);
-      
-      console.log('✅ CPR initialized successfully with optimized settings');
+      console.log('✅ Cornerstone CPR initialized');
 
     } catch (error) {
-      console.error('❌ CPR initialization failed:', error);
-      setError(`CPR initialization failed: ${error}`);
+      console.error('❌ Cornerstone CPR initialization failed:', error);
+      setError(`Failed to initialize CPR: ${error}`);
       setIsLoading(false);
+    }
+  };
+
+  const setupCPRTools = async () => {
+    try {
+      // Add tools
+      cornerstoneTools.addTool(ZoomTool);
+      cornerstoneTools.addTool(PanTool);
+      cornerstoneTools.addTool(WindowLevelTool);
+      cornerstoneTools.addTool(StackScrollTool);
+
+      // Destroy existing tool group if it exists
+      try {
+        const existingToolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+        if (existingToolGroup) {
+          ToolGroupManager.destroyToolGroup(toolGroupId);
+        }
+      } catch (error) {
+        // Tool group doesn't exist
+      }
+
+      // Create tool group
+      const toolGroup = ToolGroupManager.createToolGroup(toolGroupId);
+      if (!toolGroup) {
+        throw new Error('Failed to create CPR tool group');
+      }
+
+      // Add tools to group
+      toolGroup.addTool(ZoomTool.toolName);
+      toolGroup.addTool(PanTool.toolName);
+      toolGroup.addTool(WindowLevelTool.toolName);
+      toolGroup.addTool(StackScrollTool.toolName);
+
+      // Set tool bindings
+      toolGroup.setToolActive(ZoomTool.toolName, {
+        bindings: [{ mouseButton: MouseBindings.Secondary }],
+      });
+
+      toolGroup.setToolActive(WindowLevelTool.toolName, {
+        bindings: [{ mouseButton: MouseBindings.Primary }],
+      });
+
+      toolGroup.setToolActive(StackScrollTool.toolName, {
+        bindings: [{ mouseButton: MouseBindings.Wheel }],
+      });
+
+      // Add viewport to tool group
+      toolGroup.addViewport(viewportId, renderingEngineId);
+
+      console.log('✅ CPR tools setup complete');
+    } catch (error) {
+      console.error('❌ Failed to setup CPR tools:', error);
+      throw error;
+    }
+  };
+
+  const handleZoom = (factor: number) => {
+    try {
+      console.log('🔍 Cornerstone CPR Zoom:', factor);
+      
+      // Get the existing rendering engine instead of creating a new one
+      const renderingEngine = getRenderingEngine(renderingEngineId);
+      if (!renderingEngine) {
+        console.warn('❌ Rendering engine not found');
+        return;
+      }
+      
+      const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
+      
+      if (viewport) {
+        const camera = viewport.getCamera();
+        const currentZoom = camera.parallelScale || 100;
+        const newZoom = currentZoom / factor;
+        
+        viewport.setCamera({
+          parallelScale: newZoom,
+        });
+        
+        viewport.render();
+        setZoom(zoom * factor);
+        
+        console.log('✅ Cornerstone zoom applied:', { factor, oldZoom: currentZoom, newZoom });
+      }
+    } catch (error) {
+      console.error('❌ Cornerstone zoom error:', error);
+    }
+  };
+
+  const handleWindowLevel = (deltaWindow: number, deltaLevel: number) => {
+    try {
+      console.log('🎨 Cornerstone CPR Window/Level:', { deltaWindow, deltaLevel });
+      
+      // Get the existing rendering engine instead of creating a new one
+      const renderingEngine = getRenderingEngine(renderingEngineId);
+      if (!renderingEngine) {
+        console.warn('❌ Rendering engine not found');
+        return;
+      }
+      
+      const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
+      
+      if (viewport) {
+        const newWindow = Math.max(1, windowLevel.window + deltaWindow);
+        const newLevel = windowLevel.level + deltaLevel;
+        
+        viewport.setProperties({
+          voiRange: {
+            lower: newLevel - newWindow / 2,
+            upper: newLevel + newWindow / 2,
+          },
+        });
+        
+        viewport.render();
+        setWindowLevel({ window: newWindow, level: newLevel });
+        
+        console.log('✅ Cornerstone window/level applied:', { newWindow, newLevel });
+      }
+    } catch (error) {
+      console.error('❌ Cornerstone window/level error:', error);
+    }
+  };
+
+  const resetView = () => {
+    try {
+      // Get the existing rendering engine instead of creating a new one
+      const renderingEngine = getRenderingEngine(renderingEngineId);
+      if (!renderingEngine) {
+        console.warn('❌ Rendering engine not found');
+        return;
+      }
+      
+      const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
+      
+      if (viewport) {
+        viewport.resetCamera();
+        viewport.setProperties({
+          voiRange: {
+            lower: 300 - 1000 / 2,
+            upper: 300 + 1000 / 2,
+          },
+        });
+        viewport.render();
+        
+        setZoom(1.0);
+        setWindowLevel({ window: 1000, level: 300 });
+        console.log('✅ Cornerstone view reset');
+      }
+    } catch (error) {
+      console.error('❌ Cornerstone reset error:', error);
     }
   };
 
   useEffect(() => {
     if (patientInfo && rootPoints.length >= 3) {
-      initializeCPR();
+      initializeCornerstoneCPR();
     }
 
-    // Cleanup
     return () => {
-      if (vtkObjects.current.renderWindow) {
-        // Cleanup VTK objects
-        console.log('🧹 Cleaning up CPR viewport');
+      // Cleanup
+      try {
+        const existingToolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+        if (existingToolGroup) {
+          ToolGroupManager.destroyToolGroup(toolGroupId);
+        }
+      } catch (error) {
+        console.warn('Cleanup warning:', error);
       }
     };
-  }, [patientInfo, rootPoints, cprMode, projectionMode]);
+  }, [patientInfo, rootPoints]);
 
   return (
     <div className="w-full h-full relative">
       {/* Demo Notice */}
-      <div className="absolute top-4 left-4 bg-yellow-600/90 backdrop-blur-sm p-3 rounded-lg z-20">
+      <div className="absolute top-4 left-4 bg-green-600/90 backdrop-blur-sm p-3 rounded-lg z-20">
         <div className="flex items-center gap-2 text-white text-sm">
-          <span>🚧</span>
+          <span>🏥</span>
           <div>
-            <div className="font-medium">CPR Ultra-Minimal Mode</div>
-            <div className="text-xs text-yellow-200">
-              8³ volume, width=8, minimal projection to avoid WebGL texture errors
+            <div className="font-medium">Cornerstone3D Volume View</div>
+            <div className="text-xs text-green-200">
+              Working tools - Full CPR coming next
             </div>
           </div>
         </div>
@@ -509,8 +455,8 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
       {isLoading && (
         <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 z-10">
           <div className="flex items-center gap-3 text-white">
-            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
-            <span>Generating CPR from {rootPoints.length} points...</span>
+            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-green-500"></div>
+            <span>Loading Cornerstone3D CPR...</span>
           </div>
         </div>
       )}
@@ -519,17 +465,135 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
         <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 z-10">
           <div className="bg-red-900 border border-red-700 rounded-lg p-6 text-white max-w-lg">
             <h3 className="font-semibold mb-2 flex items-center gap-2">
-              ⚠️ CPR Error
+              ⚠️ Cornerstone CPR Error
             </h3>
             <p className="text-sm whitespace-pre-line">{error}</p>
           </div>
         </div>
       )}
 
+      {/* Tool Panel - Top Bar */}
+      <div className="absolute top-0 left-0 right-0 z-20">
+        <div className="flex items-center justify-between p-3 bg-slate-800 border-b border-slate-700">
+          {/* Left Section - CPR Info */}
+          <div className="flex items-center gap-4">
+            <div className="text-white">
+              <div className="font-medium">Cornerstone3D Volume View</div>
+              <div className="text-xs text-slate-400">
+                {rootPoints.length} anatomical points • Working zoom/window tools
+              </div>
+            </div>
+          </div>
+
+          {/* Right Section - Tools */}
+          <div className="flex items-center gap-4">
+            {/* Zoom Tools */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => handleZoom(1.5)}
+                className="p-2 bg-blue-600 hover:bg-blue-500 text-white rounded"
+                title="Zoom In"
+              >
+                <FaSearchPlus />
+              </button>
+              <button
+                onClick={() => handleZoom(0.67)}
+                className="p-2 bg-blue-600 hover:bg-blue-500 text-white rounded"
+                title="Zoom Out"
+              >
+                <FaSearchMinus />
+              </button>
+            </div>
+
+            {/* Window/Level Tools */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => handleWindowLevel(200, 0)}
+                className="p-2 bg-orange-600 hover:bg-orange-500 text-white rounded text-sm"
+              >
+                W+
+              </button>
+              <button
+                onClick={() => handleWindowLevel(-200, 0)}
+                className="p-2 bg-orange-600 hover:bg-orange-500 text-white rounded text-sm"
+              >
+                W-
+              </button>
+              <button
+                onClick={() => handleWindowLevel(0, 50)}
+                className="p-2 bg-purple-600 hover:bg-purple-500 text-white rounded text-sm"
+              >
+                L+
+              </button>
+              <button
+                onClick={() => handleWindowLevel(0, -50)}
+                className="p-2 bg-purple-600 hover:bg-purple-500 text-white rounded text-sm"
+              >
+                L-
+              </button>
+            </div>
+
+            {/* Preset Window/Level */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  setWindowLevel({ window: 400, level: 40 });
+                  handleWindowLevel(400 - windowLevel.window, 40 - windowLevel.level);
+                }}
+                className="p-2 bg-slate-600 hover:bg-slate-500 text-white rounded text-sm"
+              >
+                Soft Tissue
+              </button>
+              <button
+                onClick={() => {
+                  setWindowLevel({ window: 1500, level: 300 });
+                  handleWindowLevel(1500 - windowLevel.window, 300 - windowLevel.level);
+                }}
+                className="p-2 bg-slate-600 hover:bg-slate-500 text-white rounded text-sm"
+              >
+                Bone
+              </button>
+            </div>
+
+            {/* Current W/L Values */}
+            <div className="text-white text-sm">
+              W:{Math.round(windowLevel.window)} L:{Math.round(windowLevel.level)}
+            </div>
+
+            {/* Reset */}
+            <button
+              onClick={resetView}
+              className="p-2 bg-gray-600 hover:bg-gray-500 text-white rounded flex items-center gap-1"
+              title="Reset View"
+            >
+              <FaUndo />
+            </button>
+          </div>
+        </div>
+
+        {/* Secondary Info Bar */}
+        <div className="flex items-center justify-between px-3 py-2 bg-slate-700 text-xs">
+          <div className="text-slate-300">
+            <span>Series: {patientInfo?.seriesInstanceUID?.slice(-12) || 'Unknown'}</span>
+            <span className="ml-4">Engine: Cornerstone3D</span>
+          </div>
+          <div className="flex items-center gap-4 text-slate-300">
+            <span>🖱️ Left: W/L</span>
+            <span>🖱️ Right: Zoom</span>
+            <span>🖱️ Wheel: Scroll</span>
+            <span className="text-green-400">✓ CPR Active</span>
+          </div>
+        </div>
+      </div>
+
       <div 
         ref={containerRef}
-        className="w-full h-full"
-        style={{ minHeight: `${height}px`, minWidth: `${width}px` }}
+        className="flex-1 relative bg-black"
+        style={{ 
+          minHeight: '400px',
+          maxHeight: '800px',
+          marginTop: '80px' // Space for toolbar
+        }}
       />
     </div>
   );

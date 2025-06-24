@@ -68,64 +68,98 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
   const handleZoom = (factor: number) => {
     console.log('🔍 Zoom button clicked with factor:', factor);
     
-    if (vtkObjects.current.camera && vtkObjects.current.genericRenderWindow) {
+    // Try to get the ACTUAL active camera from the renderer instead of stored reference
+    if (vtkObjects.current.renderer && vtkObjects.current.genericRenderWindow) {
       try {
-        const camera = vtkObjects.current.camera;
-        const currentScale = camera.getParallelScale();
-        const newScale = currentScale / factor;
+        const renderer = vtkObjects.current.renderer;
+        const activeCamera = renderer.getActiveCamera(); // Get the actual active camera
         
-        // Set the new parallel scale
-        camera.setParallelScale(newScale);
+        console.log('🔍 Using active camera from renderer');
         
+        // Use the active camera directly
+        const currentScale = activeCamera.getParallelScale();
+        
+        // Try zoom method
+        activeCamera.zoom(factor);
+        
+        const newScale = activeCamera.getParallelScale();
         const newZoom = zoom * factor;
         setZoom(newZoom);
         
-        console.log('🔍 Zoom applied successfully:', {
+        console.log('🔍 Zoom applied to active camera:', {
           factor,
           oldScale: currentScale.toFixed(1),
           newScale: newScale.toFixed(1),
           newZoom: newZoom.toFixed(1)
         });
         
-        // Simplified render - just use the generic render window
+        // Mark camera as modified
+        activeCamera.modified();
+        
+        // Reset clipping range
+        renderer.resetCameraClippingRange();
+        
+        // Force render on the generic render window
         vtkObjects.current.genericRenderWindow.getRenderWindow().render();
+        
+        console.log('🔄 Render completed using active camera');
         
       } catch (error) {
         console.error('❌ Zoom error:', error);
       }
     } else {
-      console.warn('⚠️ Zoom failed: camera or genericRenderWindow not available');
+      console.warn('⚠️ Zoom failed: renderer or genericRenderWindow not available');
     }
   };
 
   const handleWindowLevel = (deltaWindow: number, deltaLevel: number) => {
     console.log('🎨 Window/Level button clicked:', { deltaWindow, deltaLevel });
     
-    if (vtkObjects.current.actor && vtkObjects.current.genericRenderWindow) {
+    // Try to get the ACTUAL actors from the renderer instead of stored reference
+    if (vtkObjects.current.renderer && vtkObjects.current.genericRenderWindow) {
       try {
-        const property = vtkObjects.current.actor.getProperty();
-        const newWindow = Math.max(1, windowLevel.window + deltaWindow);
-        const newLevel = windowLevel.level + deltaLevel;
+        const renderer = vtkObjects.current.renderer;
+        const actors = renderer.getActors(); // Get all actors from renderer
         
-        property.setColorWindow(newWindow);
-        property.setColorLevel(newLevel);
-        setWindowLevel({ window: newWindow, level: newLevel });
+        console.log('🎨 Found', actors.length, 'actors in renderer');
         
-        console.log('🎨 Window/Level applied successfully:', {
-          deltaWindow,
-          deltaLevel,
-          newWindow: newWindow.toFixed(0),
-          newLevel: newLevel.toFixed(0)
-        });
-        
-        // Simplified render - just use the generic render window
-        vtkObjects.current.genericRenderWindow.getRenderWindow().render();
+        if (actors.length > 0) {
+          // Use the first (and likely only) actor
+          const activeActor = actors[0];
+          const property = activeActor.getProperty();
+          
+          const newWindow = Math.max(1, windowLevel.window + deltaWindow);
+          const newLevel = windowLevel.level + deltaLevel;
+          
+          property.setColorWindow(newWindow);
+          property.setColorLevel(newLevel);
+          setWindowLevel({ window: newWindow, level: newLevel });
+          
+          console.log('🎨 Window/Level applied to active actor:', {
+            deltaWindow,
+            deltaLevel,
+            newWindow: newWindow.toFixed(0),
+            newLevel: newLevel.toFixed(0)
+          });
+          
+          // Mark property and actor as modified
+          property.modified();
+          activeActor.modified();
+          
+          // Force render on the generic render window
+          vtkObjects.current.genericRenderWindow.getRenderWindow().render();
+          
+          console.log('🔄 Window/Level render completed using active actor');
+          
+        } else {
+          console.warn('⚠️ No actors found in renderer');
+        }
         
       } catch (error) {
         console.error('❌ Window/Level error:', error);
       }
     } else {
-      console.warn('⚠️ Window/Level failed: actor or genericRenderWindow not available');
+      console.warn('⚠️ Window/Level failed: renderer or genericRenderWindow not available');
     }
   };
 
@@ -1142,8 +1176,9 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
             <span className="ml-4">Images: {rootPoints.length > 0 ? 'Loaded' : 'Loading...'}</span>
           </div>
           <div className="flex items-center gap-4 text-slate-300">
-            <span>🖱️ Drag: W/L</span>
-            <span>⇧ + Drag: Pan</span>
+            <span>🖱️ Left-Click + Drag: Pan</span>
+            <span>🖱️ Right-Click + Drag: Zoom</span>
+            <span>🖱️ Shift + Left-Click + Drag: Window/Level</span>
             <span className="text-green-400">✓ CPR Active</span>
           </div>
         </div>

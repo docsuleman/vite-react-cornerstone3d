@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { FaUser, FaStethoscope, FaEye, FaRuler, FaCog, FaChevronRight, FaCheck, FaExclamationTriangle, FaCircle } from 'react-icons/fa';
 import PatientSearch from './PatientSearch';
 import HybridCPRViewport from './HybridCPRViewport';
+import CornerstoneCPRViewport from './CornerstoneCPRViewport';
+import TriViewCPRViewport from './TriViewCPRViewport';
 import ProperMPRViewport from './ProperMPRViewport';
 import { useWorkflowState } from '../hooks/useWorkflowState';
 import { WorkflowStage, RootPointType } from '../types/WorkflowTypes';
@@ -399,8 +401,20 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             </div>
           </div>
         </div>
+      ) : state.currentStage === WorkflowStage.ANNULUS_DEFINITION && state.patientInfo && state.rootPoints.length >= 3 ? (
+        <TriViewCPRViewport
+          patientInfo={state.patientInfo}
+          rootPoints={state.rootPoints.map(point => ({
+            x: point.position[0],
+            y: point.position[1],
+            z: point.position[2]
+          }))}
+          onAnnulusPointSelected={(point, crossSectionIndex) => {
+            console.log('Annulus point selected:', { point, crossSectionIndex });
+            // Here you could add the selected annulus point to the workflow state
+          }}
+        />
       ) : (state.currentStage === WorkflowStage.ROOT_DEFINITION || 
-            state.currentStage === WorkflowStage.ANNULUS_DEFINITION || 
             state.currentStage === WorkflowStage.MEASUREMENTS) && state.patientInfo ? (
         <ProperMPRViewport
           patientInfo={state.patientInfo}
