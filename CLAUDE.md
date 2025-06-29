@@ -66,4 +66,3 @@ This is a React + Vite application for medical imaging visualization using Corne
 
 - Expects DICOM server at `127.0.0.1/orthanc/dicom-web`
 - Sample data includes Study/Series instance UIDs for testing
-- Supports VTK/NIfTI data in `src/data/` directory
