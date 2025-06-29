@@ -409,9 +409,108 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             y: point.position[1],
             z: point.position[2]
           }))}
+          annularPlane={state.annularPlane}
+          modifiedCenterline={state.centerline ? 
+            Array.from({ length: state.centerline.length }, (_, i) => ({
+              x: state.centerline!.position[i * 3],
+              y: state.centerline!.position[i * 3 + 1], 
+              z: state.centerline!.position[i * 3 + 2]
+            })) : undefined
+          }
           onAnnulusPointSelected={(point, crossSectionIndex) => {
             console.log('Annulus point selected:', { point, crossSectionIndex });
             // Here you could add the selected annulus point to the workflow state
+          }}
+          onCuspDotsUpdate={(dots) => {
+            // Defer state updates to avoid React warning about updating during render
+            setTimeout(async () => {
+              console.log('🎯 Cusp dots updated, count:', dots.length);
+              // TODO: Temporarily disabled annulus plane calculation to debug dot positioning
+              if (false && dots.length === 3) {
+                console.log('3 cusp nadir dots placed in CPR, updating annulus points');
+                
+                // Clear existing annulus points first
+                actions.clearAnnulusPoints();
+              
+              // Map cusp dots to annulus points with proper type conversion
+              const cuspTypeMapping = {
+                'left': 'left_coronary_cusp',
+                'right': 'right_coronary_cusp', 
+                'non-coronary': 'non_coronary_cusp'
+              };
+              
+              const annulusPoints: any[] = [];
+              
+              dots.forEach((dot) => {
+                const annulusPoint = {
+                  id: dot.id,
+                  position: dot.pos,
+                  type: cuspTypeMapping[dot.cuspType] || dot.cuspType,
+                  timestamp: Date.now()
+                };
+                actions.addAnnulusPoint(annulusPoint);
+                annulusPoints.push(annulusPoint);
+              });
+              
+              // Calculate annular plane and measurements from the 3 cusp points
+              try {
+                const { AnnulusCalculator } = await import('../utils/AnnulusCalculator');
+                const annularPlane = AnnulusCalculator.calculateAnnularPlane(annulusPoints);
+                actions.setAnnularPlane(annularPlane);
+                
+                // Calculate initial annulus measurements
+                const area = AnnulusCalculator.calculateAnnulusArea(annulusPoints);
+                const perimeter = AnnulusCalculator.calculateAnnulusPerimeter(annulusPoints);
+                const diameter = AnnulusCalculator.calculateAnnulusDiameter(annulusPoints);
+                
+                const annulusMeasurements = {
+                  area: area,
+                  perimeter: perimeter,
+                  areaDerivedDiameter: Math.sqrt(4 * area / Math.PI), // Diameter from area
+                  perimeterDerivedDiameter: perimeter / Math.PI, // Diameter from perimeter
+                  polygonPoints: annulusPoints.map(p => p.position),
+                  timestamp: Date.now()
+                };
+                
+                actions.updateMeasurement({ annulus: annulusMeasurements });
+                
+                // Modify centerline to be perpendicular to annular plane
+                const { CenterlineModifier } = await import('../utils/CenterlineModifier');
+                const modifiedCenterline = CenterlineModifier.modifyCenterlineWithAnnulusPlane(
+                  state.rootPoints.map(p => ({ x: p.position[0], y: p.position[1], z: p.position[2], type: p.type })),
+                  annularPlane
+                );
+                
+                // Update centerline data in workflow state
+                const centerlineData = {
+                  position: new Float32Array(modifiedCenterline.flatMap(p => [p.x, p.y, p.z])),
+                  orientation: new Float32Array(modifiedCenterline.length * 3), // Will be calculated as needed
+                  length: modifiedCenterline.length,
+                  generatedFrom: state.rootPoints
+                };
+                
+                actions.setCenterline(centerlineData);
+                
+                console.log('📐 Annular plane calculated:', annularPlane);
+                console.log('📏 Annulus measurements calculated:', annulusMeasurements);
+                console.log('🔄 Centerline modified to be perpendicular to annular plane:', {
+                  originalPoints: modifiedCenterline.length,
+                  storedLength: centerlineData.length,
+                  positionArrayLength: centerlineData.position.length,
+                  firstPoint: { x: centerlineData.position[0], y: centerlineData.position[1], z: centerlineData.position[2] },
+                  lastPoint: { 
+                    x: centerlineData.position[centerlineData.position.length - 3], 
+                    y: centerlineData.position[centerlineData.position.length - 2], 
+                    z: centerlineData.position[centerlineData.position.length - 1] 
+                  }
+                });
+                console.log('✅ Annulus definition complete with 3 cusp nadir points');
+              } catch (error) {
+                console.error('Failed to calculate annular plane:', error);
+                actions.addError('Failed to calculate annular plane from cusp points');
+              }
+              }
+            }, 0);
           }}
         />
       ) : (state.currentStage === WorkflowStage.ROOT_DEFINITION || 
@@ -443,6 +542,86 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
               });
               
               console.log('Root definition complete, can now advance to CPR Analysis');
+            }
+          }}
+          onCuspDotsUpdate={async (dots) => {
+            if (dots.length === 3) {
+              console.log('3 cusp nadir dots placed in MPR, updating annulus points');
+              
+              // Clear existing annulus points first
+              actions.clearAnnulusPoints();
+              
+              // Map cusp dots to annulus points with proper type conversion
+              const cuspTypeMapping = {
+                'left': 'left_coronary_cusp',
+                'right': 'right_coronary_cusp', 
+                'non-coronary': 'non_coronary_cusp'
+              };
+              
+              const annulusPoints: any[] = [];
+              
+              dots.forEach((dot) => {
+                const annulusPoint = {
+                  id: dot.id,
+                  position: dot.pos,
+                  type: cuspTypeMapping[dot.cuspType] || dot.cuspType,
+                  timestamp: Date.now()
+                };
+                actions.addAnnulusPoint(annulusPoint);
+                annulusPoints.push(annulusPoint);
+              });
+              
+              // Calculate annular plane and measurements from the 3 cusp points
+              try {
+                const { AnnulusCalculator } = await import('../utils/AnnulusCalculator');
+                const annularPlane = AnnulusCalculator.calculateAnnularPlane(annulusPoints);
+                actions.setAnnularPlane(annularPlane);
+                
+                // Calculate initial annulus measurements
+                const area = AnnulusCalculator.calculateAnnulusArea(annulusPoints);
+                const perimeter = AnnulusCalculator.calculateAnnulusPerimeter(annulusPoints);
+                const diameter = AnnulusCalculator.calculateAnnulusDiameter(annulusPoints);
+                
+                const annulusMeasurements = {
+                  area: area,
+                  perimeter: perimeter,
+                  areaDerivedDiameter: Math.sqrt(4 * area / Math.PI), // Diameter from area
+                  perimeterDerivedDiameter: perimeter / Math.PI, // Diameter from perimeter
+                  polygonPoints: annulusPoints.map(p => p.position),
+                  timestamp: Date.now()
+                };
+                
+                actions.updateMeasurement({ annulus: annulusMeasurements });
+                
+                // Modify centerline to be perpendicular to annular plane
+                const { CenterlineModifier } = await import('../utils/CenterlineModifier');
+                const modifiedCenterline = CenterlineModifier.modifyCenterlineWithAnnulusPlane(
+                  state.rootPoints.map(p => ({ x: p.position[0], y: p.position[1], z: p.position[2], type: p.type })),
+                  annularPlane
+                );
+                
+                // Update centerline data in workflow state
+                const centerlineData = {
+                  position: new Float32Array(modifiedCenterline.flatMap(p => [p.x, p.y, p.z])),
+                  orientation: new Float32Array(modifiedCenterline.length * 3), // Will be calculated as needed
+                  length: modifiedCenterline.length,
+                  generatedFrom: state.rootPoints
+                };
+                
+                actions.setCenterline(centerlineData);
+                
+                console.log('📐 Annular plane calculated from MPR:', annularPlane);
+                console.log('📏 Annulus measurements calculated:', annulusMeasurements);
+                console.log('🔄 Centerline modified to be perpendicular to annular plane (MPR):', {
+                  originalPoints: modifiedCenterline.length,
+                  storedLength: centerlineData.length,
+                  positionArrayLength: centerlineData.position.length
+                });
+                console.log('✅ Annulus definition complete with 3 cusp nadir points');
+              } catch (error) {
+                console.error('Failed to calculate annular plane:', error);
+                actions.addError('Failed to calculate annular plane from cusp points');
+              }
             }
           }}
         />

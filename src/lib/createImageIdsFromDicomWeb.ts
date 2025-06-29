@@ -9,7 +9,7 @@ export default async function createImageIdsFromDicomWeb({
   StudyInstanceUID,
   SeriesInstanceUID,
   SOPInstanceUID = null,
-  wadoRsRoot = "http://192.168.2.52/orthanc/dicom-web",
+  wadoRsRoot = "http://127.0.0.1/orthanc/dicom-web",
 }: {
   StudyInstanceUID: string;
   SeriesInstanceUID: string;

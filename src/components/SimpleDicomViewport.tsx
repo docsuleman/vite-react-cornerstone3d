@@ -228,7 +228,7 @@ const SimpleDicomViewport: React.FC<SimpleDicomViewportProps> = ({
         const instance = instances[i];
         
         // Format: Use base Orthanc API with instance UID
-        const orthancUrl = `http://192.168.2.52/orthanc/instances?expand&query=${instance.SOPInstanceUID}`;
+        const orthancUrl = `http://127.0.0.1/orthanc/instances?expand&query=${instance.SOPInstanceUID}`;
         
         // For now, let's create a test pattern for each instance
         const canvas = document.createElement('canvas');

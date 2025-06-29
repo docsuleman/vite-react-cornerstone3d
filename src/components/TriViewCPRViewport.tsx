@@ -8,9 +8,10 @@ import vtkImageReslice from '@kitware/vtk.js/Imaging/Core/ImageReslice';
 import vtkInteractorStyleImage from '@kitware/vtk.js/Interaction/Style/InteractorStyleImage';
 import vtkMath from '@kitware/vtk.js/Common/Core/Math';
 import vtkCubeSource from '@kitware/vtk.js/Filters/Sources/CubeSource';
+import vtkSphereSource from '@kitware/vtk.js/Filters/Sources/SphereSource';
 import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
 import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
-import { FaCrosshairs, FaSearchPlus, FaSearchMinus } from 'react-icons/fa';
+import { FaCrosshairs, FaSearchPlus, FaSearchMinus, FaDotCircle } from 'react-icons/fa';
 
 import createImageIdsAndCacheMetaData from '../lib/createImageIdsAndCacheMetaData';
 import {
@@ -35,7 +36,15 @@ interface TriViewCPRViewportProps {
     seriesInstanceUID?: string;
   };
   rootPoints: Point3D[];
+  annularPlane?: {
+    center: [number, number, number];
+    normal: [number, number, number];
+    points: Array<{ id: string; position: [number, number, number]; type: string }>;
+    confidence: number;
+  };
+  modifiedCenterline?: Point3D[];
   onAnnulusPointSelected?: (point: Point3D, crossSectionIndex: number) => void;
+  onCuspDotsUpdate?: (dots: { id: string; pos: [number, number, number]; color: string; cuspType: string }[]) => void;
 }
 
 // Register volume loader
@@ -44,7 +53,10 @@ volumeLoader.registerUnknownVolumeLoader(cornerstoneStreamingImageVolumeLoader);
 const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
   patientInfo,
   rootPoints,
-  onAnnulusPointSelected
+  annularPlane,
+  modifiedCenterline,
+  onAnnulusPointSelected,
+  onCuspDotsUpdate
 }) => {
   const cpr1Ref = useRef<HTMLDivElement>(null);
   const cpr2Ref = useRef<HTMLDivElement>(null);
@@ -56,6 +68,21 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
   const [rotationAngle, setRotationAngle] = useState(0); // Rotation angle in degrees
   const [isCurvedCPR, setIsCurvedCPR] = useState(false); // Toggle between straight and curved CPR
   const [centerlinePoints, setCenterlinePoints] = useState<Point3D[]>([]);
+  const [cuspDots, setCuspDots] = useState<Array<{
+    id: string;
+    realWorldPos: [number, number, number]; // Real 3D CT coordinates in mm
+    cprTransformedPos?: [number, number, number]; // Transformed coordinates in CPR space
+    color: string;
+    cuspType: 'left' | 'right' | 'non-coronary';
+    placementIndex: number;
+    sphereActors?: {
+      cpr1?: any; // VTK sphere actor for CPR view 1
+      crossSection?: any; // VTK sphere actor for cross-section view
+      cpr2?: any; // VTK sphere actor for CPR view 2
+    };
+  }>>([]);
+  const [isPlacingCuspDots, setIsPlacingCuspDots] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(false);
   
   // VTK objects refs
   const vtkObjects = useRef<{
@@ -70,12 +97,33 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       resliceActor: any;
       genericRenderWindow: any;
     }>;
+    transformationMatrices?: {
+      cpr1ToWorld?: number[]; // 4x4 transformation matrix from CPR1 to world coordinates
+      cpr2ToWorld?: number[]; // 4x4 transformation matrix from CPR2 to world coordinates
+      crossSectionToWorld?: number[]; // 4x4 transformation matrix from cross-section to world coordinates
+      worldToCpr1?: number[]; // Inverse transformation matrices
+      worldToCpr2?: number[];
+      worldToCrossSection?: number[];
+    };
   }>({});
 
-  // Generate centerline points from 3 anatomical points
+  // Generate centerline points from 3 anatomical points or use modified centerline
   const generateCenterlinePoints = (points: Point3D[]): Point3D[] => {
+    // Use modified centerline if available (after annulus plane calculation)
+    if (modifiedCenterline && modifiedCenterline.length > 0) {
+      console.log('🔄 Using modified centerline (perpendicular to annular plane):', {
+        points: modifiedCenterline.length,
+        firstPoint: modifiedCenterline[0],
+        lastPoint: modifiedCenterline[modifiedCenterline.length - 1],
+        annularPlanePresent: !!annularPlane
+      });
+      return modifiedCenterline;
+    }
+
+    // Fallback to original 3-point interpolation
     if (points.length < 3) return [];
 
+    console.log('📏 Using original 3-point centerline interpolation for', points.length, 'root points');
     const centerlinePoints: Point3D[] = [];
     const numInterpolatedPoints = 100;
 
@@ -116,6 +164,418 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
 
     return centerlinePoints;
   };
+
+  // Transform real world coordinates to CPR coordinate system
+  const transformWorldToCPR = (
+    worldPos: [number, number, number],
+    viewIndex: number, // 0=CPR1, 1=CrossSection, 2=CPR2
+    currentCrosshairPosition: number
+  ): [number, number, number] => {
+    const centerline = centerlinePoints;
+    
+    if (!centerline || centerline.length === 0) {
+      return [0, 0, 0];
+    }
+
+    // For now, use a simple approach based on centerline position and perpendicular distance
+    // This will be enhanced once we have the proper CPR transformation matrices
+    
+    // Find closest point on centerline
+    let closestIndex = 0;
+    let closestDistance = Infinity;
+    
+    for (let i = 0; i < centerline.length; i++) {
+      const dist = Math.sqrt(
+        Math.pow(worldPos[0] - centerline[i].x, 2) +
+        Math.pow(worldPos[1] - centerline[i].y, 2) +
+        Math.pow(worldPos[2] - centerline[i].z, 2)
+      );
+      if (dist < closestDistance) {
+        closestDistance = dist;
+        closestIndex = i;
+      }
+    }
+
+    const closestPoint = centerline[closestIndex];
+    const centerlineProgress = closestIndex / (centerline.length - 1);
+    
+    // Calculate offset from centerline
+    const offset = [
+      worldPos[0] - closestPoint.x,
+      worldPos[1] - closestPoint.y,
+      worldPos[2] - closestPoint.z
+    ];
+    
+    // Calculate perpendicular distance (this will be refined with proper transformation matrices)
+    const radialDistance = Math.sqrt(offset[0] * offset[0] + offset[1] * offset[1] + offset[2] * offset[2]);
+    
+    if (viewIndex === 1) {
+      // Cross-section: return position on cross-section plane
+      return [offset[0], offset[1], 0]; // Z=0 for cross-section plane
+    } else {
+      // CPR views: return position along centerline + perpendicular offset
+      const alongCenterline = centerlineProgress * 100; // Scale to CPR length
+      
+      // Calculate view-specific perpendicular component
+      let perpendicularOffset = 0;
+      if (viewIndex === 0) {
+        // CPR1: project onto one perpendicular direction
+        perpendicularOffset = Math.sqrt(offset[0] * offset[0] + offset[2] * offset[2]);
+        if (offset[0] < 0) perpendicularOffset = -perpendicularOffset;
+      } else if (viewIndex === 2) {
+        // CPR2: project onto perpendicular direction 90° rotated from CPR1
+        perpendicularOffset = Math.sqrt(offset[1] * offset[1] + offset[2] * offset[2]);
+        if (offset[1] < 0) perpendicularOffset = -perpendicularOffset;
+      }
+      
+      return [alongCenterline, perpendicularOffset, 0];
+    }
+  };
+
+  // Convert viewport click to real world coordinates
+  const convertViewportToWorld = (
+    viewportPos: [number, number], // Percentage coordinates (0-100)
+    viewIndex: number, // 0=CPR1, 1=CrossSection, 2=CPR2
+    currentCrosshairPosition: number // Current position along centerline (0-1)
+  ): [number, number, number] => {
+    const centerline = centerlinePoints;
+    
+    if (!centerline || centerline.length === 0) {
+      console.warn('Cannot convert viewport to world: missing centerline');
+      return [0, 0, 0];
+    }
+
+    // Get current point along centerline
+    const pointIndex = Math.floor(currentCrosshairPosition * (centerline.length - 1));
+    const currentPoint = centerline[pointIndex];
+
+    if (viewIndex === 1) {
+      // Cross-section view: convert to 3D coordinates on the cross-section plane
+      const centerX = viewportPos[0] / 100 - 0.5; // Convert to -0.5 to 0.5 range
+      const centerY = viewportPos[1] / 100 - 0.5;
+
+      // Calculate cross-section plane vectors
+      let tangent = [0, 0, 1];
+      if (pointIndex < centerline.length - 1) {
+        const nextPoint = centerline[pointIndex + 1];
+        tangent = [
+          nextPoint.x - currentPoint.x,
+          nextPoint.y - currentPoint.y,
+          nextPoint.z - currentPoint.z
+        ];
+        const length = Math.sqrt(tangent[0] * tangent[0] + tangent[1] * tangent[1] + tangent[2] * tangent[2]);
+        if (length > 0) {
+          tangent = [tangent[0] / length, tangent[1] / length, tangent[2] / length];
+        }
+      }
+
+      // Create perpendicular vectors
+      const absX = Math.abs(tangent[0]);
+      const absY = Math.abs(tangent[1]);
+      const absZ = Math.abs(tangent[2]);
+      
+      let baseVector = [0, 0, 1];
+      if (absZ > absX && absZ > absY) {
+        baseVector = [1, 0, 0];
+      }
+      
+      let normal1 = [
+        tangent[1] * baseVector[2] - tangent[2] * baseVector[1],
+        tangent[2] * baseVector[0] - tangent[0] * baseVector[2],
+        tangent[0] * baseVector[1] - tangent[1] * baseVector[0]
+      ];
+      const norm1 = Math.sqrt(normal1[0] * normal1[0] + normal1[1] * normal1[1] + normal1[2] * normal1[2]);
+      if (norm1 > 0.001) {
+        normal1 = [normal1[0] / norm1, normal1[1] / norm1, normal1[2] / norm1];
+      }
+      
+      let normal2 = [
+        tangent[1] * normal1[2] - tangent[2] * normal1[1],
+        tangent[2] * normal1[0] - tangent[0] * normal1[2],
+        tangent[0] * normal1[1] - tangent[1] * normal1[0]
+      ];
+      const norm2 = Math.sqrt(normal2[0] * normal2[0] + normal2[1] * normal2[1] + normal2[2] * normal2[2]);
+      if (norm2 > 0.001) {
+        normal2 = [normal2[0] / norm2, normal2[1] / norm2, normal2[2] / norm2];
+      }
+
+      // Map viewport coordinates to 3D world coordinates
+      const crossSectionSize = 32;
+      const offsetX = centerX * crossSectionSize;
+      const offsetY = centerY * crossSectionSize;
+
+      const worldPos: [number, number, number] = [
+        currentPoint.x + offsetX * normal1[0] + offsetY * normal2[0],
+        currentPoint.y + offsetX * normal1[1] + offsetY * normal2[1],
+        currentPoint.z + offsetX * normal1[2] + offsetY * normal2[2]
+      ];
+
+      console.log(`🎯 Cross-section (${viewportPos[0].toFixed(1)}, ${viewportPos[1].toFixed(1)}) -> World (${worldPos[0].toFixed(1)}, ${worldPos[1].toFixed(1)}, ${worldPos[2].toFixed(1)})`);
+      return worldPos;
+
+    } else {
+      // CPR views: convert long-axis click to world coordinates
+      const alongCenterline = viewportPos[0] / 100; // X position as fraction along centerline
+      const radialOffset = (viewportPos[1] / 100 - 0.5) * 32; // Y position as radial distance
+
+      // Get point along centerline
+      const cprPointIndex = Math.floor(alongCenterline * (centerline.length - 1));
+      const cprPoint = centerline[cprPointIndex];
+
+      // Calculate direction perpendicular to centerline for this view
+      let tangent = [0, 0, 1];
+      if (cprPointIndex < centerline.length - 1) {
+        const nextPoint = centerline[cprPointIndex + 1];
+        tangent = [
+          nextPoint.x - cprPoint.x,
+          nextPoint.y - cprPoint.y,
+          nextPoint.z - cprPoint.z
+        ];
+        const length = Math.sqrt(tangent[0] * tangent[0] + tangent[1] * tangent[1] + tangent[2] * tangent[2]);
+        if (length > 0) {
+          tangent = [tangent[0] / length, tangent[1] / length, tangent[2] / length];
+        }
+      }
+
+      // Calculate perpendicular direction based on view
+      const absX = Math.abs(tangent[0]);
+      const absY = Math.abs(tangent[1]);
+      const absZ = Math.abs(tangent[2]);
+      
+      let baseVector = [0, 0, 1];
+      if (absZ > absX && absZ > absY) {
+        baseVector = [1, 0, 0];
+      }
+      
+      let normal1 = [
+        tangent[1] * baseVector[2] - tangent[2] * baseVector[1],
+        tangent[2] * baseVector[0] - tangent[0] * baseVector[2],
+        tangent[0] * baseVector[1] - tangent[1] * baseVector[0]
+      ];
+      const norm1 = Math.sqrt(normal1[0] * normal1[0] + normal1[1] * normal1[1] + normal1[2] * normal1[2]);
+      if (norm1 > 0.001) {
+        normal1 = [normal1[0] / norm1, normal1[1] / norm1, normal1[2] / norm1];
+      }
+      
+      let normal2 = [
+        tangent[1] * normal1[2] - tangent[2] * normal1[1],
+        tangent[2] * normal1[0] - tangent[0] * normal1[2],
+        tangent[0] * normal1[1] - tangent[1] * normal1[0]
+      ];
+      const norm2 = Math.sqrt(normal2[0] * normal2[0] + normal2[1] * normal2[1] + normal2[2] * normal2[2]);
+      if (norm2 > 0.001) {
+        normal2 = [normal2[0] / norm2, normal2[1] / norm2, normal2[2] / norm2];
+      }
+
+      // Apply view-specific rotation for perpendicular direction
+      const rotRad = (viewIndex === 0 ? 0 : Math.PI/2);
+      const cosRot = Math.cos(rotRad);
+      const sinRot = Math.sin(rotRad);
+      
+      const viewNormal = [
+        normal1[0] * cosRot + normal2[0] * sinRot,
+        normal1[1] * cosRot + normal2[1] * sinRot,
+        normal1[2] * cosRot + normal2[2] * sinRot
+      ];
+
+      const worldPos: [number, number, number] = [
+        cprPoint.x + radialOffset * viewNormal[0],
+        cprPoint.y + radialOffset * viewNormal[1],
+        cprPoint.z + radialOffset * viewNormal[2]
+      ];
+
+      console.log(`🎯 CPR view ${viewIndex} (${viewportPos[0].toFixed(1)}, ${viewportPos[1].toFixed(1)}) -> World (${worldPos[0].toFixed(1)}, ${worldPos[1].toFixed(1)}, ${worldPos[2].toFixed(1)})`);
+      return worldPos;
+    }
+  };
+
+  // Convert 3D world coordinates to 2D canvas coordinates for drawing
+  const worldToCanvasCoords = (
+    worldPos: [number, number, number],
+    viewIndex: number,
+    canvasWidth: number,
+    canvasHeight: number
+  ): [number, number] | null => {
+    const centerline = centerlinePoints;
+    
+    if (!centerline || centerline.length === 0) {
+      return null;
+    }
+
+    if (viewIndex === 1) {
+      // Cross-section view: project 3D point onto current cross-section plane
+      const pointIndex = Math.floor(crosshairPosition * (centerline.length - 1));
+      const currentPoint = centerline[pointIndex];
+      
+      // Check if point is near current cross-section plane
+      const distance = Math.sqrt(
+        Math.pow(worldPos[0] - currentPoint.x, 2) +
+        Math.pow(worldPos[1] - currentPoint.y, 2) +
+        Math.pow(worldPos[2] - currentPoint.z, 2)
+      );
+      
+      const distanceThreshold = 100; // 100mm tolerance for testing
+      if (distance > distanceThreshold) {
+        return null; // Not visible
+      }
+
+      // Simple projection: use the offset from current point scaled to canvas
+      const offset = [
+        worldPos[0] - currentPoint.x,
+        worldPos[1] - currentPoint.y,
+        worldPos[2] - currentPoint.z
+      ];
+
+      // Project to 2D canvas coordinates (simplified)
+      const scale = 4; // Adjust scale as needed
+      const x = canvasWidth / 2 + offset[0] * scale;
+      const y = canvasHeight / 2 + offset[1] * scale;
+
+      return [x, y];
+
+    } else {
+      // CPR views: project based on position along centerline
+      let closestIndex = 0;
+      let closestDistance = Infinity;
+      
+      for (let i = 0; i < centerline.length; i++) {
+        const dist = Math.sqrt(
+          Math.pow(worldPos[0] - centerline[i].x, 2) +
+          Math.pow(worldPos[1] - centerline[i].y, 2) +
+          Math.pow(worldPos[2] - centerline[i].z, 2)
+        );
+        if (dist < closestDistance) {
+          closestDistance = dist;
+          closestIndex = i;
+        }
+      }
+
+      const dotCenterlinePos = closestIndex / (centerline.length - 1);
+      const currentCenterlinePos = crosshairPosition;
+      
+      // Only show if near current crosshair position (generous threshold for testing)
+      const proximityThreshold = 1.0; // Show in all positions for now
+      const centerlineProximity = Math.abs(currentCenterlinePos - dotCenterlinePos);
+      
+      if (centerlineProximity > proximityThreshold) {
+        return null;
+      }
+
+      // Calculate position along CPR
+      const closestCenterlinePoint = centerline[closestIndex];
+      
+      const offset = [
+        worldPos[0] - closestCenterlinePoint.x,
+        worldPos[1] - closestCenterlinePoint.y,
+        worldPos[2] - closestCenterlinePoint.z
+      ];
+
+      // Simple radial distance calculation
+      const radialDistance = Math.sqrt(offset[0] * offset[0] + offset[1] * offset[1] + offset[2] * offset[2]);
+      
+      // Position along CPR - use dot's position on centerline
+      const xPos = dotCenterlinePos * canvasWidth;
+      const yPos = canvasHeight / 2 + (radialDistance / 20) * (canvasHeight / 4); // Scale for visibility
+      
+      return [xPos, yPos];
+    }
+  };
+
+  // Draw sphere on canvas as a simple circle
+  const drawSphereOnCanvas = (
+    ctx: CanvasRenderingContext2D,
+    canvasPos: [number, number],
+    color: string,
+    radius: number = 8
+  ): void => {
+    ctx.save();
+    
+    // Draw filled circle
+    ctx.beginPath();
+    ctx.arc(canvasPos[0], canvasPos[1], radius, 0, 2 * Math.PI);
+    ctx.fillStyle = color;
+    ctx.fill();
+    
+    // Draw border
+    ctx.strokeStyle = 'white';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    
+    ctx.restore();
+  };
+
+  // Add sphere actor to specific view renderer
+  const addSphereToView = (sphereData: any, viewIndex: number): void => {
+    // Spheres will be drawn during the redraw cycle
+    console.log(`🎯 Sphere data added for view ${viewIndex} (will be drawn on canvas)`);
+  };
+
+  // Remove sphere actor from specific view renderer
+
+  // Transform world coordinates to CPR coordinates for sphere positioning
+  const transformWorldToCPRForSphere = (
+    worldPos: [number, number, number],
+    viewIndex: number
+  ): [number, number, number] => {
+    // For now, use simplified transformation
+    // This will be enhanced once we extract the actual CPR transformation matrices from VTK
+    
+    const centerline = centerlinePoints;
+    if (!centerline || centerline.length === 0) {
+      return worldPos; // Return as-is if no centerline
+    }
+
+    // Find closest point on centerline
+    let closestIndex = 0;
+    let closestDistance = Infinity;
+    
+    for (let i = 0; i < centerline.length; i++) {
+      const dist = Math.sqrt(
+        Math.pow(worldPos[0] - centerline[i].x, 2) +
+        Math.pow(worldPos[1] - centerline[i].y, 2) +
+        Math.pow(worldPos[2] - centerline[i].z, 2)
+      );
+      if (dist < closestDistance) {
+        closestDistance = dist;
+        closestIndex = i;
+      }
+    }
+
+    const closestPoint = centerline[closestIndex];
+    const centerlineProgress = closestIndex / (centerline.length - 1);
+    
+    // Calculate offset from centerline
+    const offset = [
+      worldPos[0] - closestPoint.x,
+      worldPos[1] - closestPoint.y,
+      worldPos[2] - closestPoint.z
+    ];
+    
+    if (viewIndex === 1) {
+      // Cross-section: keep the original world coordinates but adjust for cross-section plane
+      return worldPos;
+    } else {
+      // CPR views: transform to straightened vessel coordinates
+      const cprLength = 100; // Assumption: CPR is 100mm long
+      const alongCenterline = centerlineProgress * cprLength;
+      
+      // Calculate perpendicular offset based on view orientation
+      let perpendicularOffset = 0;
+      if (viewIndex === 0) {
+        // CPR1: use X-Z plane offset
+        perpendicularOffset = Math.sqrt(offset[0] * offset[0] + offset[2] * offset[2]);
+        if (offset[0] < 0) perpendicularOffset = -perpendicularOffset;
+      } else if (viewIndex === 2) {
+        // CPR2: use Y-Z plane offset (90° rotated)
+        perpendicularOffset = Math.sqrt(offset[1] * offset[1] + offset[2] * offset[2]);
+        if (offset[1] < 0) perpendicularOffset = -perpendicularOffset;
+      }
+      
+      // Return transformed CPR coordinates
+      return [alongCenterline, perpendicularOffset, 0];
+    }
+  };
+
   // Create VTK ImageData from array
   const createVTKImageData = (data: Float32Array, width: number, height: number) => {
     const imageData = vtkImageData.newInstance();
@@ -1035,21 +1495,90 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
     }
   };
 
+  // Draw centerline overlay on CPR views
+  const drawCenterlineOverlay = (ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number, centerlineLength: number) => {
+    ctx.save();
+    
+    // Draw centerline as a thin line down the middle
+    ctx.strokeStyle = '#00FF00'; // Bright green
+    ctx.lineWidth = 1; // Thinner line
+    ctx.setLineDash([]);
+    
+    // Centerline runs vertically down the middle of CPR views
+    const centerX = canvasWidth / 2;
+    
+    ctx.beginPath();
+    ctx.moveTo(centerX, 0);
+    ctx.lineTo(centerX, canvasHeight);
+    ctx.stroke();
+    
+    // Add only 3 markers for the original anatomical points
+    ctx.fillStyle = '#00FF00';
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 0.5;
+    
+    // Three anatomical points: LV Outflow (0%), Aortic Valve (50%), Ascending Aorta (100%)
+    const anatomicalPositions = [0, 0.5, 1.0];
+    
+    for (let i = 0; i < anatomicalPositions.length; i++) {
+      const y = anatomicalPositions[i] * canvasHeight;
+      
+      // Draw small circle markers (smaller size)
+      ctx.beginPath();
+      ctx.arc(centerX, y, 2, 0, 2 * Math.PI); // Smaller radius
+      ctx.fill();
+      ctx.stroke();
+    }
+    
+    ctx.restore();
+  };
+
   // Setup canvas-based CPR views
   const setupCanvasCPRViews = async (cprData: any, centerlinePoints: Point3D[]) => {
+    // Check if all container refs are available with detailed logging
+    console.log('🔍 Checking container refs:', {
+      cpr1Ref: !!cpr1Ref.current,
+      crossSectionRef: !!crossSectionRef.current,
+      cpr2Ref: !!cpr2Ref.current
+    });
     
+    if (!cpr1Ref.current || !crossSectionRef.current || !cpr2Ref.current) {
+      console.warn('Container refs not ready:', {
+        cpr1: cpr1Ref.current,
+        crossSection: crossSectionRef.current,
+        cpr2: cpr2Ref.current
+      });
+      throw new Error('Container elements not ready');
+    }
     
     const views = [];
-    const containers = [cpr1Ref.current!, crossSectionRef.current!, cpr2Ref.current!];
+    const containers = [cpr1Ref.current, crossSectionRef.current, cpr2Ref.current];
     const cprImages = [cprData.cpr1, cprData.crossSection, cprData.cpr2];
     const labels = ['CPR View 1 (0°)', 'Cross Section', 'CPR View 2 (90°)'];
+    
+    console.log('🔍 CPR data structure:', {
+      hasCpr1: !!cprData.cpr1,
+      hasCrossSection: !!cprData.crossSection,
+      hasCpr2: !!cprData.cpr2,
+      cpr1Dimensions: cprData.cpr1 ? `${cprData.cpr1.width}x${cprData.cpr1.height}` : 'null',
+      crossSectionDimensions: cprData.crossSection ? `${cprData.crossSection.width}x${cprData.crossSection.height}` : 'null',
+      cpr2Dimensions: cprData.cpr2 ? `${cprData.cpr2.width}x${cprData.cpr2.height}` : 'null',
+    });
 
     for (let i = 0; i < 3; i++) {
       const container = containers[i];
       const imageData = cprImages[i];
       const label = labels[i];
       
+      if (!container) {
+        throw new Error(`Container ${i} (${label}) is not available`);
+      }
       
+      if (!imageData || !imageData.width || !imageData.height) {
+        throw new Error(`Image data for ${label} is invalid: ${JSON.stringify(imageData)}`);
+      }
+      
+      console.log(`🔍 Setting up ${label} with container:`, container, 'imageData:', imageData);
 
       // Create canvas element
       const canvas = document.createElement('canvas');
@@ -1060,9 +1589,19 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       canvas.style.objectFit = 'fill';
       canvas.style.background = 'black';
       
-      // Clear container and add canvas
-      container.innerHTML = '';
-      container.appendChild(canvas);
+      // Clear container and add canvas with safety checks
+      try {
+        if (container.innerHTML === undefined) {
+          throw new Error(`Container ${label} does not have innerHTML property`);
+        }
+        console.log(`🔍 Clearing container ${label}...`);
+        container.innerHTML = '';
+        console.log(`🔍 Adding canvas to container ${label}...`);
+        container.appendChild(canvas);
+      } catch (error) {
+        console.error(`Failed to manipulate container ${label}:`, error);
+        throw new Error(`Container manipulation failed for ${label}: ${error.message}`);
+      }
       
       const ctx = canvas.getContext('2d');
       if (!ctx) {
@@ -1083,6 +1622,11 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       }
       
       ctx.putImageData(imageDataObj, 0, 0);
+      
+      // Draw centerline overlay for CPR views (views 0 and 2)
+      if (i === 0 || i === 2) {
+        drawCenterlineOverlay(ctx, imageData.width, imageData.height, centerlinePoints.length);
+      }
       
       views.push({
         canvas,
@@ -1250,22 +1794,25 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
   // Load real DICOM data using the exact working pattern from HybridCPRViewport
   const loadDicomData = async () => {
     try {
+      // Check if we already have a loaded volume
+      if (vtkObjects.current.volume) {
+        console.log('🔄 Reusing existing volume for modified centerline');
+        return { volume: vtkObjects.current.volume, imageIds: [] };
+      }
       
-      
+      console.log('📥 Loading DICOM data...');
       const imageIds = await createImageIdsAndCacheMetaData({
         StudyInstanceUID: patientInfo!.studyInstanceUID!,
         SeriesInstanceUID: patientInfo!.seriesInstanceUID!,
-        wadoRsRoot: "http://192.168.2.52/orthanc/dicom-web",
+        wadoRsRoot: "http://127.0.0.1/orthanc/dicom-web",
       });
 
       if (imageIds.length === 0) {
         throw new Error('No DICOM images found for this series');
       }
 
-      
-
-      // Use the exact pattern from HybridCPRViewport that works
-      const volumeId = `triViewCprVolume_${Date.now()}`;
+      // Use a consistent volume ID to avoid creating multiple volumes
+      const volumeId = `triViewCprVolume_${patientInfo!.seriesInstanceUID}`;
       const volume = await volumeLoader.createAndCacheVolume(volumeId, {
         imageIds,
       });
@@ -1326,11 +1873,23 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
 
   // Initialize tri-view CPR using proper VTK.js reslicing pattern
   const initializeTriViewCPR = async () => {
+    // Prevent multiple simultaneous initializations
+    if (isInitializing) {
+      console.log('🚫 Initialization already in progress, skipping...');
+      return;
+    }
+    
     try {
+      setIsInitializing(true);
       setIsLoading(true);
       setError(null);
 
-      
+      console.log('🔄 Initializing TriView CPR with:', {
+        hasModifiedCenterline: !!(modifiedCenterline && modifiedCenterline.length > 0),
+        modifiedCenterlineLength: modifiedCenterline?.length,
+        hasAnnularPlane: !!annularPlane,
+        rootPointsLength: rootPoints.length
+      });
 
       // Load DICOM data using the working pattern
       const { volume, imageIds } = await loadDicomData();
@@ -1378,6 +1937,13 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       const centerlinePoints = generateCenterlinePoints(rootPoints);
       setCenterlinePoints(centerlinePoints);
       
+      console.log('📏 Generated centerline points:', {
+        length: centerlinePoints.length,
+        isModified: !!(modifiedCenterline && modifiedCenterline.length > 0),
+        firstPoint: centerlinePoints[0],
+        lastPoint: centerlinePoints[centerlinePoints.length - 1]
+      });
+      
       if (centerlinePoints.length === 0) {
         throw new Error('Failed to generate centerline');
       }
@@ -1386,13 +1952,48 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       
       const cprData = await createCPRData(volume, centerlinePoints, rotationAngle);
       
-      // Setup canvas-based CPR views
+      // Setup canvas-based CPR views with retry mechanism
+      let views;
+      let retryCount = 0;
+      const maxRetries = 3;
       
-      const views = await setupCanvasCPRViews(cprData, centerlinePoints);
+      while (retryCount < maxRetries) {
+        try {
+          views = await setupCanvasCPRViews(cprData, centerlinePoints);
+          break; // Success, exit retry loop
+        } catch (error) {
+          retryCount++;
+          if (error.message.includes('Container elements not ready') && retryCount < maxRetries) {
+            console.log(`CPR setup retry ${retryCount}/${maxRetries}, waiting for containers...`);
+            await new Promise(resolve => setTimeout(resolve, 200)); // Wait 200ms before retry
+          } else {
+            throw error; // Re-throw if it's a different error or max retries reached
+          }
+        }
+      }
+      
+      if (!views) {
+        throw new Error('Failed to setup CPR views after retries');
+      }
+
+      // Cache scalar data for fast re-initialization
+      let scalarData = null;
+      try {
+        if (volume.getScalarData) {
+          scalarData = volume.getScalarData();
+        } else if (volume.scalarData) {
+          scalarData = volume.scalarData;
+        } else if (volume.voxelManager?.getScalarData) {
+          scalarData = volume.voxelManager.getScalarData();
+        }
+      } catch (e) {
+        console.warn('Could not cache scalar data:', e);
+      }
 
       // Store references including CPR data for slice updates
       vtkObjects.current = {
         volume,
+        scalarData, // Cache scalar data for re-initialization
         centerline: centerlinePoints,
         views,
         cprData
@@ -1414,9 +2015,29 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
               // Update the stored CPR data
               vtkObjects.current.cprData = realCprData;
               
+              // Also cache scalar data if we got real data
+              try {
+                let newScalarData = null;
+                if (volume.getScalarData) {
+                  newScalarData = volume.getScalarData();
+                } else if (volume.scalarData) {
+                  newScalarData = volume.scalarData;
+                } else if (volume.voxelManager?.getScalarData) {
+                  newScalarData = volume.voxelManager.getScalarData();
+                }
+                if (newScalarData) {
+                  vtkObjects.current.scalarData = newScalarData;
+                  console.log('📦 Cached scalar data for future re-initialization');
+                }
+              } catch (e) {
+                console.warn('Could not cache scalar data during retry:', e);
+              }
+              
               // Recreate the views with real data
               const newViews = await setupCanvasCPRViews(realCprData, centerlinePoints);
               vtkObjects.current.views = newViews;
+              
+              // Cusp dot interaction will be set up by useEffect
               
               
             }
@@ -1427,12 +2048,14 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       }
 
       setIsLoading(false);
+      setIsInitializing(false);
       
 
     } catch (error) {
       console.error('Tri-View CPR initialization failed:', error);
       setError(`Failed to initialize tri-view CPR: ${error}`);
       setIsLoading(false);
+      setIsInitializing(false);
     }
   };
   // Handle rotation change - only update side CPR views, not the cross-section  
@@ -1475,6 +2098,9 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
             // Clear entire canvas first
             cpr1View.ctx.clearRect(0, 0, cpr1View.canvas.width, cpr1View.canvas.height);
             cpr1View.ctx.putImageData(imageDataObj, 0, 0);
+            
+            // Draw centerline overlay
+            drawCenterlineOverlay(cpr1View.ctx, cpr1View.canvas.width, cpr1View.canvas.height, centerlinePoints.length);
           }
           
           // Update CPR View 2 (index 2)
@@ -1499,6 +2125,9 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
             // Clear entire canvas first
             cpr2View.ctx.clearRect(0, 0, cpr2View.canvas.width, cpr2View.canvas.height);
             cpr2View.ctx.putImageData(imageDataObj, 0, 0);
+            
+            // Draw centerline overlay
+            drawCenterlineOverlay(cpr2View.ctx, cpr2View.canvas.width, cpr2View.canvas.height, centerlinePoints.length);
           }
           
           // Keep the cross-section (middle view, index 1) unchanged - only crosshair rotates
@@ -1506,12 +2135,59 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         
         // Update the stored CPR data
         vtkObjects.current.cprData = newCprData;
-        
-        
       }
     } catch (error) {
       console.error('Failed to update rotation:', error);
     }
+  };
+
+  // Check if current crosshair position is at or near the annulus plane
+  const isAtAnnulusPlane = (position: number): boolean => {
+    if (!annularPlane || !modifiedCenterline) return false;
+    
+    // Find the annulus plane position in the modified centerline
+    const annulusPlaneIndex = modifiedCenterline.findIndex(point => 
+      point.x === annularPlane.center[0] && 
+      point.y === annularPlane.center[1] && 
+      point.z === annularPlane.center[2]
+    );
+    
+    if (annulusPlaneIndex === -1) return false;
+    
+    const annulusPosition = annulusPlaneIndex / (modifiedCenterline.length - 1);
+    const tolerance = 0.02; // 2% tolerance
+    
+    return Math.abs(position - annulusPosition) <= tolerance;
+  };
+
+  // Draw annulus plane indicators and cusp dots in cross-section view
+  const drawAnnulusPlaneIndicators = (ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number) => {
+    if (!annularPlane) return;
+    
+    // Draw annulus plane indicator (circle or ring)
+    ctx.save();
+    ctx.strokeStyle = '#00ff00'; // Green for annulus plane
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 5]); // Dashed line
+    
+    // Draw a circle to represent the annulus plane
+    const centerX = canvasWidth / 2;
+    const centerY = canvasHeight / 2;
+    const radius = Math.min(canvasWidth, canvasHeight) * 0.3; // 30% of viewport size
+    
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+    ctx.stroke();
+    
+    // Note: Cusp dots are now handled by the redrawCuspDots function using proper 3D projection
+    // This prevents duplicate drawing and ensures consistent positioning
+    
+    // Add text label
+    ctx.fillStyle = '#00ff00';
+    ctx.font = '12px Arial';
+    ctx.fillText('Annulus Plane', 10, 20);
+    
+    ctx.restore();
   };
 
   // Handle CPR mode change between straight and curved
@@ -1570,6 +2246,8 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         // Recreate all views with new mode
         const newViews = await setupCanvasCPRViews(newCprData, centerlinePoints);
         vtkObjects.current.views = newViews;
+        
+        // Cusp dot interaction will be set up by useEffect
       }
     } catch (error) {
       console.error('Failed to update CPR mode:', error);
@@ -1731,7 +2409,11 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
           crossSectionView.ctx.clearRect(0, 0, crossSectionView.canvas.width, crossSectionView.canvas.height);
           crossSectionView.ctx.putImageData(imageDataObj, 0, 0);
           
-          
+          // Draw annulus plane indicators if we're at the annulus plane position
+          if (isAtAnnulusPlane(newPosition)) {
+            console.log('🎯 At annulus plane position, drawing indicators');
+            drawAnnulusPlaneIndicators(crossSectionView.ctx, crossSectionView.canvas.width, crossSectionView.canvas.height);
+          }
         }
         
         // Notify parent component of annulus point selection
@@ -1751,12 +2433,497 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
     }
   };
 
-  useEffect(() => {
-    if (patientInfo && rootPoints.length >= 3) {
-      initializeTriViewCPR();
-    }
-  }, [patientInfo, rootPoints]);
+  // Clear all cusp dots
+  const clearCuspDots = () => {
+    // Remove DOM overlay elements
+    const containers = [cpr1Ref.current, crossSectionRef.current, cpr2Ref.current];
+    containers.forEach(container => {
+      if (container) {
+        const existingDots = container.querySelectorAll('.cusp-dot-overlay');
+        existingDots.forEach(dot => dot.remove());
+      }
+    });
 
+    // Clear state
+    setCuspDots([]);
+
+    console.log('🧹 Cleared all cusp dots in CPR view');
+  };
+
+  // Add cusp dot at specified position
+  const addCuspDot = (viewportPos: [number, number], viewIndex: number) => {
+    console.log(`🎯 addCuspDot called - current dots: ${cuspDots.length}, max: 3`);
+    
+    if (cuspDots.length >= 3) {
+      console.warn('Maximum of 3 cusp dots already placed');
+      return;
+    }
+
+    const cuspTypes: ('left' | 'right' | 'non-coronary')[] = ['left', 'right', 'non-coronary'];
+    const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1']; // Red, Teal, Blue
+    
+    setCuspDots(currentDots => {
+      const nextCuspIndex = currentDots.length;
+      
+      if (nextCuspIndex >= 3) {
+        console.warn('Maximum of 3 cusp dots already placed');
+        return currentDots;
+      }
+      
+      const cuspType = cuspTypes[nextCuspIndex];
+      const color = colors[nextCuspIndex];
+      
+      const dotId = `cusp-dot-${Date.now()}-${nextCuspIndex}`;
+      
+      console.log(`🎯 Creating cusp ${nextCuspIndex + 1}/3: ${cuspType} (${color})`);
+      console.log(`🎯 Dot placement debug:`, {
+        viewIndex,
+        viewName: viewIndex === 0 ? 'CPR View 1' : viewIndex === 1 ? 'Cross Section' : 'CPR View 2',
+        viewportPos,
+        crosshairPosition
+      });
+      
+      // Convert viewport click to real world coordinates
+      const realWorldPos = convertViewportToWorld(viewportPos, viewIndex, crosshairPosition);
+      
+      // Debug: For testing, use centerline points as reference positions
+      if (centerlinePoints.length > 0) {
+        const debugIndex = Math.min(nextCuspIndex, centerlinePoints.length - 1);
+        const debugPoint = centerlinePoints[debugIndex * Math.floor(centerlinePoints.length / 3)];
+        console.log(`🎯 DEBUG: Using centerline point ${debugIndex} as reference:`, debugPoint);
+        console.log(`🎯 DEBUG: Original realWorldPos:`, realWorldPos);
+        console.log(`🎯 DEBUG: Viewport pos:`, viewportPos, 'View:', viewIndex);
+      }
+      
+      // Transform to CPR coordinates for all views
+      const cprTransformedPos = transformWorldToCPR(realWorldPos, viewIndex, crosshairPosition);
+      
+      // Create sphere data for all three views (to be drawn on canvas)
+      const sphereActors = {
+        cpr1: { worldPos: realWorldPos, color: color },
+        crossSection: { worldPos: realWorldPos, color: color },
+        cpr2: { worldPos: realWorldPos, color: color }
+      };
+      
+      console.log(`🎯 Creating sphere data at world position (${realWorldPos[0].toFixed(1)}, ${realWorldPos[1].toFixed(1)}, ${realWorldPos[2].toFixed(1)})`);
+      
+      const newDot = {
+        id: dotId,
+        realWorldPos: realWorldPos, // Store real 3D CT coordinates
+        cprTransformedPos: cprTransformedPos, // Store transformed CPR coordinates
+        color: color,
+        cuspType: cuspType,
+        placementIndex: nextCuspIndex,
+        sphereActors: sphereActors
+      };
+      
+      // Debug: Check if views are initialized
+      const views = vtkObjects.current.views;
+      console.log(`🎯 Views initialized:`, {
+        viewsExist: !!views,
+        viewCount: views?.length || 0,
+        view0: !!views?.[0]?.renderer,
+        view1: !!views?.[1]?.renderer,
+        view2: !!views?.[2]?.renderer
+      });
+      
+      // Add sphere actors to all views
+      addSphereToView(sphereActors.cpr1, 0);
+      addSphereToView(sphereActors.crossSection, 1);
+      addSphereToView(sphereActors.cpr2, 2);
+      
+      // Draw spheres at correct positions using coordinate transformation
+      if (views) {
+        views.forEach((view, viewIndex) => {
+          if (view.ctx && view.canvas) {
+            const canvasPos = worldToCanvasCoords(
+              realWorldPos,
+              viewIndex,
+              view.canvas.width,
+              view.canvas.height
+            );
+            
+            if (canvasPos) {
+              drawSphereOnCanvas(view.ctx, canvasPos, color, 4); // Even smaller radius
+              console.log(`🎯 Drew sphere on view ${viewIndex} at position (${canvasPos[0].toFixed(1)}, ${canvasPos[1].toFixed(1)})`);
+            } else {
+              console.log(`🎯 Sphere not visible in view ${viewIndex} (outside proximity threshold)`);
+            }
+          }
+        });
+      }
+      
+      const updatedDots = [...currentDots, newDot];
+      
+      console.log(`🎯 Placed ${cuspType} cusp dot (${nextCuspIndex + 1}/3)`);
+      console.log(`🎯 Real world position:`, realWorldPos);
+      console.log(`🎯 CPR transformed position:`, cprTransformedPos);
+      console.log(`🎯 Sphere actors created for all views`);
+      
+      // Notify parent component asynchronously
+      setTimeout(() => {
+        if (onCuspDotsUpdate) {
+          const dotsForParent = updatedDots.map(dot => ({
+            id: dot.id,
+            pos: dot.realWorldPos, // Use real world coordinates
+            color: dot.color,
+            cuspType: dot.cuspType
+          }));
+          onCuspDotsUpdate(dotsForParent);
+        }
+      }, 0);
+      
+      return updatedDots;
+    });
+  };
+
+  // Update sphere visibility based on crosshair position (Canvas-based)
+  const updateSphereVisibility = (dots: typeof cuspDots) => {
+    // Get canvases directly from DOM refs instead of VTK views
+    const canvases = [
+      cpr1Ref.current?.querySelector('canvas'),
+      crossSectionRef.current?.querySelector('canvas'), 
+      cpr2Ref.current?.querySelector('canvas')
+    ];
+
+    canvases.forEach((canvas, viewIndex) => {
+      if (!canvas) return;
+      
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      // Clear entire canvas - we'll redraw everything including spheres
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Note: For a complete implementation, we would need to redraw the medical image here
+      // For now, we'll just draw the spheres on a clear canvas as a demonstration
+      
+      // Draw visible spheres
+      dots.forEach((dot) => {
+        if (!dot.sphereActors) return;
+
+        let isVisible = false;
+        let sphereData = null;
+
+        if (viewIndex === 1) {
+          // Cross-section view: show/hide based on proximity to crosshair
+          sphereData = dot.sphereActors.crossSection;
+          if (sphereData) {
+            const pointIndex = Math.floor(crosshairPosition * (centerlinePoints.length - 1));
+            const currentPoint = centerlinePoints[pointIndex];
+            
+            if (currentPoint && dot.realWorldPos) {
+              const distance = Math.sqrt(
+                Math.pow(dot.realWorldPos[0] - currentPoint.x, 2) +
+                Math.pow(dot.realWorldPos[1] - currentPoint.y, 2) +
+                Math.pow(dot.realWorldPos[2] - currentPoint.z, 2)
+              );
+              
+              const distanceThreshold = 50; // 50mm tolerance
+              isVisible = distance <= distanceThreshold;
+              console.log(`🎯 ${dot.cuspType} dot in cross-section: ${isVisible ? 'visible' : 'hidden'} (distance: ${distance.toFixed(1)}mm)`);
+            }
+          }
+        } else if (viewIndex === 0 || viewIndex === 2) {
+          // CPR views: show/hide based on proximity to current crosshair position along centerline
+          sphereData = viewIndex === 0 ? dot.sphereActors.cpr1 : dot.sphereActors.cpr2;
+          if (sphereData) {
+            // Find closest point on centerline to this dot
+            let closestIndex = 0;
+            let closestDistance = Infinity;
+            
+            for (let i = 0; i < centerlinePoints.length; i++) {
+              const dist = Math.sqrt(
+                Math.pow(dot.realWorldPos[0] - centerlinePoints[i].x, 2) +
+                Math.pow(dot.realWorldPos[1] - centerlinePoints[i].y, 2) +
+                Math.pow(dot.realWorldPos[2] - centerlinePoints[i].z, 2)
+              );
+              if (dist < closestDistance) {
+                closestDistance = dist;
+                closestIndex = i;
+              }
+            }
+
+            const dotCenterlinePos = closestIndex / (centerlinePoints.length - 1);
+            const currentCenterlinePos = crosshairPosition;
+            const centerlineProximity = Math.abs(currentCenterlinePos - dotCenterlinePos);
+            const proximityThreshold = 0.8; // 80% of centerline length
+            
+            isVisible = centerlineProximity <= proximityThreshold;
+            const viewName = viewIndex === 0 ? 'CPR1' : 'CPR2';
+            console.log(`🎯 ${dot.cuspType} dot in ${viewName}: ${isVisible ? 'visible' : 'hidden'} (proximity: ${(centerlineProximity * 100).toFixed(1)}%)`);
+          }
+        }
+
+        // Draw sphere if visible
+        if (isVisible && sphereData) {
+          const canvasPos = worldToCanvasCoords(
+            dot.realWorldPos,
+            viewIndex,
+            canvas.width,
+            canvas.height
+          );
+          
+          if (canvasPos) {
+            drawSphereOnCanvas(ctx, canvasPos, sphereData.color, 4); // Small radius
+          }
+        }
+      });
+    });
+  };
+
+  // Clean up sphere actors when dots are removed (Canvas-based)
+  const cleanupSphereActors = (dots: typeof cuspDots) => {
+    // For Canvas-based approach, we just need to redraw the canvases without the removed dots
+    // This is handled by the next render cycle, so no specific cleanup is needed
+    console.log(`🧹 Cleaned up ${dots.length} sphere actors (Canvas-based)`);
+  };
+
+  // Store click handlers to avoid memory leaks
+  const clickHandlers = useRef<Array<(event: MouseEvent) => void>>([]);
+
+  // Set up click handlers for cusp dot placement
+  const setupCuspDotInteraction = () => {
+    if (!cpr1Ref.current || !crossSectionRef.current || !cpr2Ref.current) {
+      console.log('🎯 Container refs not ready for cusp dot interaction');
+      return;
+    }
+
+    const containers = [cpr1Ref.current, crossSectionRef.current, cpr2Ref.current];
+    const labels = ['CPR View 1', 'Cross Section', 'CPR View 2'];
+
+    // Remove existing click handlers
+    containers.forEach((container, index) => {
+      if (container && clickHandlers.current[index]) {
+        container.removeEventListener('click', clickHandlers.current[index]);
+      }
+    });
+
+    // Clear handlers array
+    clickHandlers.current = [];
+
+    // Add new click handlers
+    containers.forEach((container, index) => {
+      if (!container) return;
+
+      const clickHandler = (event: MouseEvent) => {
+        // Check current state dynamically to avoid stale closure
+        setCuspDots(currentDots => {
+          if (!isPlacingCuspDots || currentDots.length >= 3) {
+            console.log(`🎯 Click ignored - placing: ${isPlacingCuspDots}, dots: ${currentDots.length}/3`);
+            return currentDots;
+          }
+
+          const rect = container.getBoundingClientRect();
+          const x = event.clientX - rect.left;
+          const y = event.clientY - rect.top;
+          
+          console.log(`🎯 Clicked in ${labels[index]} at (${x}, ${y}), current dots: ${currentDots.length}`);
+          
+          // For CPR views, use normalized screen coordinates instead of world coordinates
+          // This makes more sense for CPR where we're placing dots on the 2D projection
+          const normalizedX = x / rect.width;  // 0-1
+          const normalizedY = y / rect.height; // 0-1
+          
+          // Use normalized screen coordinates (0-100 percentage)
+          const viewportPos: [number, number] = [
+            normalizedX * 100,  // Scale to 0-100 for easier positioning
+            normalizedY * 100   // Scale to 0-100 for easier positioning
+          ];
+          
+          console.log(`🎯 Placing cusp dot at viewport position:`, viewportPos);
+          
+          // Call addCuspDot with viewport coordinates
+          addCuspDot(viewportPos, index);
+          return currentDots;
+        });
+      };
+
+      container.addEventListener('click', clickHandler);
+      clickHandlers.current[index] = clickHandler;
+    });
+  };
+
+  // Update interactors when cusp dot mode changes (only when placing mode changes)
+  useEffect(() => {
+    // Small delay to ensure CPR views are rendered
+    const timer = setTimeout(() => {
+      setupCuspDotInteraction();
+    }, 100);
+    
+    return () => clearTimeout(timer);
+  }, [isPlacingCuspDots]);
+
+  // Update sphere visibility when crosshair position changes
+  // TODO: Temporarily disabled to avoid clearing medical images during development
+  // useEffect(() => {
+  //   updateSphereVisibility(cuspDots);
+  // }, [cuspDots, crosshairPosition]);
+
+  // Cleanup sphere actors on unmount or when dots are cleared
+  useEffect(() => {
+    return () => {
+      cleanupSphereActors(cuspDots);
+    };
+  }, []);
+
+  // Clear dots when max count is reached (for testing)
+  useEffect(() => {
+    if (cuspDots.length >= 3) {
+      console.log('🎯 Three cusp dots placed - sphere actors ready for visibility updates');
+    }
+  }, [cuspDots.length]);
+
+  useEffect(() => {
+    if (patientInfo && rootPoints.length >= 3 && !isInitializing) {
+      // Skip if modified centerline is available - let the other useEffect handle it
+      if (modifiedCenterline && modifiedCenterline.length > 0) {
+        console.log('🔄 Skipping root points initialization - modified centerline will be used');
+        return;
+      }
+      
+      // Add a more robust delay and check for DOM readiness
+      const initializeWithDelay = async () => {
+        let attempts = 0;
+        const maxAttempts = 10;
+        
+        while (attempts < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 200));
+          
+          // Check if refs are actually connected to DOM
+          if (cpr1Ref.current?.parentElement && 
+              crossSectionRef.current?.parentElement && 
+              cpr2Ref.current?.parentElement) {
+            console.log('🔍 DOM elements ready, initializing CPR...');
+            initializeTriViewCPR();
+            return;
+          }
+          
+          attempts++;
+          console.log(`🔍 Waiting for DOM elements... attempt ${attempts}/${maxAttempts}`);
+        }
+        
+        console.error('❌ Failed to find DOM elements after maximum attempts');
+      };
+      
+      initializeWithDelay();
+    }
+  }, [patientInfo, rootPoints, isInitializing]);
+
+  // Re-initialize CPR when modified centerline changes (after annulus plane calculation)
+  useEffect(() => {
+    if (modifiedCenterline && modifiedCenterline.length > 0 && patientInfo && !isInitializing) {
+      console.log('🔄 Modified centerline detected, re-initializing CPR with new centerline...');
+      
+      // Check if we already have volume and scalar data cached
+      const hasExistingData = vtkObjects.current.volume && vtkObjects.current.scalarData;
+      
+      if (hasExistingData) {
+        console.log('📦 Reusing existing volume and scalar data for modified centerline');
+        
+        // Fast re-initialization path using cached data
+        const reinitializeWithCachedData = async () => {
+          // Prevent multiple simultaneous re-initializations
+          if (isInitializing) {
+            console.log('🚫 Re-initialization already in progress, skipping...');
+            return;
+          }
+          
+          try {
+            setIsInitializing(true);
+            setIsLoading(true);
+            setError(null);
+
+            const { volume, scalarData } = vtkObjects.current;
+            
+            // Generate new centerline points
+            const centerlinePoints = generateCenterlinePoints(rootPoints);
+            setCenterlinePoints(centerlinePoints);
+            
+            if (centerlinePoints.length === 0) {
+              throw new Error('Failed to generate modified centerline');
+            }
+
+            // Create CPR data using cached scalar data
+            console.log('🏗️ Creating CPR data with cached volume and scalar data');
+            const cprData = await createCPRData(volume, centerlinePoints, rotationAngle);
+            console.log('✅ CPR data created successfully with modified centerline');
+            
+            // Clean up existing views
+            console.log('🧹 Cleaning up existing views for fast re-initialization...');
+            if (vtkObjects.current.views) {
+              vtkObjects.current.views.forEach((view, index) => {
+                if (view.canvas?.parentNode) {
+                  console.log(`🧹 Removing canvas from view ${index}`);
+                  view.canvas.parentNode.removeChild(view.canvas);
+                }
+              });
+            }
+
+            // Clear containers
+            console.log('🧹 Clearing containers for fast re-initialization...');
+            const containers = [cpr1Ref.current, crossSectionRef.current, cpr2Ref.current];
+            containers.forEach((container, index) => {
+              if (container) {
+                console.log(`🧹 Clearing container ${index}`);
+                container.innerHTML = '';
+                container.style.background = 'black';
+              }
+            });
+
+            // Setup new views with cached data
+            const views = await setupCanvasCPRViews(cprData, centerlinePoints);
+
+            // Update stored references
+            vtkObjects.current = {
+              volume,
+              scalarData, // Keep cached scalar data
+              centerline: centerlinePoints,
+              views,
+              cprData
+            };
+
+            setIsLoading(false);
+            setIsInitializing(false);
+            console.log('✅ CPR re-initialized successfully with modified centerline');
+            
+          } catch (error) {
+            console.error('Failed to re-initialize with cached data:', error);
+            setError(`Failed to update CPR view: ${error.message}`);
+            setIsLoading(false);
+            setIsInitializing(false);
+          }
+        };
+        
+        // Small delay to ensure the previous render cycle is complete
+        const timer = setTimeout(reinitializeWithCachedData, 100);
+        return () => clearTimeout(timer);
+        
+      } else {
+        console.log('🔄 No cached data available, performing full re-initialization');
+        
+        // Full re-initialization path
+        const timer = setTimeout(() => {
+          initializeTriViewCPR();
+        }, 100);
+        
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [modifiedCenterline, patientInfo, isInitializing]);
+
+  // Cleanup function to remove event listeners
+  useEffect(() => {
+    return () => {
+      // Remove click handlers on unmount
+      const containers = [cpr1Ref.current, crossSectionRef.current, cpr2Ref.current];
+      containers.forEach((container, index) => {
+        if (container && clickHandlers.current[index]) {
+          container.removeEventListener('click', clickHandlers.current[index]);
+        }
+      });
+    };
+  }, []);
 
   return (
     <div className="w-full h-full relative">
@@ -1788,7 +2955,7 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
 
       {/* Control Panel */}
       <div className="absolute top-0 left-0 right-0 z-20 bg-slate-800 border-b border-slate-700 p-3">
-        <div className="grid grid-cols-3 gap-6">
+        <div className="grid grid-cols-4 gap-6">
           {/* Crosshair Position Control */}
           <div className="flex items-center gap-4">
             <div className="text-white text-sm min-w-0">
@@ -1878,6 +3045,34 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
               {isCurvedCPR ? 'Curved vessel path' : 'Straightened vessel path'}
             </div>
           </div>
+
+          {/* Cusp Dots Tool */}
+          <div className="flex items-center gap-3">
+            <div className="text-white text-sm">Cusp Dots:</div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setIsPlacingCuspDots(!isPlacingCuspDots)}
+                className={`px-3 py-1 text-xs rounded transition-colors flex items-center gap-1 ${
+                  isPlacingCuspDots 
+                    ? 'bg-teal-600 text-white' 
+                    : 'bg-slate-600 text-slate-300 hover:bg-slate-500'
+                }`}
+              >
+                <FaDotCircle />
+                {isPlacingCuspDots ? 'Active' : 'Place'}
+              </button>
+              <button
+                onClick={() => clearCuspDots()}
+                className="px-3 py-1 text-xs rounded bg-red-600 text-white hover:bg-red-700 transition-colors"
+                disabled={cuspDots.length === 0}
+              >
+                Clear ({cuspDots.length}/3)
+              </button>
+            </div>
+            <div className="text-slate-400 text-xs">
+              {cuspDots.length === 0 ? 'Click to place cusp nadir points' : `${cuspDots.length}/3 cusp dots placed`}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1908,6 +3103,30 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
                 top: `${crosshairPosition * 100}%`,
               }}
             ></div>
+            
+            {/* Annulus plane reference line */}
+            {annularPlane && modifiedCenterline && (
+              (() => {
+                const annulusPlaneIndex = modifiedCenterline.findIndex(point => 
+                  Math.abs(point.x - annularPlane.center[0]) < 0.1 && 
+                  Math.abs(point.y - annularPlane.center[1]) < 0.1 && 
+                  Math.abs(point.z - annularPlane.center[2]) < 0.1
+                );
+                const annulusPosition = annulusPlaneIndex !== -1 ? 
+                  (annulusPlaneIndex / (modifiedCenterline.length - 1)) * 100 : null;
+                
+                return annulusPosition !== null ? (
+                  <div 
+                    className="absolute left-0 right-0 h-px bg-green-400 opacity-90"
+                    style={{
+                      top: `${annulusPosition}%`,
+                      boxShadow: '0 0 3px rgba(74, 222, 128, 0.8)'
+                    }}
+                    title="Annulus Plane"
+                  ></div>
+                ) : null;
+              })()
+            )}
           </div>
           
         </div>
@@ -1965,6 +3184,30 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
                 top: `${crosshairPosition * 100}%`,
               }}
             ></div>
+            
+            {/* Annulus plane reference line */}
+            {annularPlane && modifiedCenterline && (
+              (() => {
+                const annulusPlaneIndex = modifiedCenterline.findIndex(point => 
+                  Math.abs(point.x - annularPlane.center[0]) < 0.1 && 
+                  Math.abs(point.y - annularPlane.center[1]) < 0.1 && 
+                  Math.abs(point.z - annularPlane.center[2]) < 0.1
+                );
+                const annulusPosition = annulusPlaneIndex !== -1 ? 
+                  (annulusPlaneIndex / (modifiedCenterline.length - 1)) * 100 : null;
+                
+                return annulusPosition !== null ? (
+                  <div 
+                    className="absolute left-0 right-0 h-px bg-green-400 opacity-90"
+                    style={{
+                      top: `${annulusPosition}%`,
+                      boxShadow: '0 0 3px rgba(74, 222, 128, 0.8)'
+                    }}
+                    title="Annulus Plane"
+                  ></div>
+                ) : null;
+              })()
+            )}
           </div>
           
         </div>

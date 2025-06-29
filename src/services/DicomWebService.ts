@@ -39,7 +39,7 @@ class DicomWebService {
   private client: api.DICOMwebClient;
   private wadoRsRoot: string;
 
-  constructor(wadoRsRoot = "http://192.168.2.52/orthanc/dicom-web") {
+  constructor(wadoRsRoot = "http://127.0.0.1/orthanc/dicom-web") {
     this.wadoRsRoot = wadoRsRoot;
     this.client = new api.DICOMwebClient({ 
       url: wadoRsRoot, 

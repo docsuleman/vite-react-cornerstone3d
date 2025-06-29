@@ -202,7 +202,7 @@ const DicomMPRViewport: React.FC<DicomMPRViewportProps> = ({
       console.log(`📋 Found ${instances.length} instances in series`);
       
       // Generate DICOM-web URLs for each instance
-      const baseUrl = 'http://192.168.2.52/orthanc/dicom-web';
+      const baseUrl = 'http://127.0.0.1/orthanc/dicom-web';
       const studyUID = patientInfo.studyInstanceUID;
       const seriesUID = patientInfo.seriesInstanceUID;
       

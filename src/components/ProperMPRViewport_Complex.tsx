@@ -294,7 +294,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       const imageIds = await createImageIdsAndCacheMetaData({
         StudyInstanceUID: patientInfo!.studyInstanceUID!,
         SeriesInstanceUID: patientInfo!.seriesInstanceUID!,
-        wadoRsRoot: "http://192.168.2.52/orthanc/dicom-web",
+        wadoRsRoot: "http://127.0.0.1/orthanc/dicom-web",
       });
 
       if (imageIds.length === 0) {

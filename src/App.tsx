@@ -72,7 +72,7 @@ function App() {
     const imageIds = await createImageIdsAndCacheMetaData({
       StudyInstanceUID: "1.2.826.0.1.3802357.101.341000267482",
       SeriesInstanceUID: "1.2.156.14702.1.1005.128.1.20230328073634983276920731",
-      wadoRsRoot: "http://192.168.2.52/orthanc/dicom-web",
+      wadoRsRoot: "http://127.0.0.1/orthanc/dicom-web",
     });
       const renderingEngine = new RenderingEngine(renderingEngineId);
       const renderingEnginethreeD = new RenderingEngine(renderingEnginethreeDId);

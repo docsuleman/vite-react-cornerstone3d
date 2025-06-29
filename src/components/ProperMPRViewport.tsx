@@ -12,8 +12,10 @@ import { init as csToolsInit } from "@cornerstonejs/tools";
 import { init as dicomImageLoaderInit } from "@cornerstonejs/dicom-image-loader";
 import * as cornerstoneTools from "@cornerstonejs/tools";
 import { initializeCornerstone, isCornerStoneInitialized } from '../utils/cornerstoneInit';
-import { FaCrosshairs, FaSearchPlus, FaArrowsAlt, FaAdjust, FaCircle, FaMousePointer, FaScroll } from "react-icons/fa";
+import { FaCrosshairs, FaSearchPlus, FaArrowsAlt, FaAdjust, FaCircle, FaMousePointer, FaScroll, FaTrash, FaDotCircle } from "react-icons/fa";
 import SphereMarkerTool from '../customTools/Spheremarker';
+import CuspNadirTool from '../customTools/CuspNadirTool';
+import { WorkflowStage } from '../types/WorkflowTypes';
 
 const {
   ToolGroupManager,
@@ -41,13 +43,15 @@ interface ProperMPRViewportProps {
   };
   onImageLoaded?: (imageData: any) => void;
   onSpherePositionsUpdate?: (spheres: { id: string; pos: [number, number, number]; color: string }[]) => void;
-  currentStage?: string;
+  onCuspDotsUpdate?: (dots: { id: string; pos: [number, number, number]; color: string; cuspType: string }[]) => void;
+  currentStage?: WorkflowStage;
 }
 
 const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({ 
   patientInfo,
   onImageLoaded,
   onSpherePositionsUpdate,
+  onCuspDotsUpdate,
   currentStage 
 }) => {
   const elementRefs = {
@@ -73,6 +77,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     if (!patientInfo?.seriesInstanceUID) return;
 
     console.log('🔄 Stage changed to:', currentStage, '- Initializing Simple MPR Viewport');
+    console.log('🔄 Is annulus definition stage?', currentStage === WorkflowStage.ANNULUS_DEFINITION);
     initializeMPRViewport();
 
     // Cleanup function
@@ -152,7 +157,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       const imageIds = await createImageIdsAndCacheMetaData({
         StudyInstanceUID: patientInfo!.studyInstanceUID!,
         SeriesInstanceUID: patientInfo!.seriesInstanceUID!,
-        wadoRsRoot: "http://192.168.2.52/orthanc/dicom-web",
+        wadoRsRoot: "http://127.0.0.1/orthanc/dicom-web",
       });
 
       if (imageIds.length === 0) {
@@ -208,27 +213,45 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           const bounds = firstViewport.getBounds();
           const canvas = firstViewport.getCanvas();
           
-          let commonParallelScale = 150; // Default fallback
+          let commonParallelScale = 100; // Smaller scale for better zoom
           
           if (bounds && canvas) {
             const { width: canvasWidth, height: canvasHeight } = canvas;
             const [xMin, xMax, yMin, yMax, zMin, zMax] = bounds;
             const imageWidth = Math.abs(xMax - xMin);
             const imageHeight = Math.abs(yMax - yMin);
+            
+            // Better scaling calculation to fill viewports
             const scaleX = canvasWidth / imageWidth;
             const scaleY = canvasHeight / imageHeight;
-            const scale = Math.min(scaleX, scaleY) * 0.9;
+            const scale = Math.min(scaleX, scaleY) * 0.8; // Fill more of the viewport
             commonParallelScale = Math.max(imageWidth, imageHeight) / (2 * scale);
+            
+            console.log(`📏 Calculated scale: imageWidth=${imageWidth}, imageHeight=${imageHeight}, scale=${scale}, parallelScale=${commonParallelScale}`);
           }
           
-          // Apply the same camera settings to ALL viewports for consistent zoom
+          // Apply the same camera settings to ALL viewports for consistent zoom and positioning
           viewports.forEach(({ id }) => {
             const viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
             viewport.resetCamera();
+            
+            // Set consistent camera with proper fitting
             viewport.setCamera({
               parallelScale: commonParallelScale,
             });
+            
+            // Additional viewport fitting to reduce black space
+            try {
+              const bounds = viewport.getBounds();
+              if (bounds) {
+                viewport.fitToCanvas();
+              }
+            } catch (error) {
+              console.warn(`Viewport ${id} fitToCanvas failed:`, error);
+            }
+            
             viewport.render();
+            console.log(`📷 Set camera for viewport ${id}: parallelScale=${commonParallelScale}`);
           });
           
           console.log(`📷 Applied consistent camera settings (parallelScale: ${commonParallelScale})`);
@@ -275,6 +298,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       cornerstoneTools.addTool(WindowLevelTool);
       cornerstoneTools.addTool(StackScrollTool);
       cornerstoneTools.addTool(SphereMarkerTool);
+      cornerstoneTools.addTool(CuspNadirTool);
 
       // Destroy existing tool group if it exists
       try {
@@ -353,12 +377,27 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         bindings: [{ mouseButton: MouseBindings.Primary }],
       });
 
+      // Add CuspNadirTool for cusp nadir point identification
+      toolGroup.addTool(CuspNadirTool.toolName, {
+        bindings: [{ mouseButton: MouseBindings.Primary }],
+      });
+
       // Set up callback for sphere position updates
       if (onSpherePositionsUpdate) {
         const sphereTool = toolGroup.getToolInstance(SphereMarkerTool.toolName) as SphereMarkerTool;
         if (sphereTool) {
           sphereTool.setPositionUpdateCallback((spheres) => {
             onSpherePositionsUpdate(spheres);
+          });
+        }
+      }
+
+      // Set up callback for cusp dots position updates
+      if (onCuspDotsUpdate) {
+        const cuspTool = toolGroup.getToolInstance(CuspNadirTool.toolName) as CuspNadirTool;
+        if (cuspTool) {
+          cuspTool.setPositionUpdateCallback((dots) => {
+            onCuspDotsUpdate(dots);
           });
         }
       }
@@ -396,6 +435,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       toolGroup.setToolPassive(ZoomTool.toolName);
       toolGroup.setToolPassive(PanTool.toolName);
       toolGroup.setToolPassive(SphereMarkerTool.toolName);
+      toolGroup.setToolPassive(CuspNadirTool.toolName);
       toolGroup.setToolPassive(WindowLevelTool.toolName);
       
       // Always keep these tools active with their default bindings
@@ -409,6 +449,11 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       // Activate selected tool
       if (toolName === 'SphereMarker') {
         toolGroup.setToolActive(SphereMarkerTool.toolName, {
+          bindings: [{ mouseButton: MouseBindings.Primary }],
+        });
+      } else if (toolName === 'CuspNadir') {
+        console.log('🎯 Activating CuspNadir tool');
+        toolGroup.setToolActive(CuspNadirTool.toolName, {
           bindings: [{ mouseButton: MouseBindings.Primary }],
         });
       } else if (toolName === 'Zoom') {
@@ -434,6 +479,64 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       console.warn('Tool change error:', error);
     }
   };
+
+  const handleClearSpheres = () => {
+    try {
+      const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+      if (!toolGroup) return;
+      
+      const sphereTool = toolGroup.getToolInstance(SphereMarkerTool.toolName) as SphereMarkerTool;
+      if (sphereTool) {
+        sphereTool.clearAll();
+        console.log('🧹 Cleared all spheres and connection lines');
+      }
+    } catch (error) {
+      console.warn('Clear spheres error:', error);
+    }
+  };
+
+  const handleClearCuspDots = () => {
+    try {
+      const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+      if (!toolGroup) return;
+      
+      const cuspTool = toolGroup.getToolInstance(CuspNadirTool.toolName) as CuspNadirTool;
+      if (cuspTool) {
+        cuspTool.clearAll();
+        console.log('🧹 Cleared all cusp nadir dots');
+      }
+    } catch (error) {
+      console.warn('Clear cusp dots error:', error);
+    }
+  };
+
+  // Handle stage changes to lock/unlock tools
+  useEffect(() => {
+    const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+    if (!toolGroup) return;
+
+    const sphereTool = toolGroup.getToolInstance(SphereMarkerTool.toolName) as SphereMarkerTool;
+    const cuspTool = toolGroup.getToolInstance(CuspNadirTool.toolName) as CuspNadirTool;
+
+    if (currentStage === WorkflowStage.ANNULUS_DEFINITION) {
+      // Lock sphere tool, unlock cusp tool
+      if (sphereTool && typeof sphereTool.setDraggable === 'function') {
+        sphereTool.setDraggable(false);
+      }
+      if (cuspTool) {
+        cuspTool.setDraggable(true);
+      }
+      console.log('🔒 Stage: Annulus Definition - Locked spheres, unlocked cusp dots');
+    } else {
+      // Unlock sphere tool, lock cusp tool
+      if (sphereTool && typeof sphereTool.setDraggable === 'function') {
+        sphereTool.setDraggable(true);
+      }
+      if (cuspTool) {
+        cuspTool.setDraggable(false);
+      }
+    }
+  }, [currentStage]);
 
   const handleWindowLevelChange = (window: number, level: number) => {
     try {
@@ -505,6 +608,16 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               <FaCircle />
               Sphere
             </button>
+            {/* Show CuspNadir tool only during annulus definition stage */}
+            {currentStage === WorkflowStage.ANNULUS_DEFINITION && (
+              <button
+                onClick={() => handleToolChange('CuspNadir')}
+                className={`p-2 rounded text-sm flex items-center gap-1 ${activeTool === 'CuspNadir' ? 'bg-teal-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+              >
+                <FaDotCircle />
+                Cusp Dots
+              </button>
+            )}
             <button
               onClick={() => handleToolChange('Zoom')}
               className={`p-2 rounded text-sm flex items-center gap-1 ${activeTool === 'Zoom' ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
