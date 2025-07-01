@@ -122,11 +122,18 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
   // Cornerstone objects for annotation overlays
   const cornerstoneObjects = useRef<{
     renderingEngine?: RenderingEngine;
+    annotationRenderingEngine?: RenderingEngine;
     toolGroup?: any;
     cprToolGroup?: any;
     volumeId?: string;
     centerlineData?: any;
     crossSectionPosition?: number;
+    lastViewUp?: number[];
+    centerlineMetrics?: {
+      totalLength: number;
+      numPoints: number;
+      segmentLengths: number[];
+    };
   }>({});
 
   useEffect(() => {
@@ -169,6 +176,10 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
 
       if (cornerstoneObjects.current.renderingEngine) {
         cornerstoneObjects.current.renderingEngine.destroy();
+      }
+      
+      if (cornerstoneObjects.current.annotationRenderingEngine) {
+        cornerstoneObjects.current.annotationRenderingEngine.destroy();
       }
 
       console.log('✅ True CPR Viewport cleanup complete');
@@ -256,6 +267,10 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
     const numPoints = centerlineData.position.length / 3;
     const pointsArray = new Float32Array(centerlineData.position.length);
     
+    // Calculate total centerline length for proper scaling
+    let totalLength = 0;
+    let segmentLengths = [];
+    
     for (let i = 0; i < numPoints; i++) {
       const x = centerlineData.position[i * 3];
       const y = centerlineData.position[i * 3 + 1];
@@ -264,7 +279,26 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       pointsArray[i * 3] = x;
       pointsArray[i * 3 + 1] = y;
       pointsArray[i * 3 + 2] = z;
+      
+      // Calculate segment lengths
+      if (i > 0) {
+        const dx = x - centerlineData.position[(i - 1) * 3];
+        const dy = y - centerlineData.position[(i - 1) * 3 + 1];
+        const dz = z - centerlineData.position[(i - 1) * 3 + 2];
+        const segmentLength = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        segmentLengths.push(segmentLength);
+        totalLength += segmentLength;
+      }
     }
+    
+    // Store centerline metrics for proper scaling
+    cornerstoneObjects.current.centerlineMetrics = {
+      totalLength,
+      numPoints,
+      segmentLengths
+    };
+    
+    console.log(`📏 Centerline metrics: length=${totalLength.toFixed(1)}mm, points=${numPoints}`);
     
     points.setData(pointsArray);
     
@@ -790,11 +824,17 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       await new Promise(resolve => setTimeout(resolve, 100));
       csViewport.render();
       
+      // Store centerline data first
+      cornerstoneObjects.current.centerlineData = centerlineData;
+      
       // For orthographic cross-sections, position camera at centerline point
       if (viewport.type === 'orthographic') {
         await setupOrthographicCrossSection(csViewport, centerlineData, viewport.id);
       }
     }
+    
+    // Store rendering engine reference for later use
+    cornerstoneObjects.current.renderingEngine = renderingEngine;
     
     // Add CPR actors only to CPR viewports
     const cprViewports = viewports.filter(v => v.type === 'cpr');
@@ -856,8 +896,9 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
     const numPoints = centerlineData.position.length / 3;
     const middleIndex = Math.floor(numPoints / 2);
     
-    // Initial cross-section position
-    const initialCrossSectionPosition = middleIndex / (numPoints - 1); // 0 to 1
+    // Initial cross-section position (use current state value)
+    const initialCrossSectionPosition = 0.5;
+    setCrossSectionPosition(initialCrossSectionPosition);
     
     // Store the position for cross-section updates
     cornerstoneObjects.current.crossSectionPosition = initialCrossSectionPosition;
@@ -872,24 +913,59 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
     console.log('🔧 Updating cross-section view at position:', position);
     
     try {
+      // Store the current position
+      cornerstoneObjects.current.crossSectionPosition = position;
+      
       // Get the rendering engine
       const renderingEngine = cornerstoneObjects.current.renderingEngine;
-      if (!renderingEngine) return;
+      if (!renderingEngine) {
+        console.warn('No rendering engine available for cross-section update');
+        return;
+      }
 
       // Get cross-section viewport
       const crossSectionViewport = renderingEngine.getViewport('cpr-main') as Types.IVolumeViewport;
-      if (!crossSectionViewport) return;
+      if (!crossSectionViewport) {
+        console.warn('Cross-section viewport not found');
+        return;
+      }
 
-      // Calculate point along centerline
+      // Calculate point along centerline based on actual length
       const numPoints = centerlineData.position.length / 3;
-      const pointIndex = Math.floor(position * (numPoints - 1));
+      const metrics = cornerstoneObjects.current.centerlineMetrics;
       
-      const centerPoint = [
+      let pointIndex = Math.floor(position * (numPoints - 1));
+      let centerPoint;
+      
+      // If we have centerline metrics, use actual length-based positioning
+      if (metrics && metrics.segmentLengths) {
+        const targetLength = position * metrics.totalLength;
+        let accumulatedLength = 0;
+        
+        // Find the correct point based on accumulated length
+        for (let i = 0; i < metrics.segmentLengths.length; i++) {
+          accumulatedLength += metrics.segmentLengths[i];
+          if (accumulatedLength >= targetLength) {
+            pointIndex = i + 1;
+            break;
+          }
+        }
+      }
+      
+      centerPoint = [
         centerlineData.position[pointIndex * 3],
         centerlineData.position[pointIndex * 3 + 1],
         centerlineData.position[pointIndex * 3 + 2]
       ];
 
+      console.log('📍 Cross-section update:', {
+        position,
+        pointIndex,
+        numPoints,
+        centerPoint,
+        hasMetrics: !!metrics
+      });
+      
       // Calculate centerline direction at this point
       let tangent = [1, 0, 0]; // Default
       if (pointIndex > 0 && pointIndex < numPoints - 1) {
@@ -919,6 +995,9 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         }
       }
 
+      // Use the same view up vector as the initial setup to maintain orientation
+      const viewUp = cornerstoneObjects.current.lastViewUp || [0, 0, 1];
+      
       // Update camera to look down centerline at this position
       const cameraDistance = 50;
       const cameraConfig = {
@@ -928,29 +1007,28 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
           centerPoint[2] + tangent[2] * cameraDistance
         ] as Types.Point3,
         focalPoint: centerPoint as Types.Point3,
-        viewUp: [0, 0, 1] as Types.Point3,
+        viewUp: viewUp as Types.Point3,
         parallelScale: 30
       };
 
+      // Update camera with new configuration
       crossSectionViewport.setCamera(cameraConfig);
+      
+      // Force render and ensure viewport updates
       crossSectionViewport.render();
       
-      console.log('✅ Cross-section view updated to position:', position, 'at point:', centerPoint);
+      // Additional forced update to ensure camera changes take effect
+      setTimeout(() => {
+        crossSectionViewport.render();
+      }, 10);
+      
+      console.log('✅ Cross-section view updated to position:', position, 'at point:', centerPoint, 'camera:', cameraConfig);
       
     } catch (error) {
       console.error('❌ Failed to update cross-section view:', error);
     }
   };
 
-  // Handler for cross-section position changes
-  const handleCrossSectionPositionChange = async (newPosition: number) => {
-    setCrossSectionPosition(newPosition);
-    
-    const centerlineData = cornerstoneObjects.current.centerlineData;
-    if (centerlineData) {
-      await updateCrossSectionView(centerlineData, newPosition);
-    }
-  };
 
   const setupOrthographicCrossSection = async (csViewport: any, centerlineData: any, viewportId: string) => {
     console.log(`🔧 Setting up orthographic cross-section for ${viewportId}...`);
@@ -958,13 +1036,9 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
     // Get centerline points
     const numPoints = centerlineData.position.length / 3;
     
-    // Choose different points along centerline for different cross-sections
-    let pointIndex;
-    if (viewportId === 'cpr-main') {
-      pointIndex = Math.floor(numPoints * 0.3); // 30% along centerline
-    } else {
-      pointIndex = Math.floor(numPoints * 0.7); // 70% along centerline
-    }
+    // Use the dynamic cross-section position
+    const position = cornerstoneObjects.current.crossSectionPosition || crossSectionPosition;
+    const pointIndex = Math.floor(position * (numPoints - 1));
     
     const centerPoint = [
       centerlineData.position[pointIndex * 3],
@@ -1018,6 +1092,11 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
     csViewport.setCamera(cameraConfig);
     csViewport.render();
     
+    // Store initial view up vector for consistency
+    if (!cornerstoneObjects.current.lastViewUp) {
+      cornerstoneObjects.current.lastViewUp = [0, 0, 1];
+    }
+    
     console.log(`✅ Orthographic cross-section setup for ${viewportId}:`, {
       centerPoint,
       tangent,
@@ -1026,7 +1105,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
   };
 
   const addCPRActorsToViewports = async (renderingEngine: any, centerlineData: any, viewports: any[]) => {
-    console.log('🔧 Adding CPR actors to viewports...');
+    console.log('🔧 Adding CPR actors to viewports:', viewports.map(v => v.id));
     
     // Create centerline polydata
     const centerlinePolyData = await createCenterlinePolyData(centerlineData);
@@ -1039,6 +1118,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
     }
     
     for (const viewportConfig of viewports) {
+      console.log(`🔧 Processing CPR viewport: ${viewportConfig.id}`);
       const csViewport = renderingEngine.getViewport(viewportConfig.id) as Types.IVolumeViewport;
       
       try {
@@ -1089,6 +1169,10 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         mapper.setCenterlineData(centerlinePolyData);
         mapper.setWidth(viewportConfig.cprWidth || 50);
         
+        // Ensure proper spacing is maintained
+        const spacing = volume.spacing;
+        console.log(`📏 Volume spacing for ${viewportConfig.id}:`, spacing);
+        
         // Set direction matrix for side view CPR
         if (viewportConfig.cprView === 'side') {
           // Rotate the CPR reconstruction itself 90 degrees for side view
@@ -1108,6 +1192,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         mapper.setProjectionMode(ProjectionMode.AVERAGE);
         mapper.setProjectionSlabThickness(20);
         mapper.setProjectionSlabNumberOfSamples(100);
+        
         
         // Debug: Check if mapper is ready
         const isReady = mapper.preRenderCheck();
@@ -1341,7 +1426,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       
       // Create rendering engine for overlays
       const renderingEngineId = 'cprAnnotationEngine';
-      cornerstoneObjects.current.renderingEngine = new RenderingEngine(renderingEngineId);
+      cornerstoneObjects.current.annotationRenderingEngine = new RenderingEngine(renderingEngineId);
       
       // Create transparent overlay viewports
       const overlayRefs = [
@@ -1352,7 +1437,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       
       for (const overlay of overlayRefs) {
         if (overlay.ref.current) {
-          cornerstoneObjects.current.renderingEngine!.enableElement({
+          cornerstoneObjects.current.annotationRenderingEngine!.enableElement({
             viewportId: overlay.id,
             type: CornerstoneEnums.ViewportType.ORTHOGRAPHIC,
             element: overlay.ref.current,
@@ -1362,7 +1447,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
           });
           
           // Set volume but make it invisible
-          const viewport = cornerstoneObjects.current.renderingEngine!.getViewport(overlay.id) as Types.IVolumeViewport;
+          const viewport = cornerstoneObjects.current.annotationRenderingEngine!.getViewport(overlay.id) as Types.IVolumeViewport;
           viewport.setVolumes([{ volumeId: cornerstoneObjects.current.volumeId! }]);
           
           // Make volume invisible but keep for coordinate mapping
@@ -1410,6 +1495,16 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
     
     if (onCuspDotsUpdate) {
       onCuspDotsUpdate([]);
+    }
+  };
+
+  const handleCrossSectionPositionChange = async (position: number) => {
+    console.log('🔧 Updating cross-section position to:', position);
+    setCrossSectionPosition(position);
+    
+    // Update the cross-section view
+    if (cornerstoneObjects.current.centerlineData) {
+      await updateCrossSectionView(cornerstoneObjects.current.centerlineData, position);
     }
   };
 
@@ -1556,6 +1651,42 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
           </div>
           {/* VTK CPR rendering */}
           <div ref={cprLongRef} className="w-full h-full" />
+          {/* Cross-section position line */}
+          {isInitialized && (
+            <div 
+              className="absolute left-0 right-0 h-1 bg-yellow-500 opacity-80 cursor-ns-resize hover:h-2 transition-all"
+              style={{
+                // For stretched mode, position needs to be inverted
+                top: `${crossSectionPosition * 100}%`,
+                zIndex: 20
+              }}
+              onMouseDown={(e) => {
+                const startY = e.clientY;
+                const startPosition = crossSectionPosition;
+                const rect = cprLongRef.current?.getBoundingClientRect();
+                
+                const handleMouseMove = (moveEvent: MouseEvent) => {
+                  if (!rect) return;
+                  const deltaY = moveEvent.clientY - startY;
+                  const deltaPercent = deltaY / rect.height;
+                  const newPosition = Math.max(0, Math.min(1, startPosition + deltaPercent));
+                  handleCrossSectionPositionChange(newPosition);
+                };
+                
+                const handleMouseUp = () => {
+                  document.removeEventListener('mousemove', handleMouseMove);
+                  document.removeEventListener('mouseup', handleMouseUp);
+                };
+                
+                document.addEventListener('mousemove', handleMouseMove);
+                document.addEventListener('mouseup', handleMouseUp);
+              }}
+            >
+              <div className="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-yellow-600 text-white text-xs px-2 py-1 rounded">
+                {Math.round(crossSectionPosition * 100)}
+              </div>
+            </div>
+          )}
           {/* Cornerstone annotation overlay */}
           {stage === 'annulus_definition' && (
             <div 
@@ -1580,6 +1711,42 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
           </div>
           {/* VTK CPR rendering */}
           <div ref={cprCrossRef} className="w-full h-full" />
+          {/* Cross-section position line */}
+          {isInitialized && (
+            <div 
+              className="absolute left-0 right-0 h-1 bg-yellow-500 opacity-80 cursor-ns-resize hover:h-2 transition-all"
+              style={{
+                // For stretched mode, position needs to be inverted
+                top: `${crossSectionPosition * 100}%`,
+                zIndex: 20
+              }}
+              onMouseDown={(e) => {
+                const startY = e.clientY;
+                const startPosition = crossSectionPosition;
+                const rect = cprCrossRef.current?.getBoundingClientRect();
+                
+                const handleMouseMove = (moveEvent: MouseEvent) => {
+                  if (!rect) return;
+                  const deltaY = moveEvent.clientY - startY;
+                  const deltaPercent = deltaY / rect.height;
+                  const newPosition = Math.max(0, Math.min(1, startPosition + deltaPercent));
+                  handleCrossSectionPositionChange(newPosition);
+                };
+                
+                const handleMouseUp = () => {
+                  document.removeEventListener('mousemove', handleMouseMove);
+                  document.removeEventListener('mouseup', handleMouseUp);
+                };
+                
+                document.addEventListener('mousemove', handleMouseMove);
+                document.addEventListener('mouseup', handleMouseUp);
+              }}
+            >
+              <div className="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-yellow-600 text-white text-xs px-2 py-1 rounded">
+                {Math.round(crossSectionPosition * 100)}
+              </div>
+            </div>
+          )}
           {/* Cornerstone annotation overlay */}
           {stage === 'annulus_definition' && (
             <div 
