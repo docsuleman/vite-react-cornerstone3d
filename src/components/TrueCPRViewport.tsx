@@ -88,6 +88,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
     cuspType: 'left' | 'right' | 'non-coronary';
   }>>([]);
   const [crossSectionPosition, setCrossSectionPosition] = useState(0.5); // 0 to 1 along centerline
+  const [crosshairRotation, setCrosshairRotation] = useState(0); // Rotation angle in degrees
 
   // VTK objects
   const vtkObjects = useRef<{
@@ -129,6 +130,8 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
     centerlineData?: any;
     crossSectionPosition?: number;
     lastViewUp?: number[];
+    crosshairRotation?: number;
+    cprMappers?: any[];
     centerlineMetrics?: {
       totalLength: number;
       numPoints: number;
@@ -1117,6 +1120,9 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       return;
     }
     
+    // Initialize mapper storage
+    cornerstoneObjects.current.cprMappers = [];
+    
     for (const viewportConfig of viewports) {
       console.log(`🔧 Processing CPR viewport: ${viewportConfig.id}`);
       const csViewport = renderingEngine.getViewport(viewportConfig.id) as Types.IVolumeViewport;
@@ -1193,6 +1199,11 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         mapper.setProjectionSlabThickness(20);
         mapper.setProjectionSlabNumberOfSamples(100);
         
+        // Store mapper reference for rotation control
+        cornerstoneObjects.current.cprMappers!.push({
+          mapper,
+          viewportConfig
+        });
         
         // Debug: Check if mapper is ready
         const isReady = mapper.preRenderCheck();
@@ -1508,6 +1519,63 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
     }
   };
 
+  const handleCrosshairRotation = async (rotation: number) => {
+    console.log('🔄 Updating crosshair rotation to:', rotation, 'degrees');
+    setCrosshairRotation(rotation);
+    cornerstoneObjects.current.crosshairRotation = rotation;
+    
+    // Update CPR mapper orientations
+    await updateCPROrientations(rotation);
+  };
+
+  const updateCPROrientations = async (rotationDegrees: number) => {
+    console.log('🔄 Updating CPR orientations with rotation:', rotationDegrees);
+    
+    if (!cornerstoneObjects.current.cprMappers) return;
+    
+    const rotationRadians = (rotationDegrees * Math.PI) / 180;
+    const cos = Math.cos(rotationRadians);
+    const sin = Math.sin(rotationRadians);
+    
+    cornerstoneObjects.current.cprMappers.forEach((mapperInfo: any) => {
+      const { mapper, viewportConfig } = mapperInfo;
+      
+      if (viewportConfig.cprView === 'side') {
+        // For side view, apply 90-degree rotation relative to longitudinal
+        // This ensures they are truly orthogonal
+        const sideRotationRadians = rotationRadians + Math.PI / 2; // Add 90 degrees
+        const sideCos = Math.cos(sideRotationRadians);
+        const sideSin = Math.sin(sideRotationRadians);
+        
+        const sideDirections = new Float32Array([
+          sideCos, -sideSin, 0,   // Orthogonal X direction
+          sideSin, sideCos, 0,    // Orthogonal Y direction  
+          0, 0, 1                 // Z stays Z
+        ]);
+        mapper.setDirectionMatrix(sideDirections);
+        console.log(`🔄 Updated side view (${Math.round(sideRotationRadians * 180 / Math.PI)}°) for ${viewportConfig.id}`);
+      } else if (viewportConfig.id === 'cpr-longitudinal') {
+        // For longitudinal view, apply the rotation directly
+        const mainDirections = new Float32Array([
+          cos, -sin, 0,   // Main X direction
+          sin, cos, 0,    // Main Y direction
+          0, 0, 1         // Z stays Z
+        ]);
+        mapper.setDirectionMatrix(mainDirections);
+        console.log(`🔄 Updated longitudinal view (${Math.round(rotationDegrees)}°) for ${viewportConfig.id}`);
+      }
+      
+      // Trigger re-render
+      const renderingEngine = cornerstoneObjects.current.renderingEngine;
+      if (renderingEngine) {
+        const viewport = renderingEngine.getViewport(viewportConfig.id);
+        if (viewport) {
+          viewport.render();
+        }
+      }
+    });
+  };
+
   return (
     <div className="flex flex-col w-full h-full bg-slate-900">
       {/* Header */}
@@ -1625,8 +1693,69 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
           <div className="absolute bottom-2 left-2 z-10 bg-black bg-opacity-70 text-teal-300 text-[10px] px-2 py-1 rounded">
             Straightened CPR mode
           </div>
+          {/* Yellow indicator for cross-section position */}
+          <div className="absolute top-2 right-2 z-10 w-4 h-4 bg-yellow-500 border border-white rounded" title="Yellow position line"></div>
           {/* VTK CPR rendering */}
           <div ref={cprMainRef} className="w-full h-full" />
+          
+          {/* Full MPR-Style Crosshair */}
+          {isInitialized && (
+            <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 15 }}>
+              <div 
+                className="absolute inset-0 pointer-events-auto cursor-grab active:cursor-grabbing"
+                style={{
+                  transform: `rotate(${crosshairRotation}deg)`,
+                  transformOrigin: 'center center',
+                  transition: 'transform 0.1s ease-out'
+                }}
+                onMouseDown={(e) => {
+                  const startAngle = crosshairRotation;
+                  const rect = cprMainRef.current?.getBoundingClientRect();
+                  if (!rect) return;
+                  
+                  const centerX = rect.left + rect.width / 2;
+                  const centerY = rect.top + rect.height / 2;
+                  const startMouseAngle = Math.atan2(e.clientY - centerY, e.clientX - centerX) * 180 / Math.PI;
+                  
+                  const handleMouseMove = (moveEvent: MouseEvent) => {
+                    const currentMouseAngle = Math.atan2(moveEvent.clientY - centerY, moveEvent.clientX - centerX) * 180 / Math.PI;
+                    const deltaAngle = currentMouseAngle - startMouseAngle;
+                    const newAngle = (startAngle + deltaAngle) % 360;
+                    handleCrosshairRotation(newAngle);
+                  };
+                  
+                  const handleMouseUp = () => {
+                    document.removeEventListener('mousemove', handleMouseMove);
+                    document.removeEventListener('mouseup', handleMouseUp);
+                  };
+                  
+                  document.addEventListener('mousemove', handleMouseMove);
+                  document.addEventListener('mouseup', handleMouseUp);
+                }}
+              >
+                {/* Horizontal line - GREEN (for longitudinal view) */}
+                <div className="absolute w-full h-0.5 bg-green-500 opacity-80 top-1/2 left-0 transform -translate-y-1/2"></div>
+                {/* Vertical line - RED (for side view) */}
+                <div className="absolute w-0.5 h-full bg-red-500 opacity-80 left-1/2 top-0 transform -translate-x-1/2"></div>
+                
+                {/* Green line orientation dots */}
+                {/* Left end - filled green dot */}
+                <div className="absolute w-2 h-2 bg-green-500 rounded-full left-2 top-1/2 transform -translate-y-1/2"></div>
+                {/* Right end - hollow green dot */}
+                <div className="absolute w-2 h-2 border border-green-500 bg-transparent rounded-full right-2 top-1/2 transform -translate-y-1/2"></div>
+                
+                {/* Red line orientation dots */}
+                {/* Top end - filled red dot */}
+                <div className="absolute w-2 h-2 bg-red-500 rounded-full left-1/2 top-2 transform -translate-x-1/2"></div>
+                {/* Bottom end - hollow red dot */}
+                <div className="absolute w-2 h-2 border border-red-500 bg-transparent rounded-full left-1/2 bottom-2 transform -translate-x-1/2"></div>
+                
+                {/* Center dot */}
+                <div className="absolute w-3 h-3 bg-white border border-gray-600 rounded-full left-1/2 top-1/2 transform -translate-x-1/2 -translate-y-1/2"></div>
+              </div>
+            </div>
+          )}
+          
           {/* Cornerstone annotation overlay */}
           {stage === 'annulus_definition' && (
             <div 
@@ -1649,9 +1778,11 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
           <div className="absolute bottom-2 left-2 z-10 bg-black bg-opacity-70 text-teal-300 text-[10px] px-2 py-1 rounded">
             Stretched CPR mode
           </div>
+          {/* Green indicator for this view */}
+          <div className="absolute top-2 right-2 z-10 w-4 h-4 bg-green-500 border border-white rounded" title="Green crosshair line"></div>
           {/* VTK CPR rendering */}
           <div ref={cprLongRef} className="w-full h-full" />
-          {/* Cross-section position line */}
+          {/* Cross-section position line - YELLOW with orientation dots */}
           {isInitialized && (
             <div 
               className="absolute left-0 right-0 h-1 bg-yellow-500 opacity-80 cursor-ns-resize hover:h-2 transition-all"
@@ -1682,6 +1813,12 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
                 document.addEventListener('mouseup', handleMouseUp);
               }}
             >
+              {/* Green line orientation dots on yellow bar (for longitudinal view) */}
+              {/* Left end - filled green dot */}
+              <div className="absolute w-2 h-2 bg-green-500 rounded-full left-2 top-1/2 transform -translate-y-1/2"></div>
+              {/* Right end - hollow green dot */}
+              <div className="absolute w-2 h-2 border border-green-500 bg-black rounded-full right-2 top-1/2 transform -translate-y-1/2"></div>
+              
               <div className="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-yellow-600 text-white text-xs px-2 py-1 rounded">
                 {Math.round(crossSectionPosition * 100)}
               </div>
@@ -1700,18 +1837,20 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
           )}
         </div>
         
-        {/* CPR Cross-Section View */}
+        {/* CPR Side View */}
         <div className="relative bg-black border border-teal-600">
           <div className="absolute top-2 left-2 z-10 bg-teal-900 bg-opacity-90 text-white text-xs px-2 py-1 rounded flex items-center gap-1">
             <div className="w-2 h-2 bg-teal-400 rounded-full animate-pulse"></div>
-            True CPR: Cross Section
+            True CPR: Side View
           </div>
           <div className="absolute bottom-2 left-2 z-10 bg-black bg-opacity-70 text-teal-300 text-[10px] px-2 py-1 rounded">
-            Straightened CPR mode
+            Stretched CPR mode
           </div>
+          {/* Red indicator for this view */}
+          <div className="absolute top-2 right-2 z-10 w-4 h-4 bg-red-500 border border-white rounded" title="Red crosshair line"></div>
           {/* VTK CPR rendering */}
           <div ref={cprCrossRef} className="w-full h-full" />
-          {/* Cross-section position line */}
+          {/* Cross-section position line - YELLOW with orientation dots */}
           {isInitialized && (
             <div 
               className="absolute left-0 right-0 h-1 bg-yellow-500 opacity-80 cursor-ns-resize hover:h-2 transition-all"
@@ -1742,6 +1881,12 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
                 document.addEventListener('mouseup', handleMouseUp);
               }}
             >
+              {/* Red line orientation dots on yellow bar (for side view) */}
+              {/* Left end - filled red dot */}
+              <div className="absolute w-2 h-2 bg-red-500 rounded-full left-2 top-1/2 transform -translate-y-1/2"></div>
+              {/* Right end - hollow red dot */}
+              <div className="absolute w-2 h-2 border border-red-500 bg-black rounded-full right-2 top-1/2 transform -translate-y-1/2"></div>
+              
               <div className="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-yellow-600 text-white text-xs px-2 py-1 rounded">
                 {Math.round(crossSectionPosition * 100)}
               </div>
