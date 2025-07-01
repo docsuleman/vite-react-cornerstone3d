@@ -558,9 +558,9 @@ class SphereMarkerTool extends BaseTool {
     
     this.connectionLines.forEach(line => {
       enabledElements.forEach(({ viewport }, viewportIndex) => {
-        if (viewport.removeActor) {
+        if (viewport._removeActor) {
           try {
-            viewport.removeActor({ uid: line.id });
+            viewport._removeActor(line.id);
             console.log(`🗑️ Removed line ${line.id} from viewport ${viewportIndex}`);
           } catch (error) {
             console.warn(`⚠️ Failed to remove line ${line.id} from viewport ${viewportIndex}:`, error);
@@ -573,9 +573,9 @@ class SphereMarkerTool extends BaseTool {
     const possibleOldIds = ['line-0-1', 'line-1-2', 'line-2-3'];
     possibleOldIds.forEach(oldId => {
       enabledElements.forEach(({ viewport }, viewportIndex) => {
-        if (viewport.removeActor) {
+        if (viewport._removeActor) {
           try {
-            viewport.removeActor({ uid: oldId });
+            viewport._removeActor(oldId);
             console.log(`🗑️ Cleaned up old line ${oldId} from viewport ${viewportIndex}`);
           } catch (error) {
             // Ignore - line might not exist
@@ -601,9 +601,9 @@ class SphereMarkerTool extends BaseTool {
     // Remove all spheres
     this.spheres.forEach(sphere => {
       enabledElements.forEach(({ viewport }) => {
-        if (viewport.removeActor) {
+        if (viewport._removeActor) {
           try {
-            viewport.removeActor({ uid: sphere.id });
+            viewport._removeActor(sphere.id);
           } catch (error) {
             // Actor might not exist in this viewport
           }

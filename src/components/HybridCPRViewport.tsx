@@ -1,20 +1,34 @@
 import React, { useEffect, useRef, useState } from 'react';
-import vtkGenericRenderWindow from '@kitware/vtk.js/Rendering/Misc/GenericRenderWindow';
-import vtkImageData from '@kitware/vtk.js/Common/DataModel/ImageData';
-import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray';
-import vtkImageSlice from '@kitware/vtk.js/Rendering/Core/ImageSlice';
-import vtkImageMapper from '@kitware/vtk.js/Rendering/Core/ImageMapper';
-import vtkInteractorStyleImage from '@kitware/vtk.js/Interaction/Style/InteractorStyleImage';
-import { FaSearchPlus, FaSearchMinus, FaAdjust, FaUndo } from 'react-icons/fa';
-
-import createImageIdsAndCacheMetaData from '../lib/createImageIdsAndCacheMetaData';
+import { FaSearchPlus, FaSearchMinus, FaAdjust, FaUndo, FaDotCircle } from 'react-icons/fa';
 import {
   RenderingEngine,
   Enums as CornerstoneEnums,
   volumeLoader,
   cornerstoneStreamingImageVolumeLoader,
   cache,
+  Types
 } from "@cornerstonejs/core";
+import { init as csRenderInit } from "@cornerstonejs/core";
+import { init as csToolsInit } from "@cornerstonejs/tools";
+import { init as dicomImageLoaderInit } from "@cornerstonejs/dicom-image-loader";
+import * as cornerstoneTools from "@cornerstonejs/tools";
+
+import createImageIdsAndCacheMetaData from '../lib/createImageIdsAndCacheMetaData';
+import { VTKCPRGenerator } from '../utils/VTKCPRGenerator';
+import VTKToCornerstone3DConverter from '../utils/VTKToCornerstone3DConverter';
+import { CPRCoordinateConverter } from '../utils/CPRCoordinateConverter';
+import CPRAwareSphereMarkerTool from '../customTools/CPRAwareSphereMarkerTool';
+
+const {
+  ToolGroupManager,
+  Enums: csToolsEnums,
+  CrosshairsTool,
+  ZoomTool,
+  PanTool,
+  WindowLevelTool,
+} = cornerstoneTools;
+
+const { MouseBindings } = csToolsEnums;
 
 interface Point3D {
   x: number;
@@ -30,6 +44,15 @@ interface HybridCPRViewportProps {
     seriesInstanceUID?: string;
   };
   rootPoints: Point3D[];
+  annularPlane?: {
+    center: [number, number, number];
+    normal: [number, number, number];
+    points: Array<{ id: string; position: [number, number, number]; type: string }>;
+    confidence: number;
+  };
+  modifiedCenterline?: Point3D[];
+  onAnnulusPointSelected?: (point: Point3D, crossSectionIndex: number) => void;
+  onCuspDotsUpdate?: (dots: { id: string; pos: [number, number, number]; color: string; cuspType: string }[]) => void;
   width?: number;
   height?: number;
   backgroundColor?: [number, number, number];
@@ -41,167 +64,96 @@ volumeLoader.registerUnknownVolumeLoader(cornerstoneStreamingImageVolumeLoader);
 const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
   patientInfo,
   rootPoints,
+  annularPlane,
+  modifiedCenterline,
+  onAnnulusPointSelected,
+  onCuspDotsUpdate,
   width = 800,
   height = 600,
   backgroundColor = [0, 0, 0]
 }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
+  const cpr1Ref = useRef<HTMLDivElement>(null);
+  const cpr2Ref = useRef<HTMLDivElement>(null);
+  const crossSectionRef = useRef<HTMLDivElement>(null);
+  
   const [isInitialized, setIsInitialized] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [windowLevel, setWindowLevel] = useState({ window: 1000, level: 300 });
   const [zoom, setZoom] = useState(1.0);
-  const initialParallelScale = useRef<number>(50);
+  const [crosshairPosition, setCrosshairPosition] = useState(0.5);
+  const [rotationAngle, setRotationAngle] = useState(0);
+  const [cuspDots, setCuspDots] = useState<Array<{
+    id: string;
+    realWorldPos: [number, number, number];
+    color: string;
+    cuspType: 'left' | 'right' | 'non-coronary';
+    placementIndex: number;
+  }>>([]);
 
-  // VTK objects refs
-  const vtkObjects = useRef<{
-    renderWindow?: any;
-    renderer?: any;
-    mapper?: any;
-    actor?: any;
-    imageData?: any;
-    camera?: any;
-    genericRenderWindow?: any;
-  }>({});
+  // VTK and Cornerstone objects
+  const vtkCPRGenerator = useRef<VTKCPRGenerator | null>(null);
+  const coordinateConverter = useRef<CPRCoordinateConverter | null>(null);
+  const renderingEngine = useRef<RenderingEngine | null>(null);
+  const toolGroup = useRef<any>(null);
 
-  // Tool functions
-  const handleZoom = (factor: number) => {
-    console.log('🔍 Zoom button clicked with factor:', factor);
-    
-    // Try to get the ACTUAL active camera from the renderer instead of stored reference
-    if (vtkObjects.current.renderer && vtkObjects.current.genericRenderWindow) {
-      try {
-        const renderer = vtkObjects.current.renderer;
-        const activeCamera = renderer.getActiveCamera(); // Get the actual active camera
-        
-        console.log('🔍 Using active camera from renderer');
-        
-        // Use the active camera directly
-        const currentScale = activeCamera.getParallelScale();
-        
-        // Try zoom method
-        activeCamera.zoom(factor);
-        
-        const newScale = activeCamera.getParallelScale();
-        const newZoom = zoom * factor;
-        setZoom(newZoom);
-        
-        console.log('🔍 Zoom applied to active camera:', {
-          factor,
-          oldScale: currentScale.toFixed(1),
-          newScale: newScale.toFixed(1),
-          newZoom: newZoom.toFixed(1)
-        });
-        
-        // Mark camera as modified
-        activeCamera.modified();
-        
-        // Reset clipping range
-        renderer.resetCameraClippingRange();
-        
-        // Force render on the generic render window
-        vtkObjects.current.genericRenderWindow.getRenderWindow().render();
-        
-        console.log('🔄 Render completed using active camera');
-        
-      } catch (error) {
-        console.error('❌ Zoom error:', error);
-      }
-    } else {
-      console.warn('⚠️ Zoom failed: renderer or genericRenderWindow not available');
-    }
-  };
+  // Static IDs
+  const toolGroupId = "HYBRID_CPR_TOOLGROUP_ID";
+  const renderingEngineId = "hybridCPRRenderingEngine";
 
-  const handleWindowLevel = (deltaWindow: number, deltaLevel: number) => {
-    console.log('🎨 Window/Level button clicked:', { deltaWindow, deltaLevel });
-    
-    // Try to get the ACTUAL actors from the renderer instead of stored reference
-    if (vtkObjects.current.renderer && vtkObjects.current.genericRenderWindow) {
-      try {
-        const renderer = vtkObjects.current.renderer;
-        const actors = renderer.getActors(); // Get all actors from renderer
-        
-        console.log('🎨 Found', actors.length, 'actors in renderer');
-        
-        if (actors.length > 0) {
-          // Use the first (and likely only) actor
-          const activeActor = actors[0];
-          const property = activeActor.getProperty();
-          
-          const newWindow = Math.max(1, windowLevel.window + deltaWindow);
-          const newLevel = windowLevel.level + deltaLevel;
-          
-          property.setColorWindow(newWindow);
-          property.setColorLevel(newLevel);
-          setWindowLevel({ window: newWindow, level: newLevel });
-          
-          console.log('🎨 Window/Level applied to active actor:', {
-            deltaWindow,
-            deltaLevel,
-            newWindow: newWindow.toFixed(0),
-            newLevel: newLevel.toFixed(0)
-          });
-          
-          // Mark property and actor as modified
-          property.modified();
-          activeActor.modified();
-          
-          // Force render on the generic render window
-          vtkObjects.current.genericRenderWindow.getRenderWindow().render();
-          
-          console.log('🔄 Window/Level render completed using active actor');
-          
-        } else {
-          console.warn('⚠️ No actors found in renderer');
-        }
-        
-      } catch (error) {
-        console.error('❌ Window/Level error:', error);
-      }
-    } else {
-      console.warn('⚠️ Window/Level failed: renderer or genericRenderWindow not available');
-    }
-  };
+  useEffect(() => {
+    if (!patientInfo?.seriesInstanceUID || rootPoints.length < 3) return;
 
-  const resetView = () => {
-    if (vtkObjects.current.camera && vtkObjects.current.genericRenderWindow) {
-      const camera = vtkObjects.current.camera;
-      
-      // Reset camera to initial parallel scale
-      camera.setParallelScale(initialParallelScale.current);
-      setZoom(1.0);
-      
-      // Reset window/level to defaults
-      const defaultWindow = 1000;
-      const defaultLevel = 300;
-      setWindowLevel({ window: defaultWindow, level: defaultLevel });
-      
-      if (vtkObjects.current.actor) {
-        const property = vtkObjects.current.actor.getProperty();
-        property.setColorWindow(defaultWindow);
-        property.setColorLevel(defaultLevel);
-      }
-      
-      console.log('🔄 View reset:', {
-        parallelScale: initialParallelScale.current,
-        zoom: 1.0,
-        window: defaultWindow,
-        level: defaultLevel
-      });
-      
-      // Simplified render
-      vtkObjects.current.genericRenderWindow.getRenderWindow().render();
-      
-    } else {
-      console.warn('⚠️ Reset failed: required objects not available');
-    }
-  };
+    console.log('🔄 Initializing Hybrid CPR Viewport...');
+    initializeHybridCPRViewport();
 
-  // Load real DICOM data using the working MPR pattern
-  const loadDicomData = async () => {
+    return () => {
+      cleanup();
+    };
+  }, [patientInfo, rootPoints]);
+
+  const cleanup = () => {
     try {
-      console.log('🔄 Loading real DICOM data using working MPR pattern...');
+      console.log('🧹 Cleaning up Hybrid CPR Viewport...');
       
+      // Clean up VTK objects
+      if (vtkCPRGenerator.current) {
+        vtkCPRGenerator.current.dispose();
+        vtkCPRGenerator.current = null;
+      }
+
+      // Clean up tool group
+      try {
+        const existingToolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+        if (existingToolGroup) {
+          ToolGroupManager.destroyToolGroup(toolGroupId);
+        }
+      } catch (error) {
+        console.warn('Failed to destroy tool group:', error);
+      }
+
+      // Clean up synthetic images
+      VTKToCornerstone3DConverter.cleanup('hybrid_cpr');
+
+      console.log('✅ Hybrid CPR Viewport cleanup complete');
+    } catch (error) {
+      console.warn('Cleanup error:', error);
+    }
+  };
+
+  const initializeHybridCPRViewport = async () => {
+    try {
+      setIsLoading(true);
+      setError(null);
+
+      console.log('🔄 Initializing Cornerstone3D...');
+      await csRenderInit();
+      await csToolsInit();
+      dicomImageLoaderInit({ maxWebWorkers: 1 });
+
+      console.log('🔍 Loading DICOM data...');
+      
+      // Load original DICOM images
       const imageIds = await createImageIdsAndCacheMetaData({
         StudyInstanceUID: patientInfo!.studyInstanceUID!,
         SeriesInstanceUID: patientInfo!.seriesInstanceUID!,
@@ -214,805 +166,554 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
 
       console.log(`📋 Found ${imageIds.length} DICOM images`);
 
-      // Use the exact pattern from ProperMPRViewport.tsx that works
-      const volumeId = `hybridCprVolume_${Date.now()}`;
-      const volume = await volumeLoader.createAndCacheVolume(volumeId, {
-        imageIds,
+      // Create volume from DICOM data
+      const volumeId = `streamingImageVolume_${Date.now()}`;
+      const volume = await volumeLoader.createAndCacheVolume(volumeId, { imageIds });
+      volume.load();
+
+      // Wait for volume to load (increased time for hybrid approach)
+      console.log('⏳ Waiting for volume data to be fully available...');
+      await new Promise(resolve => setTimeout(resolve, 5000)); // Increased to 5 seconds
+      
+      // Additional debugging for volume state
+      console.log('📊 Volume state after wait:', {
+        hasGetScalarData: typeof volume.getScalarData === 'function',
+        hasVoxelManager: !!volume.voxelManager,
+        hasImageData: !!volume.imageData,
+        dimensionsAvailable: !!volume.dimensions,
+        spacingAvailable: !!volume.spacing,
+        originAvailable: !!volume.origin
       });
+
+      console.log('🔄 Generating CPR data with VTK...');
       
-      console.log('🔄 Loading volume data...');
+      // Initialize VTK CPR Generator
+      console.log('🔧 Initializing VTK CPR Generator...');
+      vtkCPRGenerator.current = new VTKCPRGenerator();
       
-      // Load the volume and wait for it to complete
-      await volume.load();
+      // Generate centerline from root points
+      console.log('📏 Generating centerline from root points...');
+      const centerlinePoints = modifiedCenterline || generateCenterlineFromRootPoints(rootPoints);
+      console.log(`📏 Generated ${centerlinePoints.length} centerline points`);
       
-      console.log('✅ Volume loading completed');
+      // Create VTK ImageData from Cornerstone volume
+      console.log('🔄 Converting volume to VTK ImageData...');
+      const vtkImageData = await createVTKImageDataFromVolume(volume);
+      console.log('✅ VTK ImageData conversion complete');
       
-      // Wait for scalar data to become available
+      // Add timeout wrapper for CPR generation
+      const generateCPRWithTimeout = async (imageData: any, centerline: any, width: number, label: string) => {
+        console.log(`🔄 Starting ${label} CPR generation...`);
+        return Promise.race([
+          vtkCPRGenerator.current!.generateCPR(imageData, centerline, width),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error(`${label} CPR generation timed out after 30 seconds`)), 30000)
+          )
+        ]);
+      };
+      
+      // Generate CPR views with timeout protection
+      console.log('🔄 Generating CPR1...');
+      const cpr1Result = await generateCPRWithTimeout(vtkImageData, centerlinePoints, 400, 'CPR1');
+      console.log('✅ CPR1 generation complete');
+      
+      console.log('🔄 Setting rotation for CPR2...');
+      vtkCPRGenerator.current.setCPRRotation(90); // Rotate for second view
+      console.log('🔄 Generating CPR2...');
+      const cpr2Result = await generateCPRWithTimeout(vtkImageData, centerlinePoints, 400, 'CPR2');
+      console.log('✅ CPR2 generation complete');
+
+      console.log('🔄 Resetting rotation for cross-section...');
+      vtkCPRGenerator.current.setCPRRotation(0); // Reset rotation
+      console.log('🔄 Generating cross-section...');
+      const crossSectionResult = await generateCPRWithTimeout(vtkImageData, centerlinePoints, 200, 'CrossSection');
+      console.log('✅ Cross-section generation complete');
+
+      console.log('✅ ALL VTK CPR generation complete');
+
+      // Convert VTK results to Cornerstone3D format
+      console.log('🔄 Converting to Cornerstone3D format...');
+      
+      const cpr1ImageIds = await VTKToCornerstone3DConverter.convertVTKImageToCornerstoneImageIds(
+        cpr1Result, 
+        'hybrid_cpr_view1'
+      );
+      
+      const cpr2ImageIds = await VTKToCornerstone3DConverter.convertVTKImageToCornerstoneImageIds(
+        cpr2Result, 
+        'hybrid_cpr_view2'
+      );
+      
+      const crossSectionImageIds = await VTKToCornerstone3DConverter.convertVTKImageToCornerstoneImageIds(
+        crossSectionResult, 
+        'hybrid_cpr_cross'
+      );
+
+      console.log('✅ Cornerstone3D conversion complete');
+
+      // Set up coordinate converter
+      coordinateConverter.current = new CPRCoordinateConverter(cpr1Result.transformData);
+
+      // Setup Cornerstone3D rendering
+      await setupCornerstoneRendering({
+        cpr1ImageIds,
+        cpr2ImageIds,
+        crossSectionImageIds
+      });
+
+      // Setup tools
+      await setupTools();
+
+      setIsInitialized(true);
+      setIsLoading(false);
+
+      console.log('✅ Hybrid CPR Viewport initialized successfully!');
+
+    } catch (err) {
+      console.error('❌ Failed to initialize Hybrid CPR Viewport:', err);
+      setError(`Failed to initialize: ${err}`);
+      setIsLoading(false);
+    }
+  };
+
+  const generateCenterlineFromRootPoints = (points: Point3D[]): Point3D[] => {
+    if (points.length < 2) return points;
+    
+    const centerline: Point3D[] = [];
+    const numInterpolatedPoints = 50;
+    
+    for (let i = 0; i < points.length - 1; i++) {
+      const start = points[i];
+      const end = points[i + 1];
+      
+      for (let j = 0; j < numInterpolatedPoints; j++) {
+        const t = j / numInterpolatedPoints;
+        centerline.push({
+          x: start.x + t * (end.x - start.x),
+          y: start.y + t * (end.y - start.y),
+          z: start.z + t * (end.z - start.z)
+        });
+      }
+    }
+    
+    centerline.push(points[points.length - 1]);
+    return centerline;
+  };
+
+  const createVTKImageDataFromVolume = async (volume: any): Promise<any> => {
+    console.log('🔄 Converting Cornerstone volume to VTK ImageData with enhanced data access...');
+    
+    const dimensions = volume.dimensions;
+    const spacing = volume.spacing;
+    const origin = volume.origin;
+    
+    console.log('📊 Volume characteristics:', { dimensions, spacing, origin });
+    
+    // Enhanced scalar data extraction using same patterns as TriViewCPRViewport
+    let scalarData = null;
+    let attempts = [];
+    
+    // Method 1: Try volume.imageData with detailed inspection
+    if (volume.imageData) {
+      try {
+        console.log('🔄 Attempt 1: Using volume.imageData...');
+        if (volume.imageData.getPointData && volume.imageData.getPointData().getScalars) {
+          const scalars = volume.imageData.getPointData().getScalars();
+          if (scalars) {
+            scalarData = scalars.getData();
+            attempts.push('volume.imageData.getPointData().getScalars().getData() - SUCCESS');
+            console.log('✅ Got real scalar data via volume.imageData!');
+          } else {
+            attempts.push('volume.imageData.getPointData().getScalars() - NULL SCALARS');
+          }
+        } else {
+          attempts.push('volume.imageData - NO getPointData() OR getScalars()');
+        }
+      } catch (e) {
+        attempts.push(`volume.imageData access - ERROR: ${e.message}`);
+        console.warn('⚠️ volume.imageData access failed:', e);
+      }
+    } else {
+      attempts.push('volume.imageData - NOT AVAILABLE');
+    }
+    
+    // Method 2: Try getScalarData() with polling
+    if (!scalarData) {
+      console.log('🔄 Attempting enhanced scalar data access with polling...');
+      
       let waitTime = 0;
-      const maxWaitTime = 5000; // 5 seconds max
-      const pollInterval = 200; // Check every 200ms
+      const maxWaitTime = 10000; // 10 seconds
+      const pollInterval = 500; // Check every 500ms
       
-      while (waitTime < maxWaitTime) {
+      while (waitTime < maxWaitTime && !scalarData) {
+        console.log(`🔄 Polling for scalar data (${waitTime}ms)...`);
+        
+        // Try official VoxelManager method first
         try {
-          // @ts-ignore - Accessing streaming volume properties
-          const streamingVolume = volume as any;
-          let hasData = false;
-          
-          // Safely check for scalar data
-          try {
-            hasData = !!(streamingVolume.getScalarData && streamingVolume.getScalarData());
-          } catch (e) {
-            // getScalarData throws when not available
+          if (volume.voxelManager?.getCompleteScalarDataArray) {
+            console.log(`🔄 Polling: Trying getCompleteScalarDataArray() at ${waitTime}ms...`);
+            scalarData = volume.voxelManager.getCompleteScalarDataArray();
+            if (scalarData && scalarData.length > 0) {
+              console.log('✅ SUCCESS: Got scalar data via getCompleteScalarDataArray() after waiting');
+              attempts.push(`polling getCompleteScalarDataArray() at ${waitTime}ms - SUCCESS (${scalarData.length} voxels)`);
+              break;
+            }
           }
-          
-          console.log(`📊 Volume status (${waitTime}ms):`, {
-            hasScalarVolume: streamingVolume.hasScalarVolume || false,
-            hasScalarData: hasData,
-            framesLoaded: streamingVolume.framesLoaded || 0,
-            framesProcessed: streamingVolume.framesProcessed || 0,
-            cachedFrames: Object.keys(streamingVolume.cachedFrames || {}).length
-          });
-          
-          if (hasData) {
-            console.log('✅ Scalar data is now available!');
-            break;
-          }
-          
-          // Break if we have loaded frames even if scalar data isn't available via getScalarData
-          if (streamingVolume.framesLoaded > 0 && streamingVolume.cachedFrames && Object.keys(streamingVolume.cachedFrames).length > 0) {
-            console.log('✅ Frame data is available, will try to reconstruct!');
-            break;
-          }
-          
         } catch (e) {
-          console.log(`⚠️ Error checking volume status at ${waitTime}ms:`, e.message);
+          if (waitTime % 2000 === 0) { // Log errors every 2 seconds to avoid spam
+            console.warn(`⚠️ getCompleteScalarDataArray() still failing at ${waitTime}ms:`, e.message);
+          }
+        }
+        
+        // Try standard getScalarData as fallback
+        try {
+          if (volume.getScalarData) {
+            scalarData = volume.getScalarData();
+            if (scalarData && scalarData.length > 0) {
+              console.log('✅ Got scalar data via getScalarData() after waiting');
+              attempts.push(`polling getScalarData() at ${waitTime}ms - SUCCESS`);
+              break;
+            }
+          }
+        } catch (e) {
+          // Still not available
         }
         
         await new Promise(resolve => setTimeout(resolve, pollInterval));
         waitTime += pollInterval;
       }
-      
-      console.log('📊 Final volume info:', {
-        dimensions: volume.dimensions,
-        spacing: volume.spacing,
-        origin: volume.origin,
-        volumeId: volume.volumeId,
-        waitedTime: waitTime
-      });
-
-      return { volume, imageIds };
-
-    } catch (error) {
-      console.error('❌ Failed to load DICOM data:', error);
-      throw error;
-    }
-  };
-
-  // Generate anatomically accurate centerline from 3 points
-  const generateCenterlinePoints = (points: Point3D[]) => {
-    if (points.length < 3) return [];
-
-    const centerlinePoints: Point3D[] = [];
-    const numInterpolatedPoints = 100; // More points for smoother sampling
-    
-    // Sort points to ensure proper order (aortic root workflow)
-    // Typically: ascending aorta -> annulus -> LVOT
-    const p0 = points[0]; // First sphere
-    const p1 = points[1]; // Second sphere (should be middle/annulus)
-    const p2 = points[2]; // Third sphere
-    
-    console.log('🎯 Creating centerline from 3 anatomical points:', {
-      point1: [p0.x.toFixed(1), p0.y.toFixed(1), p0.z.toFixed(1)],
-      point2: [p1.x.toFixed(1), p1.y.toFixed(1), p1.z.toFixed(1)],
-      point3: [p2.x.toFixed(1), p2.y.toFixed(1), p2.z.toFixed(1)]
-    });
-
-    // Calculate path segments for proper parameterization
-    const segment1Length = Math.sqrt(
-      Math.pow(p1.x - p0.x, 2) + 
-      Math.pow(p1.y - p0.y, 2) + 
-      Math.pow(p1.z - p0.z, 2)
-    );
-    
-    const segment2Length = Math.sqrt(
-      Math.pow(p2.x - p1.x, 2) + 
-      Math.pow(p2.y - p1.y, 2) + 
-      Math.pow(p2.z - p1.z, 2)
-    );
-    
-    const totalLength = segment1Length + segment2Length;
-    const segment1Ratio = segment1Length / totalLength;
-    
-    console.log('📏 Centerline path analysis:', {
-      segment1Length: segment1Length.toFixed(1),
-      segment2Length: segment2Length.toFixed(1),
-      totalLength: totalLength.toFixed(1),
-      segment1Ratio: segment1Ratio.toFixed(2)
-    });
-    
-    for (let i = 0; i <= numInterpolatedPoints; i++) {
-      const t = i / numInterpolatedPoints;
-      let x, y, z;
-      
-      if (t <= segment1Ratio) {
-        // First segment: p0 to p1
-        const localT = t / segment1Ratio;
-        
-        // Linear interpolation for first segment
-        x = p0.x + localT * (p1.x - p0.x);
-        y = p0.y + localT * (p1.y - p0.y);
-        z = p0.z + localT * (p1.z - p0.z);
-        
-      } else {
-        // Second segment: p1 to p2
-        const localT = (t - segment1Ratio) / (1 - segment1Ratio);
-        
-        // Linear interpolation for second segment
-        x = p1.x + localT * (p2.x - p1.x);
-        y = p1.y + localT * (p2.y - p1.y);
-        z = p1.z + localT * (p2.z - p1.z);
-      }
-      
-      centerlinePoints.push({ x, y, z });
     }
     
-    console.log('✅ Generated piecewise linear centerline through anatomical points');
-    return centerlinePoints;
-  };
-
-  // Extract real CPR data from Cornerstone3D volume
-  const extractRealCPRFromVolume = async (volume: any, centerlinePoints: Point3D[]): Promise<any> => {
-    try {
-      console.log('🔄 Attempting to extract real CPR data from Cornerstone3D volume...');
+    // Method 3: Frame reconstruction as last resort
+    if (!scalarData) {
+      console.log('🔄 Attempting frame reconstruction as fallback...');
       
-      // Get volume characteristics
-      const dimensions = volume.dimensions;
-      const spacing = volume.spacing;
-      const origin = volume.origin;
-      
-      console.log('📊 Volume characteristics:', { dimensions, spacing, origin });
-      
-      // Debug: Examine the volume object structure
-      console.log('🔍 Volume object properties:', Object.keys(volume));
-      console.log('🔍 Volume object methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(volume)).filter(name => typeof volume[name] === 'function'));
-      
-      // Try multiple approaches to access scalar data
-      let scalarData = null;
-      
-      // Method 1: Try getScalarData() - most direct approach
       try {
-        console.log('🔄 Attempt 1: Using getScalarData()...');
+        // Check if we have a streaming volume with cached frames
+        const streamingVolume = volume;
         
-        if (typeof volume.getScalarData === 'function') {
-          scalarData = volume.getScalarData();
-          if (scalarData) {
-            console.log('✅ Got scalar data via getScalarData()');
+        if (streamingVolume.cachedFrames && Object.keys(streamingVolume.cachedFrames).length > 0) {
+          console.log('📊 Found cached frames, reconstructing volume data...');
+          
+          const totalVoxels = dimensions[0] * dimensions[1] * dimensions[2];
+          scalarData = new Float32Array(totalVoxels);
+          
+          let voxelIndex = 0;
+          let framesProcessed = 0;
+          
+          for (let i = 0; i < dimensions[2]; i++) {
+            const frame = streamingVolume.cachedFrames[i];
+            
+            if (frame) {
+              let frameData = null;
+              let pixelDataSource = 'unknown';
+              
+              // Try multiple ways to access frame pixel data
+              if (frame.pixelData && frame.pixelData.length > 0) {
+                frameData = frame.pixelData;
+                pixelDataSource = 'frame.pixelData';
+              } else if (frame.getPixelData && typeof frame.getPixelData === 'function') {
+                frameData = frame.getPixelData();
+                pixelDataSource = 'frame.getPixelData()';
+              } else if (frame.arrayBuffer) {
+                frameData = new Uint16Array(frame.arrayBuffer);
+                pixelDataSource = 'arrayBuffer->Uint16Array';
+              }
+              
+              if (frameData && frameData.length > 0) {
+                const frameSize = dimensions[0] * dimensions[1];
+                const pixelsToAdd = Math.min(frameSize, frameData.length, totalVoxels - voxelIndex);
+                
+                for (let j = 0; j < pixelsToAdd; j++) {
+                  scalarData[voxelIndex++] = frameData[j];
+                }
+                
+                framesProcessed++;
+                console.log(`✅ Processed frame ${i}: added ${pixelsToAdd} pixels (total: ${voxelIndex})`);
+              }
+            }
+          }
+          
+          if (voxelIndex > 0) {
+            console.log(`✅ Frame reconstruction SUCCESS: ${voxelIndex} voxels from ${framesProcessed} frames`);
+            attempts.push(`frame reconstruction - SUCCESS (${voxelIndex} voxels from ${framesProcessed} frames)`);
+          } else {
+            scalarData = null;
+            attempts.push('frame reconstruction - NO DATA');
           }
         } else {
-          console.log('⚠️ getScalarData method not available');
+          attempts.push('frame reconstruction - NO CACHED FRAMES');
         }
-        
-      } catch (error) {
-        console.warn('⚠️ getScalarData() failed:', error);
+      } catch (frameError) {
+        console.warn('⚠️ Failed to reconstruct from frames:', frameError);
+        scalarData = null;
+        attempts.push(`frame reconstruction - ERROR: ${frameError.message}`);
       }
-      
-      // Method 2: Try scalarData property
-      if (!scalarData && volume.scalarData) {
-        console.log('🔄 Attempt 2: Using scalarData property...');
-        scalarData = volume.scalarData;
-        console.log('✅ Got scalar data via scalarData property');
-      }
-      
-      // Method 3: Try vtkImageData if available
-      if (!scalarData && volume.vtkImageData) {
-        console.log('🔄 Attempt 3: Using vtkImageData...');
-        const scalars = volume.vtkImageData.getPointData().getScalars();
-        if (scalars) {
-          scalarData = scalars.getData();
-          console.log('✅ Got scalar data via vtkImageData');
-        }
-      }
-      
-      // Method 4: Try imageData if available
-      if (!scalarData && volume.imageData) {
-        console.log('🔄 Attempt 4: Using imageData...');
-        console.log('🔍 imageData properties:', Object.keys(volume.imageData));
-        console.log('🔍 imageData methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(volume.imageData)).filter(name => typeof volume.imageData[name] === 'function'));
-        
-        if (volume.imageData.getPointData && volume.imageData.getPointData().getScalars) {
-          const scalars = volume.imageData.getPointData().getScalars();
-          if (scalars) {
-            scalarData = scalars.getData();
-            console.log('✅ Got scalar data via imageData');
-          }
-        }
-      }
-      
-      // Method 5: Try voxelManager (this looks promising!)
-      if (!scalarData && volume.voxelManager) {
-        console.log('🔄 Attempt 5: Using voxelManager...');
-        console.log('🔍 voxelManager properties:', Object.keys(volume.voxelManager));
-        console.log('🔍 voxelManager methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(volume.voxelManager)).filter(name => typeof volume.voxelManager[name] === 'function'));
-        
-        // Try different voxelManager approaches
-        try {
-          if (volume.voxelManager.getScalarData) {
-            scalarData = volume.voxelManager.getScalarData();
-            if (scalarData) {
-              console.log('✅ Got scalar data via voxelManager.getScalarData()');
-            }
-          }
-        } catch (e) {
-          console.warn('⚠️ voxelManager.getScalarData() failed:', e);
-        }
-        
-        // Try accessing the underlying texture or buffer
-        if (!scalarData) {
-          try {
-            if (volume.voxelManager.getCompleteScalarDataArray) {
-              scalarData = volume.voxelManager.getCompleteScalarDataArray();
-              if (scalarData) {
-                console.log('✅ Got scalar data via voxelManager.getCompleteScalarDataArray()');
-              }
-            }
-          } catch (e) {
-            console.warn('⚠️ voxelManager.getCompleteScalarDataArray() failed:', e);
-          }
-        }
-      }
-      
-      // Method 6: Try frames data directly
-      // @ts-ignore - Accessing streaming volume properties
-      const streamingVolume = volume as any;
-      if (!scalarData && streamingVolume.framesLoaded > 0) {
-        console.log('🔄 Attempt 6: Using frame data directly...');
-        console.log('📊 Frame status:', {
-          framesLoaded: streamingVolume.framesLoaded,
-          framesProcessed: streamingVolume.framesProcessed || 'unknown',
-          cachedFrames: Object.keys(streamingVolume.cachedFrames || {}).length
-        });
-        
-        // Try to access cached frame data
-        if (streamingVolume.cachedFrames && Object.keys(streamingVolume.cachedFrames).length > 0) {
-          const frameKeys = Object.keys(streamingVolume.cachedFrames);
-          console.log('🔍 Available cached frames:', frameKeys.slice(0, 5)); // Log first 5
-          
-          // Try to reconstruct volume from cached frames
-          try {
-            const totalVoxels = volume.dimensions[0] * volume.dimensions[1] * volume.dimensions[2];
-            scalarData = new Float32Array(totalVoxels);
-            
-            let voxelIndex = 0;
-            for (let i = 0; i < volume.dimensions[2] && voxelIndex < totalVoxels; i++) {
-              const frameKey = streamingVolume._imageIds?.[i]; // Use imageId as frame key
-              if (frameKey) {
-                const frame = streamingVolume.cachedFrames[frameKey];
-                
-                if (frame && frame.pixelData) {
-                  const frameSize = volume.dimensions[0] * volume.dimensions[1];
-                  const frameData = frame.pixelData;
-                  
-                  // Copy frame data to volume array
-                  for (let j = 0; j < Math.min(frameSize, frameData.length); j++) {
-                    if (voxelIndex < totalVoxels) {
-                      scalarData[voxelIndex++] = frameData[j];
-                    }
-                  }
-                }
-              }
-            }
-            
-            if (voxelIndex > 0) {
-              console.log(`✅ Reconstructed scalar data from ${voxelIndex} voxels from cached frames`);
-            } else {
-              scalarData = null;
-            }
-            
-          } catch (e) {
-            console.warn('⚠️ Frame reconstruction failed:', e);
-            scalarData = null;
-          }
-        }
-      }
-      
-      if (!scalarData) {
-        console.warn('⚠️ Could not access real scalar data, using volume characteristics approach');
-        return createCPRFromVolumeCharacteristics(volume, centerlinePoints);
-      }
-      
-      console.log('✅ Successfully accessed real DICOM scalar data:', {
-        dataLength: scalarData.length,
-        dataType: scalarData.constructor.name,
-        expectedLength: dimensions[0] * dimensions[1] * dimensions[2]
-      });
-      
-      // Now extract real CPR from the actual data
-      // Swap dimensions to make CPR vertical (height=centerline, width=cross-section)
-      const cprHeight = centerlinePoints.length; // Vertical axis = along centerline
-      const cprWidth = 128; // Horizontal axis = cross-section
-      const cprData = new Float32Array(cprWidth * cprHeight);
-      
-      // Calculate data range efficiently to avoid stack overflow
-      let minVal = scalarData[0];
-      let maxVal = scalarData[0];
-      for (let i = 1; i < scalarData.length; i += 1000) { // Sample every 1000th value for efficiency
-        if (scalarData[i] < minVal) minVal = scalarData[i];
-        if (scalarData[i] > maxVal) maxVal = scalarData[i];
-      }
-      
-      console.log('🔄 Extracting CPR from real DICOM data:', {
-        centerlinePoints: centerlinePoints.length,
-        cprDimensions: [cprWidth, cprHeight],
-        volumeDimensions: dimensions,
-        volumeSpacing: spacing,
-        volumeOrigin: origin,
-        dataRange: [minVal, maxVal]
-      });
-      
-      // Sample the real volume data along the centerline with proper perpendicular cross-sections
-      for (let i = 0; i < centerlinePoints.length; i++) {
-        const point = centerlinePoints[i];
-        
-        // Convert world coordinates to voxel indices
-        const voxelX = Math.round((point.x - origin[0]) / spacing[0]);
-        const voxelY = Math.round((point.y - origin[1]) / spacing[1]);
-        const voxelZ = Math.round((point.z - origin[2]) / spacing[2]);
-        
-        // Clamp to volume bounds
-        const clampedX = Math.max(0, Math.min(dimensions[0] - 1, voxelX));
-        const clampedY = Math.max(0, Math.min(dimensions[1] - 1, voxelY));
-        const clampedZ = Math.max(0, Math.min(dimensions[2] - 1, voxelZ));
-        
-        // Calculate centerline direction for proper perpendicular sampling
-        let directionX = 0, directionY = 0, directionZ = 1; // Default to Z direction
-        
-        if (i < centerlinePoints.length - 1) {
-          // Use forward difference
-          const nextPoint = centerlinePoints[i + 1];
-          directionX = nextPoint.x - point.x;
-          directionY = nextPoint.y - point.y;
-          directionZ = nextPoint.z - point.z;
-        } else if (i > 0) {
-          // Use backward difference for last point
-          const prevPoint = centerlinePoints[i - 1];
-          directionX = point.x - prevPoint.x;
-          directionY = point.y - prevPoint.y;
-          directionZ = point.z - prevPoint.z;
-        }
-        
-        // Normalize direction vector
-        const dirLength = Math.sqrt(directionX**2 + directionY**2 + directionZ**2);
-        if (dirLength > 0) {
-          directionX /= dirLength;
-          directionY /= dirLength;
-          directionZ /= dirLength;
-        }
-        
-        // Log centerline sampling for debugging
-        if (i % 20 === 0) {
-          console.log(`🔍 Centerline point ${i}:`, {
-            world: [point.x.toFixed(1), point.y.toFixed(1), point.z.toFixed(1)],
-            voxel: [voxelX, voxelY, voxelZ],
-            clamped: [clampedX, clampedY, clampedZ],
-            direction: [directionX.toFixed(2), directionY.toFixed(2), directionZ.toFixed(2)]
-          });
-        }
-        
-        // Extract cross-section perpendicular to centerline direction
-        for (let j = 0; j < cprWidth; j++) {
-          const offset = (j - cprWidth / 2) * spacing[1]; // Use real spacing for cross-section
-          
-          // Calculate perpendicular vectors for proper cross-sectional sampling
-          // Use a consistent perpendicular direction (e.g., prefer Y-axis perpendicular)
-          let perpX, perpY, perpZ;
-          
-          if (Math.abs(directionY) < 0.9) {
-            // If not mainly in Y direction, use Y as reference for perpendicular
-            perpX = 0;
-            perpY = 1;
-            perpZ = 0;
-          } else {
-            // If mainly in Y direction, use X as reference
-            perpX = 1;
-            perpY = 0;
-            perpZ = 0;
-          }
-          
-          // Create actual perpendicular by cross product: perp = direction × reference
-          const crossX = directionY * perpZ - directionZ * perpY;
-          const crossY = directionZ * perpX - directionX * perpZ;
-          const crossZ = directionX * perpY - directionY * perpX;
-          
-          // Normalize the perpendicular vector
-          const crossLength = Math.sqrt(crossX**2 + crossY**2 + crossZ**2);
-          if (crossLength > 0) {
-            perpX = crossX / crossLength;
-            perpY = crossY / crossLength;
-            perpZ = crossZ / crossLength;
-          }
-          
-          // Sample along the perpendicular direction
-          const sampleWorldX = point.x + offset * perpX;
-          const sampleWorldY = point.y + offset * perpY;
-          const sampleWorldZ = point.z + offset * perpZ;
-          
-          // Convert to voxel coordinates
-          const sampleVoxelX = Math.round((sampleWorldX - origin[0]) / spacing[0]);
-          const sampleVoxelY = Math.round((sampleWorldY - origin[1]) / spacing[1]);
-          const sampleVoxelZ = Math.round((sampleWorldZ - origin[2]) / spacing[2]);
-          
-          const cprIndex = i * cprWidth + j; // i=height(centerline), j=width(cross-section)
-          
-          // Check bounds and sample
-          if (sampleVoxelX >= 0 && sampleVoxelX < dimensions[0] &&
-              sampleVoxelY >= 0 && sampleVoxelY < dimensions[1] &&
-              sampleVoxelZ >= 0 && sampleVoxelZ < dimensions[2]) {
-            
-            const volumeIndex = sampleVoxelZ * dimensions[0] * dimensions[1] + 
-                              sampleVoxelY * dimensions[0] + 
-                              sampleVoxelX;
-            
-            if (volumeIndex < scalarData.length) {
-              cprData[cprIndex] = scalarData[volumeIndex];
-            } else {
-              cprData[cprIndex] = -1000; // Air value
-            }
-          } else {
-            cprData[cprIndex] = -1000; // Air value for out of bounds
-          }
-        }
-      }
-      
-      // Calculate CPR data range efficiently
-      let cprMinVal = cprData[0];
-      let cprMaxVal = cprData[0];
-      for (let i = 1; i < cprData.length; i++) {
-        if (cprData[i] < cprMinVal) cprMinVal = cprData[i];
-        if (cprData[i] > cprMaxVal) cprMaxVal = cprData[i];
-      }
-      
-      console.log('✅ Real CPR data extracted from volume:', {
-        cprDimensions: [cprWidth, cprHeight, 1],
-        dataRange: [cprMinVal, cprMaxVal]
-      });
-      
-      // Create VTK ImageData with proper physical spacing (width x height)
-      const cprImageData = vtkImageData.newInstance();
-      cprImageData.setDimensions([cprWidth, cprHeight, 1]);
-      
-      // Use physical spacing from the original volume
-      const cprSpacing = [
-        spacing[0], // Along centerline - use original X spacing
-        spacing[1], // Cross-section - use original Y spacing  
-        spacing[2]  // Depth - use original Z spacing
-      ];
-      cprImageData.setSpacing(cprSpacing);
-      cprImageData.setOrigin([0, 0, 0]);
-      
-      console.log('📊 CPR ImageData created with physical spacing:', {
-        dimensions: [cprWidth, cprHeight, 1],
-        spacing: cprSpacing,
-        physicalSize: [cprWidth * cprSpacing[0], cprHeight * cprSpacing[1]]
-      });
-      
-      const scalars = vtkDataArray.newInstance({
-        name: 'Scalars',
-        numberOfComponents: 1,
-        values: cprData,
-      });
-      cprImageData.getPointData().setScalars(scalars);
-      
-      return { cprImageData, cprData };
-      
-    } catch (error) {
-      console.error('❌ Failed to extract real CPR data:', error);
-      console.log('🔄 Falling back to synthetic CPR data...');
-      const fallbackResult = createCPRFromVolumeCharacteristics(volume, centerlinePoints);
-      return { cprImageData: fallbackResult, cprData: null };
     }
-  };
-
-  // Create CPR based on real DICOM volume characteristics (fallback)
-  const createCPRFromVolumeCharacteristics = (volume: any, centerlinePoints: Point3D[]) => {
-    try {
-      console.log('🔄 Creating CPR based on real DICOM volume characteristics...');
-      
-      // Get volume characteristics (these are available immediately)
-      const dimensions = volume.dimensions;
-      const spacing = volume.spacing;
-      const origin = volume.origin;
-      
-      console.log('📊 Using real DICOM volume characteristics:', {
-        dimensions,
-        spacing,
-        origin
-      });
-
-      // Create CPR that reflects the real volume's characteristics
-      const cprWidth = centerlinePoints.length; // One column per centerline point
-      const cprHeight = 64; // Cross-section size
-      const cprData = new Float32Array(cprWidth * cprHeight);
-
-      // Generate realistic vessel data using real volume spacing and centerline
-      for (let i = 0; i < centerlinePoints.length; i++) {
-        const point = centerlinePoints[i];
-        
-        // Convert centerline point to real volume coordinates
-        const voxelX = (point.x - origin[0]) / spacing[0];
-        const voxelY = (point.y - origin[1]) / spacing[1];
-        const voxelZ = (point.z - origin[2]) / spacing[2];
-        
-        // Create cross-section at this point
-        for (let j = 0; j < cprHeight; j++) {
-          const offset = (j - cprHeight / 2) * spacing[1]; // Use real voxel spacing
-          
-          // Distance from centerline in mm
-          const distFromCenter = Math.abs(offset);
-          
-          // Create realistic aortic root vessel using your real anatomy
-          // Scale vessel size based on real spacing
-          const vesselRadius = 12 + 3 * Math.sin((i / centerlinePoints.length) * Math.PI); // 12-15mm aortic root
-          
-          let intensity = 0;
-          if (distFromCenter < vesselRadius * 0.6) {
-            // Vessel lumen - high intensity (contrast-enhanced CT)
-            intensity = 800 + 200 * Math.random(); // HU values for contrast
-          } else if (distFromCenter < vesselRadius) {
-            // Vessel wall - medium intensity  
-            intensity = 150 + 50 * Math.random(); // Soft tissue HU
-          } else if (distFromCenter < vesselRadius + 10) {
-            // Perivascular tissue
-            intensity = 50 + 30 * Math.random(); // Fat/tissue HU
-          } else {
-            // Background/air
-            intensity = -800 + 100 * Math.random(); // Air HU
-          }
-          
-          // Store in CPR image
-          const cprIndex = j * cprWidth + i;
-          cprData[cprIndex] = intensity;
-        }
-      }
-      
-      console.log('📊 CPR created from real volume characteristics:', {
-        cprDimensions: [cprWidth, cprHeight, 1],
-        centerlinePoints: centerlinePoints.length,
-        realVolumeDimensions: dimensions,
-        realVolumeSpacing: spacing,
-        dataRange: [Math.min(...cprData), Math.max(...cprData)]
-      });
-
-      // Create VTK ImageData for the CPR
-      const cprImageData = vtkImageData.newInstance();
-      cprImageData.setDimensions([cprWidth, cprHeight, 1]);
-      cprImageData.setSpacing([1.0, 1.0, 1.0]);
-      cprImageData.setOrigin([0, 0, 0]);
-      
-      const scalars = vtkDataArray.newInstance({
-        name: 'Scalars',
-        numberOfComponents: 1,
-        values: cprData,
-      });
-      cprImageData.getPointData().setScalars(scalars);
-      
-      console.log('✅ CPR created with real DICOM characteristics');
-      
-      return cprImageData;
-
-    } catch (error) {
-      console.error('❌ Failed to extract CPR from volume:', error);
-      throw error;
+    
+    if (!scalarData) {
+      console.error('❌ All scalar data access methods failed:', attempts);
+      throw new Error(`No scalar data available in volume. Attempted: ${attempts.join(', ')}`);
     }
-  };
-
-  const initializeHybridCPR = async () => {
-    if (!containerRef.current || !patientInfo || rootPoints.length < 3) {
-      return;
-    }
-
-    try {
-      setIsLoading(true);
-      setError(null);
-
-      console.log('🔄 Initializing Hybrid CPR with real DICOM data...');
-      console.log('🎯 Root points:', rootPoints);
-
-      // Load real DICOM data
-      const { volume, imageIds } = await loadDicomData();
-      
-      // Generate centerline from your 3 sphere points
-      const centerlinePoints = generateCenterlinePoints(rootPoints);
-      console.log('📏 Generated centerline with', centerlinePoints.length, 'points');
-      
-      // Extract CPR from real DICOM volume
-      // @ts-ignore - CPR extraction with complex return types
-      const cprResult = await extractRealCPRFromVolume(volume, centerlinePoints);
-      const { cprImageData, cprData } = typeof cprResult === 'object' && 'cprImageData' in cprResult 
-        ? cprResult 
-        : { cprImageData: cprResult, cprData: null };
-      
-      console.log('📊 CPR extraction result:', {
-        hasCprImageData: !!cprImageData,
-        hasCprData: !!cprData,
-        cprImageDataType: cprImageData?.constructor?.name
-      });
-
-      // Create simple VTK rendering (no ImageCPRMapper issues)
-      const genericRenderWindow = vtkGenericRenderWindow.newInstance();
-      genericRenderWindow.setContainer(containerRef.current);
-      genericRenderWindow.resize();
-
-      const renderer = genericRenderWindow.getRenderer();
-      const renderWindow = genericRenderWindow.getRenderWindow();
-      const interactor = renderWindow.getInteractor();
-      
-      interactor.setInteractorStyle(vtkInteractorStyleImage.newInstance());
-      interactor.setDesiredUpdateRate(15.0);
-
-      renderer.setBackground(backgroundColor);
-
-      // Use simple ImageMapper (no texture issues)
-      const mapper = vtkImageMapper.newInstance();
-      mapper.setInputData(cprImageData);
-      
-      const actor = vtkImageSlice.newInstance();
-      actor.setMapper(mapper);
-
-      // Set appropriate window/level for the actual data range
-      const property = actor.getProperty();
-      
-      if (cprData) {
-        // Calculate data range efficiently for real data
-        let minVal = cprData[0];
-        let maxVal = cprData[0];
-        for (let i = 1; i < cprData.length; i++) {
-          if (cprData[i] < minVal) minVal = cprData[i];
-          if (cprData[i] > maxVal) maxVal = cprData[i];
-        }
-        
-        const window = maxVal - minVal;
-        const level = (maxVal + minVal) / 2;
-        
-        property.setColorWindow(window);
-        property.setColorLevel(level);
-        
-        // Update state with actual values
-        setWindowLevel({ window, level });
-        
-        console.log('🎨 Applied optimal window/level settings for real data:', {
-          dataRange: [minVal, maxVal],
-          window,
-          level
-        });
-      } else {
-        // Use default settings for synthetic data
-        property.setColorWindow(1000);
-        property.setColorLevel(300);
-        setWindowLevel({ window: 1000, level: 300 });
-        
-        console.log('🎨 Applied default window/level settings for synthetic data');
-      }
-
-      // Add actor to renderer
-      renderer.addActor(actor);
-
-      // Set up camera for CPR view with proper scaling
-      const camera = renderer.getActiveCamera();
-      camera.setParallelProjection(true);
-      
-      // Set camera position for proper vertical CPR view
-      if (cprImageData && typeof cprImageData.getBounds === 'function') {
-        const bounds = cprImageData.getBounds();
-        const center = [
-          (bounds[0] + bounds[1]) / 2,
-          (bounds[2] + bounds[3]) / 2,
-          (bounds[4] + bounds[5]) / 2
-        ];
-        
-        // Position camera to view the CPR properly (looking at XY plane)
-        camera.setPosition(center[0], center[1], center[2] + 100);
-        camera.setFocalPoint(center[0], center[1], center[2]);
-        camera.setViewUp(0, 1, 0); // Y is up (vertical centerline)
-        
-        // Set parallel scale for proper initial zoom
-        const imageHeight = bounds[3] - bounds[2];
-        const imageWidth = bounds[1] - bounds[0];
-        const maxDimension = Math.max(imageHeight, imageWidth);
-        const initialScale = maxDimension / 2;
-        camera.setParallelScale(initialScale);
-        
-        // Store for reset function
-        initialParallelScale.current = initialScale;
-        
-        renderer.resetCameraClippingRange();
-        
-        console.log('📷 Camera configured for vertical CPR view:', {
-          bounds,
-          center,
-          imageHeight,
-          imageWidth,
-          parallelScale: maxDimension / 2
-        });
-      } else {
-        // Fallback camera setup
-        camera.setPosition(0, 0, 100);
-        camera.setFocalPoint(0, 0, 0);
-        camera.setViewUp(0, 1, 0);
-        camera.setParallelScale(50);
-        initialParallelScale.current = 50;
-        renderer.resetCameraClippingRange();
-        
-        console.log('📷 Using fallback camera configuration');
-      }
-
-      // Store VTK objects for cleanup and tool access
-      vtkObjects.current = {
-        renderWindow,
-        renderer,
-        mapper,
-        actor,
-        imageData: cprImageData,
-        camera,
-        genericRenderWindow
-      };
-
-      // Force proper container sizing before first render
-      setTimeout(() => {
-        if (genericRenderWindow && containerRef.current) {
-          console.log('🔄 Forcing VTK container resize...');
-          genericRenderWindow.resize();
-          renderWindow.render();
-          console.log('✅ Container resize completed');
-        }
-      }, 100);
-      
-      renderWindow.render();
-      
-      setIsInitialized(true);
-      setIsLoading(false);
-      
-      console.log('✅ Hybrid CPR initialized successfully with real DICOM data');
-
-    } catch (error) {
-      console.error('❌ Hybrid CPR initialization failed:', error);
-      setError(`Hybrid CPR initialization failed: ${error}`);
-      setIsLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (patientInfo && rootPoints.length >= 3) {
-      initializeHybridCPR();
-    }
-
-    // Cleanup
-    return () => {
-      if (vtkObjects.current.renderWindow) {
-        console.log('🧹 Cleaning up Hybrid CPR viewport');
-      }
+    
+    console.log('✅ Scalar data obtained:', {
+      dataLength: scalarData.length,
+      dataType: scalarData.constructor?.name,
+      successfulMethod: attempts[attempts.length - 1]
+    });
+    
+    // Create VTK ImageData (simplified - would need proper VTK integration)
+    const vtkImageData = {
+      getDimensions: () => dimensions,
+      getSpacing: () => spacing,
+      getOrigin: () => origin,
+      getPointData: () => ({
+        getScalars: () => ({
+          getData: () => scalarData
+        })
+      })
     };
-  }, [patientInfo, rootPoints]);
+    
+    console.log('✅ VTK ImageData created from Cornerstone volume with enhanced data access');
+    return vtkImageData;
+  };
+
+  const setupCornerstoneRendering = async (imageData: {
+    cpr1ImageIds: string[];
+    cpr2ImageIds: string[];
+    crossSectionImageIds: string[];
+  }) => {
+    console.log('🔧 Setting up Cornerstone3D rendering...');
+
+    // Create rendering engine
+    renderingEngine.current = new RenderingEngine(renderingEngineId);
+
+    // Setup viewports
+    const viewports = [
+      { id: "cpr1", element: cpr1Ref.current, imageIds: imageData.cpr1ImageIds },
+      { id: "cpr2", element: cpr2Ref.current, imageIds: imageData.cpr2ImageIds },
+      { id: "crossSection", element: crossSectionRef.current, imageIds: imageData.crossSectionImageIds }
+    ];
+
+    viewports.forEach(({ id, element, imageIds }) => {
+      if (!element) return;
+
+      renderingEngine.current!.enableElement({
+        viewportId: id,
+        type: CornerstoneEnums.ViewportType.STACK,
+        element,
+        defaultOptions: {
+          background: backgroundColor,
+        },
+      });
+
+      const viewport = renderingEngine.current!.getViewport(id) as Types.IStackViewport;
+      viewport.setStack(imageIds);
+      viewport.render();
+    });
+
+    console.log('✅ Cornerstone3D rendering setup complete');
+  };
+
+  const setupTools = async () => {
+    console.log('🔧 Setting up tools...');
+
+    // Add tools
+    cornerstoneTools.addTool(CrosshairsTool);
+    cornerstoneTools.addTool(ZoomTool);
+    cornerstoneTools.addTool(PanTool);
+    cornerstoneTools.addTool(WindowLevelTool);
+    cornerstoneTools.addTool(CPRAwareSphereMarkerTool);
+
+    // Destroy existing tool group if it exists
+    try {
+      const existingToolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+      if (existingToolGroup) {
+        ToolGroupManager.destroyToolGroup(toolGroupId);
+      }
+    } catch (error) {
+      // Tool group doesn't exist, which is fine
+    }
+
+    // Create tool group
+    toolGroup.current = ToolGroupManager.createToolGroup(toolGroupId);
+    
+    if (!toolGroup.current) {
+      throw new Error('Failed to create tool group');
+    }
+
+    // Configure tools
+    toolGroup.current.addTool(ZoomTool.toolName);
+    toolGroup.current.addTool(PanTool.toolName);
+    toolGroup.current.addTool(WindowLevelTool.toolName);
+    toolGroup.current.addTool(CPRAwareSphereMarkerTool.toolName);
+
+    // Set default tool states
+    toolGroup.current.setToolActive(ZoomTool.toolName, {
+      bindings: [{ mouseButton: MouseBindings.Secondary }],
+    });
+    
+    toolGroup.current.setToolActive(CPRAwareSphereMarkerTool.toolName, {
+      bindings: [{ mouseButton: MouseBindings.Primary }],
+    });
+
+    // Setup coordinate-aware sphere tool
+    const sphereTool = toolGroup.current.getToolInstance(CPRAwareSphereMarkerTool.toolName);
+    if (sphereTool && coordinateConverter.current) {
+      sphereTool.setCoordinateConverter(coordinateConverter.current);
+      
+      if (onCuspDotsUpdate) {
+        sphereTool.setPositionUpdateCallback((spheres: any[]) => {
+          const dots = spheres.map(sphere => ({
+            id: sphere.id,
+            pos: [sphere.pos.x, sphere.pos.y, sphere.pos.z] as [number, number, number],
+            color: sphere.color,
+            cuspType: sphere.cuspType || 'left'
+          }));
+          onCuspDotsUpdate(dots);
+        });
+      }
+    }
+
+    // Add viewports to tool group
+    const viewportIds = ["cpr1", "cpr2", "crossSection"];
+    viewportIds.forEach((id) => {
+      toolGroup.current!.addViewport(id, renderingEngineId);
+    });
+
+    console.log('✅ Tools setup complete');
+  };
+
+  const handleZoom = (factor: number) => {
+    console.log('🔍 Zooming all views by factor:', factor);
+    setZoom(zoom * factor);
+    
+    // Zoom all viewports
+    const viewportIds = ["cpr1", "cpr2", "crossSection"];
+    viewportIds.forEach((id) => {
+      try {
+        const viewport = renderingEngine.current?.getViewport(id);
+        if (viewport) {
+          const camera = viewport.getCamera();
+          camera.parallelScale = camera.parallelScale / factor;
+          viewport.setCamera(camera);
+          viewport.render();
+        }
+      } catch (error) {
+        console.warn(`Failed to zoom viewport ${id}:`, error);
+      }
+    });
+  };
+
+  const handleSliceNavigation = (position: number) => {
+    console.log('🔄 Slice navigation to position:', position);
+    setCrosshairPosition(position);
+    
+    if (vtkCPRGenerator.current && coordinateConverter.current) {
+      // Update CPR position
+      const newTransformData = vtkCPRGenerator.current.updateCPRPosition(position * 100);
+      coordinateConverter.current.updateTransformData(newTransformData);
+      
+      // Update sphere positions
+      const sphereTool = toolGroup.current?.getToolInstance(CPRAwareSphereMarkerTool.toolName);
+      if (sphereTool) {
+        sphereTool.updateSpherePositions();
+      }
+    }
+  };
+
+  const handleRotation = (angle: number) => {
+    console.log('🔄 Rotation to angle:', angle);
+    setRotationAngle(angle);
+    
+    if (vtkCPRGenerator.current) {
+      vtkCPRGenerator.current.setCPRRotation(angle);
+      
+      // Force re-render
+      const viewportIds = ["cpr1", "cpr2", "crossSection"];
+      viewportIds.forEach((id) => {
+        const viewport = renderingEngine.current?.getViewport(id);
+        if (viewport) {
+          viewport.render();
+        }
+      });
+    }
+  };
 
   return (
-    <div className="w-full h-full relative">
-      {/* Demo Notice */}
-      <div className="absolute top-4 left-4 bg-purple-600/90 backdrop-blur-sm p-3 rounded-lg z-20">
-        <div className="flex items-center gap-2 text-white text-sm">
-          <span>🧬</span>
-          <div>
-            <div className="font-medium">Enhanced CPR - Real DICOM Extraction</div>
-            <div className="text-xs text-purple-200">
-              Multiple approaches to access real scalar data + robust fallback
+    <div className="flex flex-col w-full h-full bg-slate-900">
+      {/* Header */}
+      <div className="flex items-center justify-between p-3 bg-slate-800 border-b border-slate-700">
+        <div className="flex items-center gap-4">
+          <h3 className="text-lg font-semibold text-white">
+            Hybrid CPR Viewport - VTK + Cornerstone3D
+          </h3>
+          {patientInfo && (
+            <div className="text-sm text-slate-300">
+              Patient: {patientInfo.patientName || 'Unknown'}
             </div>
+          )}
+        </div>
+        
+        <div className="flex items-center gap-4">
+          {/* Navigation Controls */}
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-400">Slice:</span>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              value={crosshairPosition}
+              onChange={(e) => handleSliceNavigation(parseFloat(e.target.value))}
+              className="w-20 h-2 bg-slate-600 rounded-lg appearance-none cursor-pointer"
+            />
+            <span className="text-xs text-slate-400">{Math.round(crosshairPosition * 100)}%</span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-400">Rotate:</span>
+            <input
+              type="range"
+              min="0"
+              max="360"
+              step="5"
+              value={rotationAngle}
+              onChange={(e) => handleRotation(parseInt(e.target.value))}
+              className="w-20 h-2 bg-slate-600 rounded-lg appearance-none cursor-pointer"
+            />
+            <span className="text-xs text-slate-400">{rotationAngle}°</span>
+          </div>
+
+          {/* Tool Controls */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => handleZoom(1.2)}
+              className="p-2 rounded text-sm bg-slate-700 text-slate-300 hover:bg-slate-600"
+            >
+              <FaSearchPlus />
+            </button>
+            <button
+              onClick={() => handleZoom(0.8)}
+              className="p-2 rounded text-sm bg-slate-700 text-slate-300 hover:bg-slate-600"
+            >
+              <FaSearchMinus />
+            </button>
+          </div>
+
+          {/* Status */}
+          <div className="text-xs text-slate-400">
+            Dots: {cuspDots.length}/3 | Zoom: {zoom.toFixed(1)}x
           </div>
         </div>
       </div>
 
+      {/* Loading/Error States */}
       {isLoading && (
         <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 z-10">
           <div className="flex items-center gap-3 text-white">
-            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-purple-500"></div>
-            <span>Loading DICOM volume and waiting for scalar data...</span>
+            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
+            <span>Generating Hybrid CPR...</span>
           </div>
         </div>
       )}
@@ -1020,178 +721,59 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
       {error && (
         <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 z-10">
           <div className="bg-red-900 border border-red-700 rounded-lg p-6 text-white max-w-lg">
-            <h3 className="font-semibold mb-2 flex items-center gap-2">
-              ⚠️ Hybrid CPR Error
-            </h3>
-            <p className="text-sm whitespace-pre-line">{error}</p>
+            <h3 className="font-semibold mb-2">⚠️ Initialization Error</h3>
+            <p className="text-sm whitespace-pre-line mb-3">{error}</p>
+            <button
+              onClick={() => {
+                setError(null);
+                setTimeout(() => initializeHybridCPRViewport(), 100);
+              }}
+              className="bg-red-700 hover:bg-red-600 px-3 py-1 rounded text-xs"
+            >
+              Retry
+            </button>
           </div>
         </div>
       )}
 
-      {/* Tool Panel - Top Bar (Same as Step 2 MPR) */}
-      <div className="absolute top-0 left-0 right-0 z-20">
-        {/* Main Tool Bar */}
-        <div className="flex items-center justify-between p-3 bg-slate-800 border-b border-slate-700">
-          {/* Left Section - CPR Info */}
-          <div className="flex items-center gap-4">
-            <div className="text-white">
-              <div className="font-medium">CPR Analysis</div>
-              <div className="text-xs text-slate-400">
-                {rootPoints.length} anatomical points • Real DICOM data
-              </div>
-            </div>
+      {/* Three CPR Views */}
+      <div className="flex-1 grid grid-cols-3 gap-1 bg-slate-900">
+        {/* CPR View 1 */}
+        <div className="relative bg-black border border-slate-700">
+          <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+            CPR View 1
           </div>
-
-          {/* Right Section - Tools */}
-          <div className="flex items-center gap-4">
-            {/* Zoom Tools */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => handleZoom(1.5)}
-                className="p-2 bg-blue-600 hover:bg-blue-500 text-white rounded flex items-center gap-1"
-                title="Zoom In"
-              >
-                <FaSearchPlus />
-              </button>
-              <button
-                onClick={() => handleZoom(0.67)}
-                className="p-2 bg-blue-600 hover:bg-blue-500 text-white rounded flex items-center gap-1"
-                title="Zoom Out"
-              >
-                <FaSearchMinus />
-              </button>
-              <span className="text-white text-sm min-w-[35px]">{zoom.toFixed(1)}x</span>
-            </div>
-
-            {/* Window/Level Tools */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => handleWindowLevel(200, 0)}
-                className="p-2 bg-orange-600 hover:bg-orange-500 text-white rounded text-sm"
-                title="Increase Window"
-              >
-                W+
-              </button>
-              <button
-                onClick={() => handleWindowLevel(-200, 0)}
-                className="p-2 bg-orange-600 hover:bg-orange-500 text-white rounded text-sm"
-                title="Decrease Window"
-              >
-                W-
-              </button>
-              <button
-                onClick={() => handleWindowLevel(0, 100)}
-                className="p-2 bg-orange-600 hover:bg-orange-500 text-white rounded text-sm"
-                title="Increase Level"
-              >
-                L+
-              </button>
-              <button
-                onClick={() => handleWindowLevel(0, -100)}
-                className="p-2 bg-orange-600 hover:bg-orange-500 text-white rounded text-sm"
-                title="Decrease Level"
-              >
-                L-
-              </button>
-            </div>
-
-            {/* W/L Presets */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => {
-                  setWindowLevel({ window: 400, level: 40 });
-                  if (vtkObjects.current.actor) {
-                    const property = vtkObjects.current.actor.getProperty();
-                    property.setColorWindow(400);
-                    property.setColorLevel(40);
-                    if (vtkObjects.current.genericRenderWindow) {
-                      vtkObjects.current.genericRenderWindow.getRenderWindow().render();
-                    } else {
-                      vtkObjects.current.renderWindow?.render();
-                    }
-                  }
-                }}
-                className="p-2 bg-slate-600 hover:bg-slate-500 text-white rounded text-sm"
-              >
-                Soft Tissue
-              </button>
-              <button
-                onClick={() => {
-                  setWindowLevel({ window: 1500, level: 300 });
-                  if (vtkObjects.current.actor) {
-                    const property = vtkObjects.current.actor.getProperty();
-                    property.setColorWindow(1500);
-                    property.setColorLevel(300);
-                    if (vtkObjects.current.genericRenderWindow) {
-                      vtkObjects.current.genericRenderWindow.getRenderWindow().render();
-                    } else {
-                      vtkObjects.current.renderWindow?.render();
-                    }
-                  }
-                }}
-                className="p-2 bg-slate-600 hover:bg-slate-500 text-white rounded text-sm"
-              >
-                Bone
-              </button>
-              <button
-                onClick={() => {
-                  setWindowLevel({ window: 2000, level: 0 });
-                  if (vtkObjects.current.actor) {
-                    const property = vtkObjects.current.actor.getProperty();
-                    property.setColorWindow(2000);
-                    property.setColorLevel(0);
-                    if (vtkObjects.current.genericRenderWindow) {
-                      vtkObjects.current.genericRenderWindow.getRenderWindow().render();
-                    } else {
-                      vtkObjects.current.renderWindow?.render();
-                    }
-                  }
-                }}
-                className="p-2 bg-slate-600 hover:bg-slate-500 text-white rounded text-sm"
-              >
-                Lung
-              </button>
-            </div>
-
-            {/* Current W/L Values */}
-            <div className="text-white text-sm">
-              W:{Math.round(windowLevel.window)} L:{Math.round(windowLevel.level)}
-            </div>
-
-            {/* Reset */}
-            <button
-              onClick={resetView}
-              className="p-2 bg-gray-600 hover:bg-gray-500 text-white rounded flex items-center gap-1"
-              title="Reset View"
-            >
-              <FaUndo />
-            </button>
-          </div>
+          <div 
+            ref={cpr1Ref} 
+            className="w-full h-full"
+            style={{ minHeight: '300px' }}
+          />
         </div>
-
-        {/* Secondary Info Bar */}
-        <div className="flex items-center justify-between px-3 py-2 bg-slate-700 text-xs">
-          <div className="text-slate-300">
-            <span>Series: {patientInfo?.seriesInstanceUID?.slice(-12) || 'Unknown'}</span>
-            <span className="ml-4">Images: {rootPoints.length > 0 ? 'Loaded' : 'Loading...'}</span>
+        
+        {/* CPR View 2 */}
+        <div className="relative bg-black border border-slate-700">
+          <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+            CPR View 2
           </div>
-          <div className="flex items-center gap-4 text-slate-300">
-            <span>🖱️ Left-Click + Drag: Pan</span>
-            <span>🖱️ Right-Click + Drag: Zoom</span>
-            <span>🖱️ Shift + Left-Click + Drag: Window/Level</span>
-            <span className="text-green-400">✓ CPR Active</span>
+          <div 
+            ref={cpr2Ref} 
+            className="w-full h-full"
+            style={{ minHeight: '300px' }}
+          />
+        </div>
+        
+        {/* Cross Section */}
+        <div className="relative bg-black border border-slate-700">
+          <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+            Cross Section
           </div>
+          <div 
+            ref={crossSectionRef} 
+            className="w-full h-full"
+            style={{ minHeight: '300px' }}
+          />
         </div>
       </div>
-
-      <div 
-        ref={containerRef}
-        className="flex-1 relative bg-black"
-        style={{ 
-          minHeight: '400px',
-          maxHeight: '800px'
-        }}
-      />
     </div>
   );
 };

@@ -1,26 +1,42 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { FaSearchPlus, FaSearchMinus, FaAdjust, FaUndo } from 'react-icons/fa';
 import {
   RenderingEngine,
-  getRenderingEngine,
   Enums,
   Types,
   volumeLoader,
-  utilities,
+  cornerstoneStreamingImageVolumeLoader,
+  getRenderingEngine,
 } from "@cornerstonejs/core";
+import { init as csRenderInit } from "@cornerstonejs/core";
+import { init as csToolsInit } from "@cornerstonejs/tools";
+import { init as dicomImageLoaderInit } from "@cornerstonejs/dicom-image-loader";
 import * as cornerstoneTools from "@cornerstonejs/tools";
+import vtkSphereSource from '@kitware/vtk.js/Filters/Sources/SphereSource';
+import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
+import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
+import vtkCellPicker from '@kitware/vtk.js/Rendering/Core/CellPicker';
+import { FaSearchPlus, FaSearchMinus, FaAdjust, FaUndo, FaDotCircle } from 'react-icons/fa';
+
 import createImageIdsAndCacheMetaData from '../lib/createImageIdsAndCacheMetaData';
+import { initializeCornerstone } from '../utils/cornerstoneInit';
+import { CenterlineGenerator } from '../utils/CenterlineGenerator';
+import { VTKCPRGenerator } from '../utils/VTKCPRGenerator';
+import { RootPointType } from '../types/WorkflowTypes';
 
 const {
   ToolGroupManager,
   Enums: csToolsEnums,
+  CrosshairsTool,
   ZoomTool,
   PanTool,
   WindowLevelTool,
-  StackScrollTool,
 } = cornerstoneTools;
 
 const { MouseBindings } = csToolsEnums;
+const { ViewportType } = Enums;
+
+// Register volume loader
+volumeLoader.registerUnknownVolumeLoader(cornerstoneStreamingImageVolumeLoader);
 
 interface Point3D {
   x: number;
@@ -36,143 +52,103 @@ interface CornerstoneCPRViewportProps {
     seriesInstanceUID?: string;
   };
   rootPoints: Point3D[];
+  onCuspDotsUpdate?: (dots: { id: string; pos: [number, number, number]; color: string; cuspType: string }[]) => void;
   width?: number;
   height?: number;
+  backgroundColor?: [number, number, number];
 }
 
 const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
   patientInfo,
   rootPoints,
+  onCuspDotsUpdate,
   width = 800,
   height = 600,
+  backgroundColor = [0, 0, 0]
 }) => {
-  const containerRef = useRef<HTMLDivElement>(null);
+  // Refs for viewport elements
+  const axialRef = useRef<HTMLDivElement>(null);
+  const sagittalRef = useRef<HTMLDivElement>(null);
+  const coronalRef = useRef<HTMLDivElement>(null);
+  
+  // State
   const [isInitialized, setIsInitialized] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [windowLevel, setWindowLevel] = useState({ window: 1000, level: 300 });
-  const [zoom, setZoom] = useState(1.0);
+  const [isPlacingCuspDots, setIsPlacingCuspDots] = useState(false);
+  const [cuspDots, setCuspDots] = useState<Array<{
+    id: string;
+    worldPos: [number, number, number];
+    color: string;
+    cuspType: 'left' | 'right' | 'non-coronary';
+    actor: any;
+  }>>([]);
 
-  // Cornerstone3D IDs
+  // Refs for Cornerstone objects
+  const renderingEngine = useRef<RenderingEngine | null>(null);
+  const toolGroup = useRef<any>(null);
+  const volumeId = useRef<string>('');
+  const picker = useRef<any>(null);
+
+  // Static IDs - using stable IDs like ProperMPRViewport
   const renderingEngineId = 'cprRenderingEngine';
-  const viewportId = 'cprViewport';
-  const toolGroupId = 'cprToolGroup';
+  const toolGroupId = 'CPR_TOOLGROUP';
+  const viewportIds = ['cpr-main', 'cpr-longitudinal', 'cpr-cross-section'];
 
-  // Generate centerline points from 3 anatomical points
-  const generateCenterlinePoints = (points: Point3D[]): Point3D[] => {
-    if (points.length < 3) {
-      console.warn('Need at least 3 points for centerline generation');
-      return [];
-    }
+  useEffect(() => {
+    if (!patientInfo?.seriesInstanceUID || rootPoints.length < 3) return;
 
-    const centerlinePoints: Point3D[] = [];
-    const numInterpolatedPoints = 100;
+    console.log('🔄 Initializing Cornerstone3D CPR Viewport...');
+    
+    // Small delay to ensure DOM is ready
+    const timer = setTimeout(() => {
+      initializeCornerstoneCPR();
+    }, 100);
 
-    const p0 = points[0]; // First sphere
-    const p1 = points[1]; // Second sphere (middle/annulus)
-    const p2 = points[2]; // Third sphere
+    return () => {
+      clearTimeout(timer);
+      cleanup();
+    };
+  }, [patientInfo, rootPoints]);
 
-    // Create piecewise linear path through the 3 points
-    const segment1Length = Math.sqrt(
-      (p1.x - p0.x) ** 2 + (p1.y - p0.y) ** 2 + (p1.z - p0.z) ** 2
-    );
-    const segment2Length = Math.sqrt(
-      (p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2 + (p2.z - p1.z) ** 2
-    );
-    const totalLength = segment1Length + segment2Length;
-    const segment1Ratio = segment1Length / totalLength;
-
-    for (let i = 0; i <= numInterpolatedPoints; i++) {
-      const t = i / numInterpolatedPoints;
-      let x, y, z;
-
-      if (t <= segment1Ratio) {
-        // First segment: p0 to p1
-        const localT = t / segment1Ratio;
-        x = p0.x + localT * (p1.x - p0.x);
-        y = p0.y + localT * (p1.y - p0.y);
-        z = p0.z + localT * (p1.z - p0.z);
-      } else {
-        // Second segment: p1 to p2
-        const localT = (t - segment1Ratio) / (1 - segment1Ratio);
-        x = p1.x + localT * (p2.x - p1.x);
-        y = p1.y + localT * (p2.y - p1.y);
-        z = p1.z + localT * (p2.z - p1.z);
-      }
-
-      centerlinePoints.push({ x, y, z });
-    }
-
-    console.log('✅ Generated centerline with', centerlinePoints.length, 'points');
-    return centerlinePoints;
-  };
-
-  // Create CPR volume from original volume and centerline
-  const createCPRVolume = async (originalVolume: any, centerlinePoints: Point3D[]) => {
+  const cleanup = () => {
     try {
-      console.log('🔄 Creating Cornerstone CPR volume...');
-
-      // Get original volume data
-      const scalarData = originalVolume.getScalarData();
-      const dimensions = originalVolume.dimensions;
-      const spacing = originalVolume.spacing;
-      const origin = originalVolume.origin;
-
-      // CPR parameters - vertical orientation
-      const cprHeight = centerlinePoints.length; // Vertical = along centerline
-      const cprWidth = 64; // Horizontal = cross-section
-      const cprData = new Float32Array(cprWidth * cprHeight);
-
-      console.log('📊 CPR dimensions:', { width: cprWidth, height: cprHeight });
-
-      // Sample along centerline to create CPR
-      for (let i = 0; i < centerlinePoints.length; i++) {
-        const point = centerlinePoints[i];
-
-        // Convert world coordinates to voxel coordinates
-        const voxelX = (point.x - origin[0]) / spacing[0];
-        const voxelY = (point.y - origin[1]) / spacing[1];
-        const voxelZ = (point.z - origin[2]) / spacing[2];
-
-        // Create cross-section perpendicular to centerline
-        for (let j = 0; j < cprWidth; j++) {
-          const offset = (j - cprWidth / 2) * spacing[0]; // Cross-section offset
-          
-          // Sample point for this cross-section
-          const sampleX = Math.round(voxelX);
-          const sampleY = Math.round(voxelY + offset / spacing[1]);
-          const sampleZ = Math.round(voxelZ);
-
-          // Check bounds
-          if (
-            sampleX >= 0 && sampleX < dimensions[0] &&
-            sampleY >= 0 && sampleY < dimensions[1] &&
-            sampleZ >= 0 && sampleZ < dimensions[2]
-          ) {
-            const voxelIndex = sampleZ * dimensions[0] * dimensions[1] + 
-                              sampleY * dimensions[0] + 
-                              sampleX;
-            
-            if (voxelIndex < scalarData.length) {
-              const cprIndex = i * cprWidth + j; // i=height(centerline), j=width(cross-section)
-              cprData[cprIndex] = scalarData[voxelIndex];
+      console.log('🧹 Cleaning up Cornerstone CPR Viewport...');
+      
+      // Clean up cusp dot actors
+      cuspDots.forEach(dot => {
+        viewportIds.forEach(viewportId => {
+          try {
+            const viewport = renderingEngine.current?.getViewport(viewportId);
+            if (viewport && dot.actor) {
+              // Remove actor from viewport (Cornerstone3D handles this)
+              viewport.render();
             }
+          } catch (e) {
+            console.warn(`Failed to remove actor from ${viewportId}:`, e);
           }
+        });
+      });
+
+      // Clean up tool group
+      try {
+        const existingToolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+        if (existingToolGroup) {
+          ToolGroupManager.destroyToolGroup(toolGroupId);
         }
+      } catch (error) {
+        console.warn('Failed to destroy tool group:', error);
       }
 
-      console.log('✅ CPR data created from real DICOM volume');
-      return {
-        data: cprData,
-        dimensions: [cprWidth, cprHeight, 1],
-        spacing: [spacing[0], spacing[1], spacing[2]],
-        origin: [0, 0, 0],
-        dataRange: [Math.min(...cprData), Math.max(...cprData)]
-      };
+      // Clean up rendering engine
+      if (renderingEngine.current) {
+        renderingEngine.current.destroy();
+        renderingEngine.current = null;
+      }
 
+      console.log('✅ Cornerstone CPR Viewport cleanup complete');
     } catch (error) {
-      console.error('❌ Failed to create CPR volume:', error);
-      throw error;
+      console.warn('Cleanup error:', error);
     }
   };
 
@@ -181,9 +157,10 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
       setIsLoading(true);
       setError(null);
 
-      console.log('🔄 Initializing Cornerstone CPR...');
+      console.log('🔄 Initializing Cornerstone3D...');
+      await initializeCornerstone();
 
-      // Load DICOM data
+      console.log('🔍 Loading DICOM data...');
       const imageIds = await createImageIdsAndCacheMetaData({
         StudyInstanceUID: patientInfo!.studyInstanceUID!,
         SeriesInstanceUID: patientInfo!.seriesInstanceUID!,
@@ -191,271 +168,561 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
       });
 
       if (imageIds.length === 0) {
-        throw new Error('No DICOM images found');
+        throw new Error('No DICOM images found for this series');
       }
 
-      // Create and load volume
-      const volumeId = `cprVolume_${Date.now()}`;
-      const volume = await volumeLoader.createAndCacheVolume(volumeId, { imageIds });
-      await volume.load();
+      console.log(`📋 Found ${imageIds.length} DICOM images`);
 
-      // Skip CPR data creation for now - just use the original volume
-      // This ensures we get working zoom/window tools with Cornerstone3D
-      console.log('✅ Using original volume for CPR-style view');
+      // Create volume
+      const volumeName = `cprVolume_${Date.now()}`;
+      volumeId.current = `cornerstoneStreamingImageVolume:${volumeName}`;
+      const volume = await volumeLoader.createAndCacheVolume(volumeId.current, { imageIds });
+      volume.load();
 
-      // Generate centerline for future enhancement
-      const centerlinePoints = generateCenterlinePoints(rootPoints);
-      console.log('📏 Generated centerline with', centerlinePoints.length, 'points (for future CPR implementation)');
-      
-      // Create rendering engine
-      const renderingEngine = new RenderingEngine(renderingEngineId);
+      // Wait for volume to load
+      console.log('⏳ Waiting for volume to load...');
+      await new Promise(resolve => setTimeout(resolve, 3000));
 
-      // Enable viewport
-      renderingEngine.enableElement({
-        viewportId,
-        type: Enums.ViewportType.ORTHOGRAPHIC,
-        element: containerRef.current!,
-        defaultOptions: {
-          orientation: Enums.OrientationAxis.AXIAL,
-          background: [0, 0, 0],
-        },
-      });
-
-      // Get viewport and set the original volume
-      const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
-      viewport.setVolumes([{ volumeId }]);
-      viewport.render();
-      
-      console.log('✅ Cornerstone3D viewport created with original volume');
-
-      // Setup tools
-      await setupCPRTools();
-
-      // Apply optimal camera position for CPR view
-      setTimeout(() => {
-        try {
-          const camera = viewport.getCamera();
-          
-          // Position camera to view the volume from a good angle for CPR
-          const bounds = viewport.getBounds();
-          if (bounds) {
-            const center = [
-              (bounds[0] + bounds[1]) / 2,
-              (bounds[2] + bounds[3]) / 2,
-              (bounds[4] + bounds[5]) / 2,
-            ];
-            
-            // Set camera for CPR view
-            viewport.setCamera({
-              focalPoint: center,
-              position: [center[0], center[1], center[2] + 200],
-              viewUp: [0, 1, 0],
-            });
-            
-            viewport.render();
-          }
-        } catch (error) {
-          console.warn('Camera setup warning:', error);
+      // Clean up any existing rendering engine with this ID
+      try {
+        const existingEngine = getRenderingEngine(renderingEngineId);
+        if (existingEngine) {
+          existingEngine.destroy();
         }
-      }, 1000);
+      } catch (e) {
+        // No existing engine
+      }
+
+      // Create rendering engine
+      renderingEngine.current = new RenderingEngine(renderingEngineId);
+
+      // Check if rendering engine was created successfully
+      if (!renderingEngine.current) {
+        throw new Error('Failed to create rendering engine');
+      }
+
+      // Setup viewports
+      await setupViewports();
+      
+      // Setup volume rendering
+      await setupVolumeRendering();
+      
+      // Setup tools and picking
+      await setupToolsAndPicking();
 
       setIsInitialized(true);
       setIsLoading(false);
-      console.log('✅ Cornerstone CPR initialized');
 
-    } catch (error) {
-      console.error('❌ Cornerstone CPR initialization failed:', error);
-      setError(`Failed to initialize CPR: ${error}`);
+      console.log('✅ Cornerstone3D CPR Viewport initialized successfully!');
+
+    } catch (err) {
+      console.error('❌ Failed to initialize Cornerstone CPR Viewport:', err);
+      setError(`Failed to initialize: ${err}`);
       setIsLoading(false);
     }
   };
 
-  const setupCPRTools = async () => {
+  const setupViewports = async () => {
+    console.log('🔧 Setting up CPR viewports...');
+
+    // Check if DOM elements are ready
+    if (!axialRef.current || !sagittalRef.current || !coronalRef.current) {
+      console.error('Viewport DOM elements not ready');
+      return;
+    }
+
+    if (!renderingEngine.current) {
+      console.error('Rendering engine not initialized');
+      return;
+    }
+
     try {
-      // Add tools
-      cornerstoneTools.addTool(ZoomTool);
-      cornerstoneTools.addTool(PanTool);
-      cornerstoneTools.addTool(WindowLevelTool);
-      cornerstoneTools.addTool(StackScrollTool);
+      // Use enableElement like ProperMPRViewport does
+      const viewports = [
+        { id: 'cpr-main', element: axialRef.current, orientation: Enums.OrientationAxis.AXIAL },
+        { id: 'cpr-longitudinal', element: sagittalRef.current, orientation: Enums.OrientationAxis.SAGITTAL },
+        { id: 'cpr-cross-section', element: coronalRef.current, orientation: Enums.OrientationAxis.CORONAL },
+      ];
 
-      // Destroy existing tool group if it exists
-      try {
-        const existingToolGroup = ToolGroupManager.getToolGroup(toolGroupId);
-        if (existingToolGroup) {
-          ToolGroupManager.destroyToolGroup(toolGroupId);
-        }
-      } catch (error) {
-        // Tool group doesn't exist
-      }
-
-      // Create tool group
-      const toolGroup = ToolGroupManager.createToolGroup(toolGroupId);
-      if (!toolGroup) {
-        throw new Error('Failed to create CPR tool group');
-      }
-
-      // Add tools to group
-      toolGroup.addTool(ZoomTool.toolName);
-      toolGroup.addTool(PanTool.toolName);
-      toolGroup.addTool(WindowLevelTool.toolName);
-      toolGroup.addTool(StackScrollTool.toolName);
-
-      // Set tool bindings
-      toolGroup.setToolActive(ZoomTool.toolName, {
-        bindings: [{ mouseButton: MouseBindings.Secondary }],
+      viewports.forEach(({ id, element, orientation }) => {
+        renderingEngine.current!.enableElement({
+          viewportId: id,
+          type: Enums.ViewportType.ORTHOGRAPHIC,
+          element: element,
+          defaultOptions: {
+            orientation,
+            background: backgroundColor as Types.Point3,
+          },
+        });
       });
-
-      toolGroup.setToolActive(WindowLevelTool.toolName, {
-        bindings: [{ mouseButton: MouseBindings.Primary }],
-      });
-
-      toolGroup.setToolActive(StackScrollTool.toolName, {
-        bindings: [{ mouseButton: MouseBindings.Wheel }],
-      });
-
-      // Add viewport to tool group
-      toolGroup.addViewport(viewportId, renderingEngineId);
-
-      console.log('✅ CPR tools setup complete');
     } catch (error) {
-      console.error('❌ Failed to setup CPR tools:', error);
+      console.error('Failed to setup viewports:', error);
       throw error;
     }
   };
 
-  const handleZoom = (factor: number) => {
+  const setupVolumeRendering = async () => {
+    console.log('🔧 Setting up CPR volume rendering...');
+
     try {
-      console.log('🔍 Cornerstone CPR Zoom:', factor);
-      
-      // Get the existing rendering engine instead of creating a new one
-      const renderingEngine = getRenderingEngine(renderingEngineId);
-      if (!renderingEngine) {
-        console.warn('❌ Rendering engine not found');
-        return;
+      // Generate centerline FIRST before setting up viewports
+      const centerline = CenterlineGenerator.generateFromRootPoints(
+        rootPoints.map((point, index) => ({
+          id: `root-${index}`,
+          position: [point.x, point.y, point.z] as [number, number, number],
+          type: index === 0 ? RootPointType.LV_OUTFLOW : index === 1 ? RootPointType.AORTIC_VALVE : RootPointType.ASCENDING_AORTA,
+          timestamp: Date.now()
+        }))
+      );
+
+      // Set volumes and immediately apply CPR transformations
+      for (const viewportId of viewportIds) {
+        const viewport = renderingEngine.current!.getViewport(viewportId) as Types.IVolumeViewport;
+        viewport.setVolumes([{ volumeId: volumeId.current }]);
+        
+        // Don't render with default orientation - apply CPR first
       }
+
+      // Apply CPR transformations BEFORE any render
+      console.log('🚀 About to apply CPR transformations...');
+      await applyCPRToViewports(centerline);
       
-      const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
-      
-      if (viewport) {
-        const camera = viewport.getCamera();
-        const currentZoom = camera.parallelScale || 100;
-        const newZoom = currentZoom / factor;
-        
-        viewport.setCamera({
-          parallelScale: newZoom,
-        });
-        
+      // Force render all viewports with CPR positioning
+      console.log('🎬 Rendering CPR views...');
+      viewportIds.forEach(id => {
+        const viewport = renderingEngine.current!.getViewport(id);
+        console.log(`📺 Rendering viewport: ${id}`);
         viewport.render();
-        setZoom(zoom * factor);
-        
-        console.log('✅ Cornerstone zoom applied:', { factor, oldZoom: currentZoom, newZoom });
-      }
-    } catch (error) {
-      console.error('❌ Cornerstone zoom error:', error);
+      });
+
+      // Force an additional render cycle to ensure changes take effect
+      setTimeout(() => {
+        viewportIds.forEach(id => {
+          renderingEngine.current!.getViewport(id).render();
+        });
+        console.log('🔄 Additional render cycle completed');
+      }, 100);
+
+      console.log('✅ CPR views initialized successfully');
+    } catch (err) {
+      console.error('Failed to setup CPR volume rendering:', err);
+      throw err;
     }
   };
 
-  const handleWindowLevel = (deltaWindow: number, deltaLevel: number) => {
-    try {
-      console.log('🎨 Cornerstone CPR Window/Level:', { deltaWindow, deltaLevel });
-      
-      // Get the existing rendering engine instead of creating a new one
-      const renderingEngine = getRenderingEngine(renderingEngineId);
-      if (!renderingEngine) {
-        console.warn('❌ Rendering engine not found');
-        return;
-      }
-      
-      const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
-      
-      if (viewport) {
-        const newWindow = Math.max(1, windowLevel.window + deltaWindow);
-        const newLevel = windowLevel.level + deltaLevel;
-        
-        viewport.setProperties({
-          voiRange: {
-            lower: newLevel - newWindow / 2,
-            upper: newLevel + newWindow / 2,
-          },
-        });
-        
-        viewport.render();
-        setWindowLevel({ window: newWindow, level: newLevel });
-        
-        console.log('✅ Cornerstone window/level applied:', { newWindow, newLevel });
-      }
-    } catch (error) {
-      console.error('❌ Cornerstone window/level error:', error);
+  const applyCPRToViewports = async (centerline: any) => {
+    console.log('🔄 Applying CPR transformations to viewports...');
+    
+    // Get the volume viewport
+    const mainViewport = renderingEngine.current!.getViewport('cpr-main') as Types.IVolumeViewport;
+    const longViewport = renderingEngine.current!.getViewport('cpr-longitudinal') as Types.IVolumeViewport;
+    const crossViewport = renderingEngine.current!.getViewport('cpr-cross-section') as Types.IVolumeViewport;
+    
+    if (!mainViewport || !longViewport || !crossViewport) {
+      console.error('Failed to get viewports for CPR');
+      return;
     }
+
+    // Find the annular plane location (approximately 2/3 along the centerline)
+    const annularIndex = Math.floor(centerline.length * 0.67);
+    const annularPoint = [
+      centerline.position[annularIndex * 3],
+      centerline.position[annularIndex * 3 + 1],
+      centerline.position[annularIndex * 3 + 2]
+    ];
+
+    // Calculate the tangent at the annular point (centerline direction)
+    const tangentIndex = Math.min(annularIndex + 1, centerline.length - 1);
+    const tangent = [
+      centerline.position[tangentIndex * 3] - centerline.position[annularIndex * 3],
+      centerline.position[tangentIndex * 3 + 1] - centerline.position[annularIndex * 3 + 1],
+      centerline.position[tangentIndex * 3 + 2] - centerline.position[annularIndex * 3 + 2]
+    ];
+    
+    // Normalize tangent
+    const tangentLength = Math.sqrt(tangent[0]**2 + tangent[1]**2 + tangent[2]**2);
+    const normalizedTangent = tangent.map(t => t / tangentLength);
+
+    // Set up main CPR view (perpendicular to centerline at annulus)
+    // This gives us the en face view of the annulus
+    const { viewUp, viewPlaneNormal } = createOrthogonalVectors(normalizedTangent);
+    
+    // Reset all cameras first
+    mainViewport.resetCamera();
+    longViewport.resetCamera();
+    crossViewport.resetCamera();
+    
+    console.log('🎯 Setting CPR cameras:', {
+      annularPoint,
+      normalizedTangent,
+      viewUp,
+      viewPlaneNormal
+    });
+    
+    // Main view: En face view of annulus (perpendicular to centerline)
+    mainViewport.setCamera({
+      position: [
+        annularPoint[0] + normalizedTangent[0] * 200,
+        annularPoint[1] + normalizedTangent[1] * 200,
+        annularPoint[2] + normalizedTangent[2] * 200
+      ] as Types.Point3,
+      focalPoint: annularPoint as Types.Point3,
+      viewUp: viewUp as Types.Point3,
+      viewPlaneNormal: normalizedTangent as Types.Point3,
+      parallelScale: 25 // Zoom in more for annulus view
+    });
+
+    // Set slab thickness for CPR-like visualization
+    const mainProperties = mainViewport.getProperties();
+    mainViewport.setProperties({
+      ...mainProperties,
+      slabThickness: 10 // Thin slab for CPR effect
+    });
+
+    // Longitudinal view: Along the centerline showing the curve
+    // Calculate multiple points along centerline for better orientation
+    const startIndex = Math.max(0, annularIndex - 10);
+    const endIndex = Math.min(centerline.length - 1, annularIndex + 10);
+    
+    const startPoint = [
+      centerline.position[startIndex * 3],
+      centerline.position[startIndex * 3 + 1],
+      centerline.position[startIndex * 3 + 2]
+    ];
+    
+    const endPoint = [
+      centerline.position[endIndex * 3],
+      centerline.position[endIndex * 3 + 1],
+      centerline.position[endIndex * 3 + 2]
+    ];
+    
+    // Create a view that shows the centerline from the side
+    const centerlineDirection = [
+      endPoint[0] - startPoint[0],
+      endPoint[1] - startPoint[1],
+      endPoint[2] - startPoint[2]
+    ];
+    
+    const clLength = Math.sqrt(centerlineDirection[0]**2 + centerlineDirection[1]**2 + centerlineDirection[2]**2);
+    const normalizedCLDir = centerlineDirection.map(d => d / clLength);
+    
+    longViewport.setCamera({
+      position: [
+        annularPoint[0] + viewPlaneNormal[0] * 200,
+        annularPoint[1] + viewPlaneNormal[1] * 200,
+        annularPoint[2] + viewPlaneNormal[2] * 200
+      ] as Types.Point3,
+      focalPoint: annularPoint as Types.Point3,
+      viewUp: [0, 0, 1] as Types.Point3, // Keep anatomical orientation
+      viewPlaneNormal: viewPlaneNormal as Types.Point3,
+      parallelScale: 40 // Wider view to see the curve
+    });
+
+    const longProperties = longViewport.getProperties();
+    longViewport.setProperties({
+      ...longProperties,
+      slabThickness: 20 // Thicker slab to show more of the curve
+    });
+
+    // Cross-sectional view: True cross-section perpendicular to both other views
+    crossViewport.setCamera({
+      position: [
+        annularPoint[0] + viewUp[0] * 200,
+        annularPoint[1] + viewUp[1] * 200,
+        annularPoint[2] + viewUp[2] * 200
+      ] as Types.Point3,
+      focalPoint: annularPoint as Types.Point3,
+      viewUp: normalizedTangent as Types.Point3,
+      viewPlaneNormal: viewUp as Types.Point3,
+      parallelScale: 35
+    });
+
+    const crossProperties = crossViewport.getProperties();
+    crossViewport.setProperties({
+      ...crossProperties,
+      slabThickness: 5 // Very thin for true cross-section
+    });
+
+    console.log('✅ CPR views configured at annular plane');
   };
 
-  const resetView = () => {
-    try {
-      // Get the existing rendering engine instead of creating a new one
-      const renderingEngine = getRenderingEngine(renderingEngineId);
-      if (!renderingEngine) {
-        console.warn('❌ Rendering engine not found');
-        return;
-      }
-      
-      const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
-      
-      if (viewport) {
-        viewport.resetCamera();
-        viewport.setProperties({
-          voiRange: {
-            lower: 300 - 1000 / 2,
-            upper: 300 + 1000 / 2,
-          },
-        });
-        viewport.render();
-        
-        setZoom(1.0);
-        setWindowLevel({ window: 1000, level: 300 });
-        console.log('✅ Cornerstone view reset');
-      }
-    } catch (error) {
-      console.error('❌ Cornerstone reset error:', error);
+  const createOrthogonalVectors = (direction: number[]): { viewUp: number[], viewPlaneNormal: number[] } => {
+    // Create two vectors orthogonal to the given direction
+    let viewUp = [0, 1, 0]; // Default up vector
+    
+    // If direction is too close to Y axis, use X axis as up
+    const dotY = Math.abs(direction[0] * 0 + direction[1] * 1 + direction[2] * 0);
+    if (dotY > 0.9) {
+      viewUp = [1, 0, 0];
     }
-  };
-
-  useEffect(() => {
-    if (patientInfo && rootPoints.length >= 3) {
-      initializeCornerstoneCPR();
-    }
-
-    return () => {
-      // Cleanup
-      try {
-        const existingToolGroup = ToolGroupManager.getToolGroup(toolGroupId);
-        if (existingToolGroup) {
-          ToolGroupManager.destroyToolGroup(toolGroupId);
-        }
-      } catch (error) {
-        console.warn('Cleanup warning:', error);
-      }
+    
+    // Cross product to get perpendicular vector
+    const viewPlaneNormal = [
+      viewUp[1] * direction[2] - viewUp[2] * direction[1],
+      viewUp[2] * direction[0] - viewUp[0] * direction[2],
+      viewUp[0] * direction[1] - viewUp[1] * direction[0]
+    ];
+    
+    // Normalize
+    const vpnLength = Math.sqrt(viewPlaneNormal[0]**2 + viewPlaneNormal[1]**2 + viewPlaneNormal[2]**2);
+    const normalizedVPN = viewPlaneNormal.map(v => v / vpnLength);
+    
+    // Recalculate viewUp to ensure orthogonality
+    const correctedViewUp = [
+      direction[1] * normalizedVPN[2] - direction[2] * normalizedVPN[1],
+      direction[2] * normalizedVPN[0] - direction[0] * normalizedVPN[2],
+      direction[0] * normalizedVPN[1] - direction[1] * normalizedVPN[0]
+    ];
+    
+    const vuLength = Math.sqrt(correctedViewUp[0]**2 + correctedViewUp[1]**2 + correctedViewUp[2]**2);
+    const normalizedVU = correctedViewUp.map(v => v / vuLength);
+    
+    return {
+      viewUp: normalizedVU,
+      viewPlaneNormal: normalizedVPN
     };
-  }, [patientInfo, rootPoints]);
+  };
+
+  const setupToolsAndPicking = async () => {
+    console.log('🔧 Setting up tools and picking...');
+
+    // Add tools
+    cornerstoneTools.addTool(ZoomTool);
+    cornerstoneTools.addTool(PanTool);
+    cornerstoneTools.addTool(WindowLevelTool);
+
+    // Create tool group
+    try {
+      const existingToolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+      if (existingToolGroup) {
+        ToolGroupManager.destroyToolGroup(toolGroupId);
+      }
+    } catch (error) {
+      // Tool group doesn't exist
+    }
+
+    toolGroup.current = ToolGroupManager.createToolGroup(toolGroupId);
+
+    // Configure tools
+    toolGroup.current.addTool(ZoomTool.toolName);
+    toolGroup.current.addTool(PanTool.toolName);  
+    toolGroup.current.addTool(WindowLevelTool.toolName);
+
+    toolGroup.current.setToolActive(ZoomTool.toolName, {
+      bindings: [{ mouseButton: MouseBindings.Secondary }],
+    });
+
+    toolGroup.current.setToolActive(PanTool.toolName, {
+      bindings: [{ mouseButton: MouseBindings.Auxiliary }],
+    });
+
+    // Add viewports to tool group
+    viewportIds.forEach(viewportId => {
+      toolGroup.current!.addViewport(viewportId, renderingEngineId);
+    });
+
+    // Setup VTK picker for cusp dot placement
+    picker.current = vtkCellPicker.newInstance({ opacityThreshold: 0.0001 });
+    picker.current.setPickFromList(1);
+    picker.current.setTolerance(0);
+    picker.current.initializePickList();
+
+    // Add volume actors to pick list and setup click handlers
+    viewportIds.forEach(viewportId => {
+      const viewport = renderingEngine.current!.getViewport(viewportId) as Types.IVolumeViewport;
+      const defaultActor = viewport.getDefaultActor();
+      if (defaultActor?.actor) {
+        picker.current.addPickList(defaultActor.actor);
+        prepareImageDataForPicking(viewport);
+      }
+
+      // Add click handler for cusp dot placement
+      const element = viewport.element;
+      element.addEventListener('mousedown', (evt) => {
+        if (evt.button === 0 && onCuspDotsUpdate && isPlacingCuspDots && cuspDots.length < 3) { // Left click
+          handleCuspDotPlacement(evt, viewport, viewportId);
+        }
+      });
+    });
+  };
+
+  const prepareImageDataForPicking = (viewport: Types.IVolumeViewport) => {
+    const volumeActor = viewport.getDefaultActor()?.actor;
+    if (!volumeActor) return;
+
+    const imageData = volumeActor.getMapper().getInputData();
+    if (!imageData) return;
+
+    const { voxelManager } = imageData.get('voxelManager') || {};
+    if (!voxelManager) return;
+
+    // Create fake scalars for VTK picking
+    const fakeScalars = {
+      getData: () => voxelManager.getCompleteScalarDataArray(),
+      getNumberOfComponents: () => voxelManager.numberOfComponents,
+      getDataType: () => voxelManager.getCompleteScalarDataArray().constructor.name,
+    };
+
+    imageData.setPointData({
+      getScalars: () => fakeScalars,
+    });
+  };
+
+  const handleCuspDotPlacement = (evt: MouseEvent, viewport: Types.IVolumeViewport, viewportId: string) => {
+    evt.preventDefault();
+    evt.stopPropagation();
+
+    const element = viewport.element;
+    const rect = element.getBoundingClientRect();
+    const x = evt.clientX - rect.left;
+    const y = evt.clientY - rect.top;
+
+    // Get canvas coordinates
+    const canvasPos = [x, y] as Types.Point2;
+    const worldPos = viewport.canvasToWorld(canvasPos);
+    // For CPR views, we need to ensure the picked point is on the annular plane
+    if (worldPos) {
+      addCuspDot(worldPos as [number, number, number]);
+    }
+  };
+
+  const addCuspDot = (worldPos: [number, number, number]) => {
+    const cuspTypes: Array<'left' | 'right' | 'non-coronary'> = ['left', 'right', 'non-coronary'];
+    const colors = ['#22c55e', '#ef4444', '#eab308']; // green, red, yellow
+    
+    const cuspType = cuspTypes[cuspDots.length];
+    const color = colors[cuspDots.length];
+    const dotId = `cusp_${cuspType}_${Date.now()}`;
+
+    console.log(`🎯 Adding cusp dot: ${cuspType} at`, worldPos);
+
+    // Create VTK sphere
+    const sphereSource = vtkSphereSource.newInstance();
+    sphereSource.setCenter(worldPos);
+    sphereSource.setRadius(3);
+
+    const sphereMapper = vtkMapper.newInstance();
+    sphereMapper.setInputConnection(sphereSource.getOutputPort());
+
+    const sphereActor = vtkActor.newInstance();
+    sphereActor.setMapper(sphereMapper);
+    sphereActor.getProperty().setColor(...hexToRgb(color));
+
+    // Add sphere to all viewports
+    viewportIds.forEach(viewportId => {
+      const viewport = renderingEngine.current!.getViewport(viewportId) as Types.IVolumeViewport;
+      const actorUID = `${dotId}_${viewportId}`;
+      viewport.addActor({ actor: sphereActor, uid: actorUID });
+      viewport.render();
+    });
+
+    // Add to state
+    const newDot = {
+      id: dotId,
+      worldPos,
+      color,
+      cuspType,
+      actor: sphereActor
+    };
+
+    const updatedDots = [...cuspDots, newDot];
+    setCuspDots(updatedDots);
+
+    // Notify parent component
+    if (onCuspDotsUpdate) {
+      const dotsForCallback = updatedDots.map(dot => ({
+        id: dot.id,
+        pos: dot.worldPos,
+        color: dot.color,
+        cuspType: dot.cuspType
+      }));
+      onCuspDotsUpdate(dotsForCallback);
+    }
+
+    console.log(`✅ Cusp dot placed: ${cuspType} (${updatedDots.length}/3)`);
+  };
+
+  const clearCuspDots = () => {
+    console.log('🧹 Clearing all cusp dots...');
+    
+    // Remove actors from all viewports
+    cuspDots.forEach(dot => {
+      viewportIds.forEach(viewportId => {
+        const viewport = renderingEngine.current!.getViewport(viewportId) as Types.IVolumeViewport;
+        const actorUID = `${dot.id}_${viewportId}`;
+        viewport.removeActors([actorUID]);
+        viewport.render();
+      });
+    });
+
+    setCuspDots([]);
+    
+    if (onCuspDotsUpdate) {
+      onCuspDotsUpdate([]);
+    }
+  };
+
+  const hexToRgb = (hex: string): [number, number, number] => {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result ? [
+      parseInt(result[1], 16) / 255,
+      parseInt(result[2], 16) / 255,
+      parseInt(result[3], 16) / 255
+    ] : [1, 1, 1];
+  };
 
   return (
-    <div className="w-full h-full relative">
-      {/* Demo Notice */}
-      <div className="absolute top-4 left-4 bg-green-600/90 backdrop-blur-sm p-3 rounded-lg z-20">
-        <div className="flex items-center gap-2 text-white text-sm">
-          <span>🏥</span>
-          <div>
-            <div className="font-medium">Cornerstone3D Volume View</div>
-            <div className="text-xs text-green-200">
-              Working tools - Full CPR coming next
+    <div className="flex flex-col w-full h-full bg-slate-900">
+      {/* Header */}
+      <div className="flex items-center justify-between p-3 bg-slate-800 border-b border-slate-700">
+        <div className="flex items-center gap-4">
+          <h3 className="text-lg font-semibold text-white">
+            CPR Annulus Definition - Place 3 Cusp Nadir Points
+          </h3>
+          {patientInfo && (
+            <div className="text-sm text-slate-300">
+              Patient: {patientInfo.patientName || 'Unknown'}
             </div>
+          )}
+        </div>
+        
+        <div className="flex items-center gap-4">
+          {/* Cusp Dot Controls - Only show when callback is provided */}
+          {onCuspDotsUpdate && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setIsPlacingCuspDots(!isPlacingCuspDots)}
+                className={`px-3 py-1 text-sm rounded flex items-center gap-1 transition-colors ${
+                  isPlacingCuspDots 
+                    ? 'bg-teal-600 text-white' 
+                    : 'bg-slate-600 text-slate-300 hover:bg-slate-500'
+                }`}
+              >
+                <FaDotCircle />
+                {isPlacingCuspDots ? 'Active' : 'Place Cusps'}
+              </button>
+              <button
+                onClick={clearCuspDots}
+                className="px-3 py-1 text-xs rounded bg-red-600 text-white hover:bg-red-700 transition-colors"
+                disabled={cuspDots.length === 0}
+              >
+                Clear ({cuspDots.length}/3)
+              </button>
+            </div>
+          )}
+
+          {/* Status */}
+          <div className="text-xs text-slate-400">
+            Dots: {cuspDots.length}/3 | Root Points: {rootPoints.length}
           </div>
         </div>
       </div>
 
+      {/* Loading/Error States */}
       {isLoading && (
         <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 z-10">
           <div className="flex items-center gap-3 text-white">
-            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-green-500"></div>
+            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
             <span>Loading Cornerstone3D CPR...</span>
           </div>
         </div>
@@ -464,137 +731,66 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
       {error && (
         <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 z-10">
           <div className="bg-red-900 border border-red-700 rounded-lg p-6 text-white max-w-lg">
-            <h3 className="font-semibold mb-2 flex items-center gap-2">
-              ⚠️ Cornerstone CPR Error
-            </h3>
-            <p className="text-sm whitespace-pre-line">{error}</p>
+            <h3 className="font-semibold mb-2">⚠️ Initialization Error</h3>
+            <p className="text-sm whitespace-pre-line mb-3">{error}</p>
+            <button
+              onClick={() => {
+                setError(null);
+                setTimeout(() => initializeCornerstoneCPR(), 100);
+              }}
+              className="bg-red-700 hover:bg-red-600 px-3 py-1 rounded text-xs"
+            >
+              Retry
+            </button>
           </div>
         </div>
       )}
 
-      {/* Tool Panel - Top Bar */}
-      <div className="absolute top-0 left-0 right-0 z-20">
-        <div className="flex items-center justify-between p-3 bg-slate-800 border-b border-slate-700">
-          {/* Left Section - CPR Info */}
-          <div className="flex items-center gap-4">
-            <div className="text-white">
-              <div className="font-medium">Cornerstone3D Volume View</div>
-              <div className="text-xs text-slate-400">
-                {rootPoints.length} anatomical points • Working zoom/window tools
-              </div>
-            </div>
-          </div>
-
-          {/* Right Section - Tools */}
-          <div className="flex items-center gap-4">
-            {/* Zoom Tools */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => handleZoom(1.5)}
-                className="p-2 bg-blue-600 hover:bg-blue-500 text-white rounded"
-                title="Zoom In"
-              >
-                <FaSearchPlus />
-              </button>
-              <button
-                onClick={() => handleZoom(0.67)}
-                className="p-2 bg-blue-600 hover:bg-blue-500 text-white rounded"
-                title="Zoom Out"
-              >
-                <FaSearchMinus />
-              </button>
-            </div>
-
-            {/* Window/Level Tools */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => handleWindowLevel(200, 0)}
-                className="p-2 bg-orange-600 hover:bg-orange-500 text-white rounded text-sm"
-              >
-                W+
-              </button>
-              <button
-                onClick={() => handleWindowLevel(-200, 0)}
-                className="p-2 bg-orange-600 hover:bg-orange-500 text-white rounded text-sm"
-              >
-                W-
-              </button>
-              <button
-                onClick={() => handleWindowLevel(0, 50)}
-                className="p-2 bg-purple-600 hover:bg-purple-500 text-white rounded text-sm"
-              >
-                L+
-              </button>
-              <button
-                onClick={() => handleWindowLevel(0, -50)}
-                className="p-2 bg-purple-600 hover:bg-purple-500 text-white rounded text-sm"
-              >
-                L-
-              </button>
-            </div>
-
-            {/* Preset Window/Level */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => {
-                  setWindowLevel({ window: 400, level: 40 });
-                  handleWindowLevel(400 - windowLevel.window, 40 - windowLevel.level);
-                }}
-                className="p-2 bg-slate-600 hover:bg-slate-500 text-white rounded text-sm"
-              >
-                Soft Tissue
-              </button>
-              <button
-                onClick={() => {
-                  setWindowLevel({ window: 1500, level: 300 });
-                  handleWindowLevel(1500 - windowLevel.window, 300 - windowLevel.level);
-                }}
-                className="p-2 bg-slate-600 hover:bg-slate-500 text-white rounded text-sm"
-              >
-                Bone
-              </button>
-            </div>
-
-            {/* Current W/L Values */}
-            <div className="text-white text-sm">
-              W:{Math.round(windowLevel.window)} L:{Math.round(windowLevel.level)}
-            </div>
-
-            {/* Reset */}
-            <button
-              onClick={resetView}
-              className="p-2 bg-gray-600 hover:bg-gray-500 text-white rounded flex items-center gap-1"
-              title="Reset View"
-            >
-              <FaUndo />
-            </button>
-          </div>
+      {/* Instructions overlay */}
+      {onCuspDotsUpdate && isPlacingCuspDots && (
+        <div className="absolute top-16 left-4 bg-teal-600 bg-opacity-90 text-white text-sm px-3 py-2 rounded z-10">
+          Left-click on any view to place cusp nadir points ({cuspDots.length}/3)
         </div>
+      )}
 
-        {/* Secondary Info Bar */}
-        <div className="flex items-center justify-between px-3 py-2 bg-slate-700 text-xs">
-          <div className="text-slate-300">
-            <span>Series: {patientInfo?.seriesInstanceUID?.slice(-12) || 'Unknown'}</span>
-            <span className="ml-4">Engine: Cornerstone3D</span>
+      {/* Three-View CPR Layout for Annulus Definition */}
+      <div className="flex-1 grid grid-cols-3 gap-1 bg-slate-900">
+        {/* CPR Main View - En Face Annulus */}
+        <div className="relative bg-black border border-teal-600">
+          <div className="absolute top-2 left-2 z-10 bg-teal-900 bg-opacity-90 text-white text-xs px-2 py-1 rounded flex items-center gap-1">
+            <div className="w-2 h-2 bg-teal-400 rounded-full animate-pulse"></div>
+            CPR: Annulus En Face
           </div>
-          <div className="flex items-center gap-4 text-slate-300">
-            <span>🖱️ Left: W/L</span>
-            <span>🖱️ Right: Zoom</span>
-            <span>🖱️ Wheel: Scroll</span>
-            <span className="text-green-400">✓ CPR Active</span>
+          <div className="absolute bottom-2 left-2 z-10 bg-black bg-opacity-70 text-teal-300 text-[10px] px-2 py-1 rounded">
+            Perpendicular to centerline
           </div>
+          <div ref={axialRef} className="w-full h-full" />
+        </div>
+        
+        {/* CPR Longitudinal View */}
+        <div className="relative bg-black border border-teal-600">
+          <div className="absolute top-2 left-2 z-10 bg-teal-900 bg-opacity-90 text-white text-xs px-2 py-1 rounded flex items-center gap-1">
+            <div className="w-2 h-2 bg-teal-400 rounded-full animate-pulse"></div>
+            CPR: Curved Longitudinal
+          </div>
+          <div className="absolute bottom-2 left-2 z-10 bg-black bg-opacity-70 text-teal-300 text-[10px] px-2 py-1 rounded">
+            Along aortic centerline
+          </div>
+          <div ref={sagittalRef} className="w-full h-full" />
+        </div>
+        
+        {/* CPR Cross-Section View */}
+        <div className="relative bg-black border border-teal-600">
+          <div className="absolute top-2 left-2 z-10 bg-teal-900 bg-opacity-90 text-white text-xs px-2 py-1 rounded flex items-center gap-1">
+            <div className="w-2 h-2 bg-teal-400 rounded-full animate-pulse"></div>
+            CPR: Cross-Section
+          </div>
+          <div className="absolute bottom-2 left-2 z-10 bg-black bg-opacity-70 text-teal-300 text-[10px] px-2 py-1 rounded">
+            Orthogonal slice
+          </div>
+          <div ref={coronalRef} className="w-full h-full" />
         </div>
       </div>
-
-      <div 
-        ref={containerRef}
-        className="flex-1 relative bg-black"
-        style={{ 
-          minHeight: '400px',
-          maxHeight: '800px',
-          marginTop: '80px' // Space for toolbar
-        }}
-      />
     </div>
   );
 };

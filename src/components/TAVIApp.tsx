@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { FaUser, FaStethoscope, FaEye, FaRuler, FaCog, FaChevronRight, FaCheck, FaExclamationTriangle, FaCircle } from 'react-icons/fa';
 import PatientSearch from './PatientSearch';
-import HybridCPRViewport from './HybridCPRViewport';
+// import HybridCPRViewport from './HybridCPRViewport'; // Disabled - ImageCPRMapper not suitable for data extraction
 import CornerstoneCPRViewport from './CornerstoneCPRViewport';
-import TriViewCPRViewport from './TriViewCPRViewport';
+// import TriViewCPRViewport from './TriViewCPRViewport'; // Replaced with pure Cornerstone3D CPR approach
+import TrueCPRViewport from './TrueCPRViewport'; // Fixed volume loading with voxelManager approach
 import ProperMPRViewport from './ProperMPRViewport';
 import { useWorkflowState } from '../hooks/useWorkflowState';
 import { WorkflowStage, RootPointType } from '../types/WorkflowTypes';
@@ -373,13 +374,14 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
           
           {/* CPR Viewport Container */}
           <div className="flex-1 relative bg-black">
-            <HybridCPRViewport
+            <TrueCPRViewport
               patientInfo={state.patientInfo}
               rootPoints={state.rootPoints.map(point => ({
                 x: point.position[0],
                 y: point.position[1],
                 z: point.position[2]
               }))}
+              stage="analysis"
               width={800}
               height={600}
               backgroundColor={[0, 0, 0]}
@@ -402,25 +404,14 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
           </div>
         </div>
       ) : state.currentStage === WorkflowStage.ANNULUS_DEFINITION && state.patientInfo && state.rootPoints.length >= 3 ? (
-        <TriViewCPRViewport
+        <TrueCPRViewport
           patientInfo={state.patientInfo}
           rootPoints={state.rootPoints.map(point => ({
             x: point.position[0],
             y: point.position[1],
             z: point.position[2]
           }))}
-          annularPlane={state.annularPlane}
-          modifiedCenterline={state.centerline ? 
-            Array.from({ length: state.centerline.length }, (_, i) => ({
-              x: state.centerline!.position[i * 3],
-              y: state.centerline!.position[i * 3 + 1], 
-              z: state.centerline!.position[i * 3 + 2]
-            })) : undefined
-          }
-          onAnnulusPointSelected={(point, crossSectionIndex) => {
-            console.log('Annulus point selected:', { point, crossSectionIndex });
-            // Here you could add the selected annulus point to the workflow state
-          }}
+          stage="annulus_definition"
           onCuspDotsUpdate={(dots) => {
             // Defer state updates to avoid React warning about updating during render
             setTimeout(async () => {

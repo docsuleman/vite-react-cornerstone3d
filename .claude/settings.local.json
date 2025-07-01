@@ -14,7 +14,10 @@
       "Bash(sed:*)",
       "Bash(npm run lint)",
       "Bash(ls:*)",
-      "Bash(rg:*)"
+      "Bash(rg:*)",
+      "Bash(touch:*)",
+      "WebFetch(domain:kitware.github.io)",
+      "WebFetch(domain:github.com)"
     ],
     "deny": []
   }

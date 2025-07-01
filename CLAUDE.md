@@ -66,3 +66,111 @@ This is a React + Vite application for medical imaging visualization using Corne
 
 - Expects DICOM server at `127.0.0.1/orthanc/dicom-web`
 - Sample data includes Study/Series instance UIDs for testing
+
+## TAVI CPR Viewport Configuration (TrueCPRViewport.tsx)
+
+### Working CPR Configuration for TAVI Planning
+
+The `TrueCPRViewport` component implements a successful three-view CPR layout for TAVI planning using **Cornerstone3D integration with VTK.js CPR mappers** (not pure VTK.js approach).
+
+#### Architecture Approach
+
+**Hybrid Cornerstone3D + VTK.js CPR Implementation:**
+- Uses Cornerstone3D viewports as containers (not pure VTK.js renderwindows)
+- Integrates vtkImageCPRMapper within Cornerstone3D viewport system
+- Leverages Cornerstone3D volume loading and DICOM handling
+- Adds VTK CPR actors to Cornerstone3D viewports using `csViewport.addActor()`
+
+This approach combines:
+- **Cornerstone3D**: Volume loading, DICOM handling, viewport management
+- **VTK.js**: CPR reconstruction algorithms (vtkImageCPRMapper)
+- **Integration**: VTK actors rendered within Cornerstone3D viewports
+
+#### Viewport Setup
+```typescript
+const viewports = [
+  { 
+    id: 'cpr-main',
+    title: 'Cross Section (Orthographic)',
+    type: 'orthographic',  // True cross-section
+    orientation: CornerstoneEnums.OrientationAxis.AXIAL,
+    cprWidth: 150  // 15cm width for good coverage
+  },
+  { 
+    id: 'cpr-longitudinal', 
+    title: 'CPR Longitudinal (Stretched)',
+    type: 'cpr',
+    mode: 'stretched',  // Longitudinal CPR
+    orientation: CornerstoneEnums.OrientationAxis.SAGITTAL,
+    cprWidth: 150
+  },
+  { 
+    id: 'cpr-cross',
+    title: 'CPR Long Axis (Side View)',
+    type: 'cpr',
+    mode: 'stretched',  // Same CPR but rotated
+    orientation: CornerstoneEnums.OrientationAxis.CORONAL,
+    cprWidth: 150,
+    cprView: 'side'  // Uses direction matrix rotation
+  }
+];
+```
+
+#### Key Implementation Details
+
+1. **Cross-Section View (Left)**: 
+   - Uses orthographic viewport positioned along centerline at 30% point
+   - Camera looks down the vessel centerline for true cross-sectional anatomy
+   - Uses `setupOrthographicCrossSection()` function
+
+2. **Longitudinal CPR (Middle)**:
+   - Uses vtkImageCPRMapper in stretched mode 
+   - Standard camera positioning with default direction matrix
+   - Shows vessel unrolled along its length
+
+3. **Side View CPR (Right)**:
+   - Same CPR mapper as middle but with rotated direction matrix
+   - Direction matrix: `[0,1,0, -1,0,0, 0,0,1]` (90° rotation around Z)
+   - Same camera as middle view - rotation handled by direction matrix
+
+#### Critical Implementation Notes
+
+**Cornerstone3D Integration Pattern:**
+- Create Cornerstone3D orthographic viewports first using `renderingEngine.enableElement()`
+- Set volumes on viewports: `csViewport.setVolumes([{ volumeId }])`
+- Convert Cornerstone volume to VTK ImageData for CPR mapper
+- Create VTK CPR actors and add to Cornerstone viewports: `csViewport.addActor({ uid, actor })`
+- Use Cornerstone camera controls: `csViewport.setCamera()`, not VTK camera methods
+
+**Volume Data Access**: 
+- Use `volume.voxelManager.getCompleteScalarDataArray()` instead of `volume.getScalarData()` to avoid timeout issues
+- Manually set scalars on VTK ImageData: `imageData.getPointData().setScalars(scalarArray)`
+
+**CPR Configuration:**
+- **CPR Width**: 150mm provides optimal coverage without cropping
+- **Direction Matrix**: Essential for side view - rotates CPR reconstruction, not camera
+- **Camera Positioning**: All CPR views use same working camera configuration
+- **Centerline Generation**: Uses `CenterlineGenerator.generateFromRootPoints()` with proper normals
+
+**Key Integration Points:**
+```typescript
+// 1. Create Cornerstone viewport
+renderingEngine.enableElement({
+  viewportId: 'cpr-longitudinal',
+  type: CornerstoneEnums.ViewportType.ORTHOGRAPHIC,
+  element: elementRef.current
+});
+
+// 2. Add VTK CPR actor to Cornerstone viewport
+const csViewport = renderingEngine.getViewport('cpr-longitudinal');
+const mapper = vtkImageCPRMapper.newInstance();
+const actor = vtkImageSlice.newInstance();
+actor.setMapper(mapper);
+csViewport.addActor({ uid: 'cprActor', actor });
+```
+
+#### Troubleshooting
+- **Black screens** = camera looking at edge of 2D CPR plane; use direction matrix instead of camera rotation
+- **Grey boxes** = volume data access issues; ensure voxelManager usage 
+- **Cropping** = insufficient CPR width; use 150mm minimum
+- **API errors** = mixing VTK.js and Cornerstone3D camera methods; use Cornerstone3D APIs only
