@@ -17,7 +17,18 @@
       "Bash(rg:*)",
       "Bash(touch:*)",
       "WebFetch(domain:kitware.github.io)",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(cp:*)",
+      "Bash(# Create new file with the replacement\nsed -n ''1,1926p'' /mnt/c/users/shahroze/mpr/vite-react-cornerstone3d/src/components/TrueCPRViewport.tsx > /tmp/new_file.tsx\ncat /tmp/new_section.txt >> /tmp/new_file.tsx\nsed -n ''2019,$p'' /mnt/c/users/shahroze/mpr/vite-react-cornerstone3d/src/components/TrueCPRViewport.tsx >> /tmp/new_file.tsx\n# Replace the original file\ncp /tmp/new_file.tsx /mnt/c/users/shahroze/mpr/vite-react-cornerstone3d/src/components/TrueCPRViewport.tsx)",
+      "Bash(npx tsc:*)",
+      "Bash(rm:*)",
+      "Read(//c/Users/Shahroze/Pictures/Screenshots/**)",
+      "Bash(echo:*)",
+      "Bash(perl:*)",
+      "WebSearch",
+      "WebFetch(domain:www.cornerstonejs.org)",
+      "Bash(claude mcp add:*)",
+      "Bash(claude mcp:*)"
     ],
     "deny": []
   }

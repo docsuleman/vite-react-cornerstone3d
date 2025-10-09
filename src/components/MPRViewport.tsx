@@ -108,10 +108,10 @@ const MPRViewport: React.FC<MPRViewportProps> = ({
         mapper.setSliceAtFocalPoint(true);
         mapper.setSlicingMode(1); // Z-axis slicing by default
         
-        // Set window/level for medical images
-        const windowWidth = scalarRange[1] - scalarRange[0];
-        const windowLevel = (scalarRange[1] + scalarRange[0]) / 2;
-        
+        // Set window/level for medical images - CT Angiography
+        const windowWidth = 350; // CT Angiography window width
+        const windowLevel = 40; // CT Angiography window level
+
         actor.getProperty().setColorWindow(windowWidth);
         actor.getProperty().setColorLevel(windowLevel);
 

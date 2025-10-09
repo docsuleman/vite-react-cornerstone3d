@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   RenderingEngine,
   Enums as CornerstoneEnums,
@@ -76,10 +76,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
   const overlayMainRef = useRef<HTMLDivElement>(null);
   const overlayLongRef = useRef<HTMLDivElement>(null);
   const overlayCrossRef = useRef<HTMLDivElement>(null);
-  const isSyncingWindowLevel = useRef(false);
-  const rootPointsHashRef = useRef<string>('');
-  const isInitializingRef = useRef(false);
-
+  
   const [isInitialized, setIsInitialized] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -92,8 +89,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
   }>>([]);
   const [crossSectionPosition, setCrossSectionPosition] = useState(0.5); // 0 to 1 along centerline
   const [crosshairRotation, setCrosshairRotation] = useState(0); // Rotation angle in degrees
-  const [windowLevel, setWindowLevel] = useState({ window: 900, level: 350 }); // Cardiac CTA - optimized for TAVI
-  const [centerlineReady, setCenterlineReady] = useState(false); // Track when centerline is loaded
 
   // VTK objects
   const vtkObjects = useRef<{
@@ -137,7 +132,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
     lastViewUp?: number[];
     crosshairRotation?: number;
     cprMappers?: any[];
-    cprActors?: any[];
     centerlineMetrics?: {
       totalLength: number;
       numPoints: number;
@@ -146,110 +140,24 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
   }>({});
 
   useEffect(() => {
-    console.log('🔍 TrueCPRViewport useEffect', {
-      hasPatient: !!patientInfo?.seriesInstanceUID,
-      rootPointsLength: rootPoints.length,
-      isInitializingRef: isInitializingRef.current
-    });
+    if (!patientInfo?.seriesInstanceUID || rootPoints.length < 3) return;
 
-    if (!patientInfo?.seriesInstanceUID || rootPoints.length < 3) {
-      console.log('⏭️ Skipping - no patient or insufficient rootPoints');
-      return;
-    }
+    console.log('🔄 Initializing True CPR Viewport with vtkImageCPRMapper...');
+    
+    const timer = setTimeout(() => {
+      initializeTrueCPR();
+    }, 100);
 
-    // Check if rootPoints have actually changed using a hash
-    const currentHash = JSON.stringify(rootPoints.map(p => [p.x, p.y, p.z]));
-
-    console.log('📊 Hash check:', {
-      current: currentHash.substring(0, 50),
-      previous: rootPointsHashRef.current.substring(0, 50),
-      same: currentHash === rootPointsHashRef.current
-    });
-
-    // Skip if same rootPoints
-    if (currentHash === rootPointsHashRef.current) {
-      console.log('⏭️ Skipping - rootPoints unchanged');
-      return;
-    }
-
-    // Skip if already initializing
-    if (isInitializingRef.current) {
-      console.log('⏭️ Skipping - already initializing');
-      return;
-    }
-
-    // RootPoints changed, cleanup previous and reinitialize
-    if (rootPointsHashRef.current !== '') {
-      console.log('🧹 Cleaning up previous');
-      cleanup();
-    }
-
-    rootPointsHashRef.current = currentHash;
-    isInitializingRef.current = true;
-
-    console.log('⏰ Calling initializeTrueCPR immediately');
-    // Call immediately instead of using timer to avoid React StrictMode double-render issues
-    initializeTrueCPR();
-  }, [patientInfo, rootPoints]);
-
-  // Cleanup on unmount
-  useEffect(() => {
     return () => {
+      clearTimeout(timer);
       cleanup();
     };
-  }, []);
-
-  // Apply window/level changes to all CPR viewports
-  useEffect(() => {
-    const renderingEngine = cornerstoneObjects.current.renderingEngine;
-    if (!renderingEngine || !isInitialized) return;
-
-    const viewportIds = ['cpr-main', 'cpr-longitudinal', 'cpr-cross'];
-
-    viewportIds.forEach(viewportId => {
-      try {
-        const viewport = renderingEngine.getViewport(viewportId) as any;
-        if (viewport) {
-          viewport.setProperties({
-            voiRange: {
-              lower: windowLevel.level - windowLevel.window / 2,
-              upper: windowLevel.level + windowLevel.window / 2,
-            },
-          });
-          viewport.render();
-        }
-      } catch (error) {
-        console.warn(`Failed to apply window/level to ${viewportId}:`, error);
-      }
-    });
-
-    // Also update VTK actor properties for CPR views
-    const cprActors = cornerstoneObjects.current.cprActors;
-    if (cprActors) {
-      cprActors.forEach(({ actor, viewportId }) => {
-        try {
-          const property = actor.getProperty();
-          property.setColorWindow(windowLevel.window);
-          property.setColorLevel(windowLevel.level);
-
-          // Re-render the viewport
-          const viewport = renderingEngine.getViewport(viewportId) as any;
-          if (viewport) {
-            viewport.render();
-          }
-        } catch (error) {
-          console.warn(`Failed to apply W/L to VTK actor for ${viewportId}:`, error);
-        }
-      });
-    }
-  }, [windowLevel, isInitialized]);
+  }, [patientInfo, rootPoints]);
 
   const cleanup = () => {
-    isInitializingRef.current = false; // Reset flag
     try {
-
-
-
+      console.log('🧹 Cleaning up True CPR Viewport...');
+      
       // Clean up VTK objects
       Object.values(vtkObjects.current).forEach((vtkView: any) => {
         if (vtkView?.renderWindow) {
@@ -277,36 +185,32 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         cornerstoneObjects.current.annotationRenderingEngine.destroy();
       }
 
-      
+      console.log('✅ True CPR Viewport cleanup complete');
     } catch (error) {
       console.warn('Cleanup error:', error);
     }
   };
 
   const initializeTrueCPR = async () => {
-    console.log('🎯 initializeTrueCPR called');
-
     try {
       setIsLoading(true);
       setError(null);
 
+      console.log('🔄 Initializing Cornerstone3D and loading data...');
       await initializeCornerstone();
 
       // Load DICOM data
-      const result = await createImageIdsAndCacheMetaData({
+      const imageIds = await createImageIdsAndCacheMetaData({
         StudyInstanceUID: patientInfo!.studyInstanceUID!,
         SeriesInstanceUID: patientInfo!.seriesInstanceUID!,
         wadoRsRoot: "http://127.0.0.1/orthanc/dicom-web",
-        selectedPhase: null, // Will be managed by parent component
       });
-
-      const imageIds = result.imageIds;
 
       if (imageIds.length === 0) {
         throw new Error('No DICOM images found for this series');
       }
 
-      
+      console.log(`📋 Found ${imageIds.length} DICOM images`);
 
       // Create volume (like working CornerstoneCPRViewport)
       const volumeName = `cprVolume_${Date.now()}`;
@@ -315,14 +219,14 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       volume.load();
 
       // Wait for volume to load (like working CornerstoneCPRViewport)
-      
+      console.log('⏳ Waiting for volume to load...');
       await new Promise(resolve => setTimeout(resolve, 3000));
 
       vtkObjects.current.volume = volume;
       cornerstoneObjects.current.volumeId = volumeId;
 
       // Generate centerline from root points
-      
+      console.log('📏 Generating centerline from root points...');
       const centerlineData = CenterlineGenerator.generateFromRootPoints(
         rootPoints.map((point, index) => ({
           id: `root-${index}`,
@@ -343,94 +247,20 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         await setupCornerstoneAnnotationOverlays(volume, imageIds);
       }
 
-      // Add event listener to track manual window/level changes and sync across viewports
-      try {
-        const renderingEngine = cornerstoneObjects.current.renderingEngine;
-        const handleVoiModified = (evt: any) => {
-          // Prevent infinite loop from syncing
-          if (isSyncingWindowLevel.current) {
-            return;
-          }
-
-          const { range, viewportId } = evt.detail;
-          if (range) {
-            const width = range.upper - range.lower;
-            const level = (range.upper + range.lower) / 2;
-            setWindowLevel({ window: Math.round(width), level: Math.round(level) });
-
-            // Sync to all other CPR viewports
-            if (renderingEngine) {
-              isSyncingWindowLevel.current = true;
-              try {
-                const viewportIds = ['cpr-main', 'cpr-longitudinal', 'cpr-cross'];
-                viewportIds.forEach(id => {
-                  if (id !== viewportId) {
-                    try {
-                      const viewport = renderingEngine.getViewport(id) as any;
-                      if (viewport) {
-                        viewport.setProperties({
-                          voiRange: range,
-                        });
-                        viewport.render();
-                      }
-                    } catch (e) {
-                      console.warn(`Failed to sync W/L to ${id}:`, e);
-                    }
-                  }
-                });
-
-                // Also sync VTK actor properties
-                const cprActors = cornerstoneObjects.current.cprActors;
-                if (cprActors) {
-                  cprActors.forEach(({ actor, viewportId: actorViewportId }) => {
-                    try {
-                      const property = actor.getProperty();
-                      property.setColorWindow(width);
-                      property.setColorLevel(level);
-
-                      // Re-render the viewport
-                      const viewport = renderingEngine.getViewport(actorViewportId) as any;
-                      if (viewport) {
-                        viewport.render();
-                      }
-                    } catch (e) {
-                      console.warn(`Failed to sync W/L to VTK actor for ${actorViewportId}:`, e);
-                    }
-                  });
-                }
-              } finally {
-                isSyncingWindowLevel.current = false;
-              }
-            }
-          }
-        };
-
-        // Add listener to each viewport element
-        [cprMainRef, cprLongRef, cprCrossRef].forEach(ref => {
-          if (ref.current) {
-            ref.current.addEventListener(CornerstoneEnums.Events.VOI_MODIFIED, handleVoiModified);
-          }
-        });
-      } catch (err) {
-        console.warn('Could not add VOI_MODIFIED listener:', err);
-      }
-
       setIsInitialized(true);
       setIsLoading(false);
-      console.log('✅ TrueCPR initialization complete');
+
+      console.log('✅ True CPR Viewport initialized successfully!');
 
     } catch (err) {
       console.error('❌ Failed to initialize True CPR Viewport:', err);
       setError(`Failed to initialize: ${err}`);
       setIsLoading(false);
-      isInitializingRef.current = false; // Reset on error
-    } finally {
-      // Don't reset isInitializingRef here on success - let it stay true to prevent re-init
     }
   };
 
   const createCenterlinePolyData = async (centerlineData: any): Promise<any> => {
-    
+    console.log('🔧 Creating VTK PolyData from centerline with proper normals...');
     
     const polyData = vtkPolyData.newInstance();
     const points = vtkPoints.newInstance();
@@ -471,7 +301,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       segmentLengths
     };
     
-    
+    console.log(`📏 Centerline metrics: length=${totalLength.toFixed(1)}mm, points=${numPoints}`);
     
     points.setData(pointsArray);
     
@@ -577,13 +407,18 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
     polyData.getPointData().addArray(normalData);
     polyData.getPointData().setNormals(normalData); // Set as primary normals
     
-    
+    console.log('✅ Centerline PolyData created with computed normals:', {
+      points: numPoints,
+      cells: polyData.getNumberOfCells(),
+      hasTangents: true,
+      hasNormals: true
+    });
     
     return polyData;
   };
 
   const createModifiedCenterlineForCrossSection = async (originalCenterline: any, viewportId: string): Promise<any> => {
-    
+    console.log(`🔧 Creating modified centerline for cross-section view: ${viewportId}`);
     
     // Get original points
     const originalPoints = originalCenterline.getPoints().getData();
@@ -671,13 +506,19 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
     crossPolyData.getPointData().addArray(normalData);
     crossPolyData.getPointData().setNormals(normalData);
     
-    
+    console.log(`✅ Modified centerline created for ${viewportId}:`, {
+      originalPoints: numPoints,
+      crossSectionPoints: 2,
+      middlePoint,
+      perpendicular,
+      tangent
+    });
     
     return crossPolyData;
   };
 
   const createCrossSectionCenterline = async (originalCenterline: any, viewportId: string): Promise<any> => {
-    
+    console.log(`🔧 Creating cross-section centerline (crosshair approach) for: ${viewportId}`);
     
     // Get original centerline points
     const originalPoints = originalCenterline.getPoints().getData();
@@ -837,19 +678,23 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
     crossPolyData.getPointData().addArray(normalData);
     crossPolyData.getPointData().setNormals(normalData);
     
-    
+    console.log(`✅ Cross-section centerline created for ${viewportId}:`, {
+      originalPoints: numPoints,
+      crossSectionSlices: numSlices,
+      totalCrossPoints: totalPoints
+    });
     
     return crossPolyData;
   };
 
   const convertCornerstoneVolumeToVTK = async (volume: any): Promise<any> => {
-    
+    console.log('🔧 Converting Cornerstone volume to VTK ImageData...');
     
     try {
       // Get volume data using the correct method that doesn't get stuck
-      
+      console.log('📊 Getting scalar data from voxelManager...');
       const scalarData = volume.voxelManager.getCompleteScalarDataArray();
-      
+      console.log('✅ Got scalar data successfully:', scalarData?.length);
       
       if (!scalarData || scalarData.length === 0) {
         throw new Error('Volume scalar data is empty or not available');
@@ -857,7 +702,13 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       
       const { dimensions, spacing, origin, direction } = volume;
       
-      
+      console.log('📊 Volume info:', { 
+        dimensions, 
+        spacing, 
+        origin, 
+        scalarDataLength: scalarData.length,
+        scalarDataType: scalarData.constructor.name
+      });
       
       // Validate dimensions
       if (!dimensions || dimensions.length !== 3) {
@@ -898,7 +749,13 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       const vtkSpacing = vtkImageData.getSpacing();
       const vtkOrigin = vtkImageData.getOrigin();
       
-      
+      console.log('✅ VTK ImageData created:', {
+        dimensions: vtkDimensions,
+        spacing: vtkSpacing,
+        origin: vtkOrigin,
+        numberOfPoints: vtkImageData.getNumberOfPoints(),
+        numberOfCells: vtkImageData.getNumberOfCells()
+      });
       
       return vtkImageData;
       
@@ -909,7 +766,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
   };
 
   const setupCornerstoneViewportsWithCPR = async (volume: any, volumeId: string, centerlineData: any) => {
-    
+    console.log('🔧 Setting up Cornerstone3D viewports with CPR mapper...');
     
     // Create rendering engine
     const renderingEngineId = 'trueCPREngine';
@@ -950,7 +807,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
     for (const viewport of viewports) {
       if (!viewport.ref.current) continue;
       
-      
+      console.log(`🔧 Setting up ${viewport.id} as ${viewport.type}...`);
       
       renderingEngine.enableElement({
         viewportId: viewport.id,
@@ -965,23 +822,11 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       // Set volume on viewport
       const csViewport = renderingEngine.getViewport(viewport.id) as Types.IVolumeViewport;
       csViewport.setVolumes([{ volumeId }]);
-
+      
       // Wait for volume to render
       await new Promise(resolve => setTimeout(resolve, 100));
-
-      // Get original slice thickness
-      const sliceThickness = volume.spacing[2];
-
-      // Apply initial window/level and slab thickness
-      csViewport.setProperties({
-        voiRange: {
-          lower: windowLevel.level - windowLevel.window / 2,
-          upper: windowLevel.level + windowLevel.window / 2,
-        },
-        slabThickness: sliceThickness,  // Use original CT slice thickness
-      });
       csViewport.render();
-
+      
       // Store centerline data first
       cornerstoneObjects.current.centerlineData = centerlineData;
       
@@ -1000,11 +845,11 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       await addCPRActorsToViewports(renderingEngine, centerlineData, cprViewports);
     }
     
-    
+    console.log('✅ Cornerstone3D CPR viewports with CPR mappers setup complete');
   };
 
   const setupCPRInteractiveTools = async (volume: any, centerlineData: any) => {
-    
+    console.log('🔧 Setting up CPR interactive tools...');
     
     try {
       // Create tool group for CPR navigation
@@ -1033,12 +878,11 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       // Store references
       cornerstoneObjects.current.cprToolGroup = toolGroup;
       cornerstoneObjects.current.centerlineData = centerlineData;
-      setCenterlineReady(true); // Mark centerline as ready
 
       // Set up line annotation for cross-section navigation
       await setupCrossSectionNavigationLine(centerlineData);
       
-      
+      console.log('✅ CPR interactive tools setup complete');
       
     } catch (error) {
       console.error('❌ Failed to setup CPR interactive tools:', error);
@@ -1046,7 +890,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
   };
 
   const setupCrossSectionNavigationLine = async (centerlineData: any) => {
-    
+    console.log('🔧 Setting up cross-section navigation line...');
     
     // For now, we'll manually create a line annotation
     // This will be improved with a custom tool later
@@ -1062,14 +906,14 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
     // Store the position for cross-section updates
     cornerstoneObjects.current.crossSectionPosition = initialCrossSectionPosition;
     
-    
+    console.log('✅ Cross-section navigation line setup at position:', initialCrossSectionPosition);
     
     // Update cross-section view
     await updateCrossSectionView(centerlineData, initialCrossSectionPosition);
   };
 
   const updateCrossSectionView = async (centerlineData: any, position: number) => {
-    
+    console.log('🔧 Updating cross-section view at position:', position);
     
     try {
       // Store the current position
@@ -1117,7 +961,13 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         centerlineData.position[pointIndex * 3 + 2]
       ];
 
-      
+      console.log('📍 Cross-section update:', {
+        position,
+        pointIndex,
+        numPoints,
+        centerPoint,
+        hasMetrics: !!metrics
+      });
       
       // Calculate centerline direction at this point
       let tangent = [1, 0, 0]; // Default
@@ -1175,7 +1025,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         crossSectionViewport.render();
       }, 10);
       
-      
+      console.log('✅ Cross-section view updated to position:', position, 'at point:', centerPoint, 'camera:', cameraConfig);
       
     } catch (error) {
       console.error('❌ Failed to update cross-section view:', error);
@@ -1184,7 +1034,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
 
 
   const setupOrthographicCrossSection = async (csViewport: any, centerlineData: any, viewportId: string) => {
-    
+    console.log(`🔧 Setting up orthographic cross-section for ${viewportId}...`);
     
     // Get centerline points
     const numPoints = centerlineData.position.length / 3;
@@ -1243,28 +1093,22 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
     };
     
     csViewport.setCamera(cameraConfig);
-
-    // Set slab thickness to original slice thickness
-    const volume = vtkObjects.current.volume;
-    if (volume && volume.spacing) {
-      const sliceThickness = volume.spacing[2];
-      csViewport.setProperties({
-        slabThickness: sliceThickness
-      });
-    }
-
     csViewport.render();
-
+    
     // Store initial view up vector for consistency
     if (!cornerstoneObjects.current.lastViewUp) {
       cornerstoneObjects.current.lastViewUp = [0, 0, 1];
     }
-
-
+    
+    console.log(`✅ Orthographic cross-section setup for ${viewportId}:`, {
+      centerPoint,
+      tangent,
+      cameraPosition: cameraConfig.position
+    });
   };
 
   const addCPRActorsToViewports = async (renderingEngine: any, centerlineData: any, viewports: any[]) => {
-    
+    console.log('🔧 Adding CPR actors to viewports:', viewports.map(v => v.id));
     
     // Create centerline polydata
     const centerlinePolyData = await createCenterlinePolyData(centerlineData);
@@ -1276,20 +1120,19 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       return;
     }
     
-    // Initialize mapper and actor storage
+    // Initialize mapper storage
     cornerstoneObjects.current.cprMappers = [];
-    cornerstoneObjects.current.cprActors = [];
-
+    
     for (const viewportConfig of viewports) {
-      
+      console.log(`🔧 Processing CPR viewport: ${viewportConfig.id}`);
       const csViewport = renderingEngine.getViewport(viewportConfig.id) as Types.IVolumeViewport;
       
       try {
-        
+        console.log(`🔧 Adding CPR actor to ${viewportConfig.id}...`);
         
         // Get image data from the viewport
         const imageData = csViewport.getImageData();
-        
+        console.log('📊 Got image data from viewport:', imageData);
         
         if (!imageData?.imageData) {
           console.warn(`⚠️ No image data available for ${viewportConfig.id}`);
@@ -1297,9 +1140,9 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         }
         
         // Fix the scalars issue using the discussion solution
-        
+        console.log('🔧 Setting scalars manually using voxelManager...');
         const scalarData = volume.voxelManager.getCompleteScalarDataArray();
-        
+        console.log('📊 Got scalar data from voxelManager:', scalarData?.length);
         
         if (!scalarData || scalarData.length === 0) {
           console.warn(`⚠️ No scalar data available from voxelManager for ${viewportConfig.id}`);
@@ -1315,7 +1158,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         
         // Set the scalars on the imageData
         imageData.imageData.getPointData().setScalars(scalarArray);
-        
+        console.log('✅ Scalars set manually on imageData');
         
         // Create CPR mapper
         const mapper = vtkImageCPRMapper.newInstance();
@@ -1334,9 +1177,8 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         
         // Ensure proper spacing is maintained
         const spacing = volume.spacing;
-        const sliceThickness = spacing[2]; // Z-axis spacing is the slice thickness
-
-
+        console.log(`📏 Volume spacing for ${viewportConfig.id}:`, spacing);
+        
         // Set direction matrix for side view CPR
         if (viewportConfig.cprView === 'side') {
           // Rotate the CPR reconstruction itself 90 degrees for side view
@@ -1346,16 +1188,16 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
             0, 0, 1   // Z stays Z
           ]);
           mapper.setDirectionMatrix(sideDirections);
-          
+          console.log(`🔧 Set side view direction matrix for ${viewportConfig.id}`);
         } else {
           // Default direction matrix for front view
-          
+          console.log(`🔧 Using default direction matrix for ${viewportConfig.id}`);
         }
         
-        // Set projection properties - use original slice thickness
+        // Set projection properties for better visualization (from discussion)
         mapper.setProjectionMode(ProjectionMode.AVERAGE);
-        mapper.setProjectionSlabThickness(sliceThickness);  // Use original CT slice thickness
-        mapper.setProjectionSlabNumberOfSamples(1);  // Single sample for original slice thickness
+        mapper.setProjectionSlabThickness(20);
+        mapper.setProjectionSlabNumberOfSamples(100);
         
         // Store mapper reference for rotation control
         cornerstoneObjects.current.cprMappers!.push({
@@ -1365,20 +1207,20 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         
         // Debug: Check if mapper is ready
         const isReady = mapper.preRenderCheck();
-        
+        console.log(`🔍 CPR mapper ready for ${viewportConfig.id}:`, isReady);
         
         // Debug: Check centerline info
         const centerlineHeight = mapper.getHeight();
-        
+        console.log(`📏 CPR centerline height for ${viewportConfig.id}:`, centerlineHeight);
         
         // Debug: Check image data info
         const vtkImageDims = imageData.imageData.getDimensions();
-        
+        console.log(`📊 VTK ImageData dimensions for ${viewportConfig.id}:`, vtkImageDims);
         
         // Debug: Check centerline polydata
         const centerlinePoints = centerlinePolyData.getNumberOfPoints();
         const centerlineCells = centerlinePolyData.getNumberOfCells();
-        
+        console.log(`📊 Centerline polydata for ${viewportConfig.id}: ${centerlinePoints} points, ${centerlineCells} cells`);
         
         // Create actor with explicit properties for visibility
         const actor = vtkImageSlice.newInstance();
@@ -1389,11 +1231,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         const property = actor.getProperty();
         property.setOpacity(1.0);
         property.setInterpolationTypeToLinear();
-
-        // Apply window/level to VTK actor
-        property.setColorWindow(windowLevel.window);
-        property.setColorLevel(windowLevel.level);
-
+        
         // Set actor transformation matrix following the example (lines 187-210)
         // This is crucial for proper CPR display
         const actorWidth = mapper.getWidth();
@@ -1409,24 +1247,18 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
             0, 0, 0, 1
           ];
           actor.setUserMatrix(identityMatrix);
-          
+          console.log('🔧 CPR actor user matrix set to identity');
         }
         
-        
+        console.log('🔧 CPR actor configured with full opacity and visibility');
         
         // Add CPR actor to viewport (CPR should render on top)
         const actorUID = `cprActor_${viewportConfig.id}`;
         csViewport.addActor({ uid: actorUID, actor });
-
-        // Store actor reference for later updates
-        cornerstoneObjects.current.cprActors!.push({
-          actor,
-          viewportId: viewportConfig.id
-        });
-
+        
         // Try to hide original volume actors after adding CPR (optional)
         try {
-          
+          console.log('🔧 Attempting to hide original volume actors...');
           const actors = csViewport.getActors();
           actors.forEach((actorEntry: any) => {
             if (actorEntry.uid !== actorUID) {
@@ -1434,20 +1266,20 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
               const volumeActor = actorEntry.actor;
               if (volumeActor && volumeActor.setVisibility) {
                 volumeActor.setVisibility(false);
-                
+                console.log(`🔧 Hidden volume actor: ${actorEntry.uid}`);
               }
             }
           });
         } catch (hideError) {
-          
+          console.log('⚠️ Could not hide original volume actors (CPR should still render on top):', hideError);
         }
         
         // Set up camera for CPR viewing - use centerline direction for cross-sections
-        
+        console.log(`🔧 Setting up camera for CPR view ${viewportConfig.id}...`);
         
         // Get bounds for basic positioning
         const bounds = actor.getBounds();
-        
+        console.log(`📊 CPR actor bounds for ${viewportConfig.id}:`, bounds);
         
         if (bounds && bounds.length === 6) {
           const center = [
@@ -1473,26 +1305,26 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
           };
           
           csViewport.setCamera(cameraConfig);
-          
+          console.log(`📊 Camera set for ${viewportConfig.id}:`, cameraConfig);
         } else {
           csViewport.resetCamera();
         }
         
         csViewport.render();
         
-        
+        console.log(`✅ CPR actor added to ${viewportConfig.id}`);
         
       } catch (error) {
         console.error(`❌ Failed to add CPR actor to ${viewportConfig.id}:`, error);
       }
     }
     
-    
+    console.log('✅ All CPR actors added');
   };
 
 
   const setupCPRViews = async (imageData: any, centerlinePolyData: any) => {
-    
+    console.log('🔧 Setting up True CPR views with vtkImageCPRMapper...');
     
     const views = [
       { 
@@ -1518,7 +1350,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
     for (const view of views) {
       if (!view.ref.current) continue;
       
-      
+      console.log(`🔧 Setting up ${view.name} CPR view...`);
       
       // Create VTK rendering context
       const genericRenderWindow = vtkGenericRenderWindow.newInstance();
@@ -1531,7 +1363,11 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       // Create CPR mapper
       const cprMapper = vtkImageCPRMapper.newInstance();
       
-      
+      console.log(`📊 Configuring CPR mapper for ${view.name}:`, {
+        imageDataPoints: imageData.getNumberOfPoints(),
+        centerlinePoints: centerlinePolyData.getNumberOfPoints(),
+        mode: view.mode
+      });
       
       // Configure CPR mapper
       try {
@@ -1542,15 +1378,15 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         // Configure based on view type
         if (view.mode === 'straightened') {
           cprMapper.useStraightenedMode();
-          
+          console.log(`✅ ${view.name} configured in straightened mode`);
         } else if (view.mode === 'stretched') {
           cprMapper.useStretchedMode();
-          
+          console.log(`✅ ${view.name} configured in stretched mode`);
         }
         
         // Verify mapper is ready
         const isReady = cprMapper.preRenderCheck();
-        
+        console.log(`🔍 CPR mapper ${view.name} ready:`, isReady);
         
         if (!isReady) {
           console.warn(`⚠️ CPR mapper ${view.name} failed pre-render check`);
@@ -1585,14 +1421,14 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       // Initial render
       renderWindow.render();
       
-      
+      console.log(`✅ ${view.name} CPR view created`);
     }
     
-    
+    console.log('✅ All CPR views setup complete');
   };
 
   const setupCornerstoneAnnotationOverlays = async (volume: any, imageIds: string[]) => {
-    
+    console.log('🔧 Setting up Cornerstone annotation overlays...');
     
     try {
       // Initialize Cornerstone tools
@@ -1657,7 +1493,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       
       cornerstoneObjects.current.toolGroup = toolGroup;
       
-      
+      console.log('✅ Cornerstone annotation overlays setup complete');
       
     } catch (error) {
       console.error('❌ Failed to setup annotation overlays:', error);
@@ -1665,7 +1501,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
   };
 
   const clearCuspDots = () => {
-    
+    console.log('🧹 Clearing cusp dots...');
     setCuspDots([]);
     
     if (onCuspDotsUpdate) {
@@ -1674,7 +1510,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
   };
 
   const handleCrossSectionPositionChange = async (position: number) => {
-    
+    console.log('🔧 Updating cross-section position to:', position);
     setCrossSectionPosition(position);
     
     // Update the cross-section view
@@ -1684,7 +1520,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
   };
 
   const handleCrosshairRotation = async (rotation: number) => {
-    
+    console.log('🔄 Updating crosshair rotation to:', rotation, 'degrees');
     setCrosshairRotation(rotation);
     cornerstoneObjects.current.crosshairRotation = rotation;
     
@@ -1693,23 +1529,17 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
   };
 
   const updateCPROrientations = async (rotationDegrees: number) => {
-    console.log('🔄 updateCPROrientations called with rotation:', rotationDegrees);
-
-    if (!cornerstoneObjects.current.cprMappers) {
-      console.warn('⚠️ No CPR mappers available');
-      return;
-    }
-
-    console.log('📊 Number of CPR mappers:', cornerstoneObjects.current.cprMappers.length);
-
+    console.log('🔄 Updating CPR orientations with rotation:', rotationDegrees);
+    
+    if (!cornerstoneObjects.current.cprMappers) return;
+    
     const rotationRadians = (rotationDegrees * Math.PI) / 180;
     const cos = Math.cos(rotationRadians);
     const sin = Math.sin(rotationRadians);
-
+    
     cornerstoneObjects.current.cprMappers.forEach((mapperInfo: any) => {
       const { mapper, viewportConfig } = mapperInfo;
-      console.log(`🔧 Updating mapper for ${viewportConfig.id}, cprView: ${viewportConfig.cprView}`);
-
+      
       if (viewportConfig.cprView === 'side') {
         // For side view, apply 90-degree rotation relative to longitudinal
         // This ensures they are truly orthogonal
@@ -1745,54 +1575,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       }
     });
   };
-
-  // Calculate valve position percentage for rotation center
-  const valvePositionPercent = useMemo(() => {
-    let percent = 50; // Default to center
-
-    if (rootPoints && rootPoints.length >= 2 && centerlineReady && cornerstoneObjects.current.centerlineData) {
-      const valvePoint = rootPoints[1]; // Middle/red sphere (aortic valve)
-      const centerlineData = cornerstoneObjects.current.centerlineData;
-      const numPoints = centerlineData.position.length / 3;
-
-      if (numPoints > 0) {
-        // Find closest centerline point to valve
-        let closestIndex = 0;
-        let minDistance = Infinity;
-
-        for (let i = 0; i < numPoints; i++) {
-          const x = centerlineData.position[i * 3];
-          const y = centerlineData.position[i * 3 + 1];
-          const z = centerlineData.position[i * 3 + 2];
-
-          const dist = Math.sqrt(
-            Math.pow(x - valvePoint.x, 2) +
-            Math.pow(y - valvePoint.y, 2) +
-            Math.pow(z - valvePoint.z, 2)
-          );
-          if (dist < minDistance) {
-            minDistance = dist;
-            closestIndex = i;
-          }
-        }
-
-        percent = (closestIndex / (numPoints - 1)) * 100;
-        console.log('🎯 Valve position calculation:', {
-          closestIndex,
-          numPoints,
-          percent,
-          valvePoint,
-          closestCenterlinePoint: {
-            x: centerlineData.position[closestIndex * 3],
-            y: centerlineData.position[closestIndex * 3 + 1],
-            z: centerlineData.position[closestIndex * 3 + 2]
-          }
-        });
-      }
-    }
-
-    return percent;
-  }, [rootPoints, centerlineReady]);
 
   return (
     <div className="flex flex-col w-full h-full bg-slate-900">
@@ -1837,32 +1619,9 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
             </div>
           )}
 
-          {/* Window/Level Presets */}
-          <div className="flex items-center gap-2 text-xs">
-            <span className="text-slate-400">W/L:</span>
-            <button
-              onClick={() => setWindowLevel({ window: 900, level: 350 })}
-              className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-white"
-            >
-              TAVI
-            </button>
-            <button
-              onClick={() => setWindowLevel({ window: 700, level: 200 })}
-              className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-white"
-            >
-              Standard
-            </button>
-            <button
-              onClick={() => setWindowLevel({ window: 1500, level: 300 })}
-              className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-white"
-            >
-              Bone
-            </button>
-          </div>
-
           {/* Status */}
           <div className="text-xs text-slate-400">
-            Dots: {cuspDots.length}/3 | Root Points: {rootPoints.length} | W/L: {windowLevel.window}/{windowLevel.level}
+            Dots: {cuspDots.length}/3 | Root Points: {rootPoints.length}
           </div>
         </div>
       </div>
@@ -1942,75 +1701,61 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
           {/* Full MPR-Style Crosshair */}
           {isInitialized && (
             <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 15 }}>
-              <div
+              <div 
                 className="absolute inset-0 pointer-events-auto cursor-grab active:cursor-grabbing"
                 style={{
                   transform: `rotate(${crosshairRotation}deg)`,
-                  transformOrigin: `50% ${valvePositionPercent}%`,
+                  transformOrigin: 'center center',
                   transition: 'transform 0.1s ease-out'
                 }}
-              onMouseDown={(e) => {
-                const startAngle = crosshairRotation;
-                const rect = cprMainRef.current?.getBoundingClientRect();
-                if (!rect) return;
-
-                // Use valve position as rotation center instead of viewport center
-                const centerX = rect.left + rect.width / 2;
-                const centerY = rect.top + (rect.height * valvePositionPercent / 100);
-                const startMouseAngle = Math.atan2(e.clientY - centerY, e.clientX - centerX) * 180 / Math.PI;
-
-                const handleMouseMove = (moveEvent: MouseEvent) => {
-                  const currentMouseAngle = Math.atan2(moveEvent.clientY - centerY, moveEvent.clientX - centerX) * 180 / Math.PI;
-                  const deltaAngle = currentMouseAngle - startMouseAngle;
-                  const newAngle = (startAngle + deltaAngle) % 360;
-                  handleCrosshairRotation(newAngle);
-                };
-
-                const handleMouseUp = () => {
-                  document.removeEventListener('mousemove', handleMouseMove);
-                  document.removeEventListener('mouseup', handleMouseUp);
-                };
-
-                document.addEventListener('mousemove', handleMouseMove);
-                document.addEventListener('mouseup', handleMouseUp);
-              }}
-            >
-              {/* Horizontal line - GREEN (for longitudinal view) */}
-              <div className="absolute w-full h-0.5 bg-green-500 opacity-80 top-1/2 left-0 transform -translate-y-1/2"></div>
-              {/* Vertical line - RED (for side view) */}
-              <div className="absolute w-0.5 h-full bg-red-500 opacity-80 left-1/2 top-0 transform -translate-x-1/2"></div>
-
-              {/* Green line orientation dots */}
-              {/* Left end - filled green dot */}
-              <div className="absolute w-2 h-2 bg-green-500 rounded-full left-2 top-1/2 transform -translate-y-1/2"></div>
-              {/* Right end - hollow green dot */}
-              <div className="absolute w-2 h-2 border border-green-500 bg-transparent rounded-full right-2 top-1/2 transform -translate-y-1/2"></div>
-
-              {/* Red line orientation dots */}
-              {/* Top end - filled red dot */}
-              <div className="absolute w-2 h-2 bg-red-500 rounded-full left-1/2 top-2 transform -translate-x-1/2"></div>
-              {/* Bottom end - hollow red dot */}
-              <div className="absolute w-2 h-2 border border-red-500 bg-transparent rounded-full left-1/2 bottom-2 transform -translate-x-1/2"></div>
-
-              {/* Center dot */}
-              <div className="absolute w-3 h-3 bg-white border border-gray-600 rounded-full left-1/2 top-1/2 transform -translate-x-1/2 -translate-y-1/2"></div>
+                onMouseDown={(e) => {
+                  const startAngle = crosshairRotation;
+                  const rect = cprMainRef.current?.getBoundingClientRect();
+                  if (!rect) return;
+                  
+                  const centerX = rect.left + rect.width / 2;
+                  const centerY = rect.top + rect.height / 2;
+                  const startMouseAngle = Math.atan2(e.clientY - centerY, e.clientX - centerX) * 180 / Math.PI;
+                  
+                  const handleMouseMove = (moveEvent: MouseEvent) => {
+                    const currentMouseAngle = Math.atan2(moveEvent.clientY - centerY, moveEvent.clientX - centerX) * 180 / Math.PI;
+                    const deltaAngle = currentMouseAngle - startMouseAngle;
+                    const newAngle = (startAngle + deltaAngle) % 360;
+                    handleCrosshairRotation(newAngle);
+                  };
+                  
+                  const handleMouseUp = () => {
+                    document.removeEventListener('mousemove', handleMouseMove);
+                    document.removeEventListener('mouseup', handleMouseUp);
+                  };
+                  
+                  document.addEventListener('mousemove', handleMouseMove);
+                  document.addEventListener('mouseup', handleMouseUp);
+                }}
+              >
+                {/* Horizontal line - GREEN (for longitudinal view) */}
+                <div className="absolute w-full h-0.5 bg-green-500 opacity-80 top-1/2 left-0 transform -translate-y-1/2"></div>
+                {/* Vertical line - RED (for side view) */}
+                <div className="absolute w-0.5 h-full bg-red-500 opacity-80 left-1/2 top-0 transform -translate-x-1/2"></div>
+                
+                {/* Green line orientation dots */}
+                {/* Left end - filled green dot */}
+                <div className="absolute w-2 h-2 bg-green-500 rounded-full left-2 top-1/2 transform -translate-y-1/2"></div>
+                {/* Right end - hollow green dot */}
+                <div className="absolute w-2 h-2 border border-green-500 bg-transparent rounded-full right-2 top-1/2 transform -translate-y-1/2"></div>
+                
+                {/* Red line orientation dots */}
+                {/* Top end - filled red dot */}
+                <div className="absolute w-2 h-2 bg-red-500 rounded-full left-1/2 top-2 transform -translate-x-1/2"></div>
+                {/* Bottom end - hollow red dot */}
+                <div className="absolute w-2 h-2 border border-red-500 bg-transparent rounded-full left-1/2 bottom-2 transform -translate-x-1/2"></div>
+                
+                {/* Center dot */}
+                <div className="absolute w-3 h-3 bg-white border border-gray-600 rounded-full left-1/2 top-1/2 transform -translate-x-1/2 -translate-y-1/2"></div>
+              </div>
             </div>
-
-            {/* Rotation pivot point indicator - NOT rotated */}
-            <div
-              className="absolute w-4 h-4 border-2 border-yellow-400 bg-yellow-400 bg-opacity-30 rounded-full left-1/2 transform -translate-x-1/2 pointer-events-none"
-              style={{
-                top: `${valvePositionPercent}%`,
-                transform: 'translate(-50%, -50%)',
-                zIndex: 20
-              }}
-              title={`Rotation pivot at ${valvePositionPercent.toFixed(1)}%`}
-            >
-              <div className="absolute inset-0 border-2 border-yellow-400 rounded-full animate-ping"></div>
-            </div>
-          </div>
-        )}
-
+          )}
+          
           {/* Cornerstone annotation overlay */}
           {stage === 'annulus_definition' && (
             <div 

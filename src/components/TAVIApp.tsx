@@ -17,6 +17,7 @@ interface TAVIAppProps {
 const TAVIApp: React.FC<TAVIAppProps> = () => {
   const [showPatientSearch, setShowPatientSearch] = useState(false);
   const { state, actions, canAdvanceToStage, getCurrentStageProgress, getStageTitle } = useWorkflowState();
+  
 
   useEffect(() => {
     // Initialize the workflow with patient selection
@@ -49,8 +50,6 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
         return <FaUser className="text-lg" />;
       case WorkflowStage.ROOT_DEFINITION:
         return <FaStethoscope className="text-lg" />;
-      case WorkflowStage.CPR_ANALYSIS:
-        return <FaEye className="text-lg" />;
       case WorkflowStage.ANNULUS_DEFINITION:
         return <FaCog className="text-lg" />;
       case WorkflowStage.MEASUREMENTS:
@@ -351,58 +350,6 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             </div>
           </div>
         </div>
-      ) : state.currentStage === WorkflowStage.CPR_ANALYSIS && state.rootPoints.length >= 3 ? (
-        <div className="h-full flex flex-col">
-          {/* CPR Header */}
-          <div className="bg-slate-800 border-b border-slate-700 p-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-lg font-semibold text-white">CPR Analysis - Real Aortic Root Extraction</h3>
-                <p className="text-sm text-slate-400">Hybrid approach: real DICOM data + simple rendering from {state.rootPoints.length} defined points</p>
-              </div>
-              <button
-                onClick={() => {
-                  actions.markStageComplete(WorkflowStage.CPR_ANALYSIS);
-                  handleStageChange(WorkflowStage.ANNULUS_DEFINITION);
-                }}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors font-medium"
-              >
-                Proceed to Annulus Definition
-              </button>
-            </div>
-          </div>
-          
-          {/* CPR Viewport Container */}
-          <div className="flex-1 relative bg-black">
-            <TrueCPRViewport
-              patientInfo={state.patientInfo}
-              rootPoints={state.rootPoints.map(point => ({
-                x: point.position[0],
-                y: point.position[1],
-                z: point.position[2]
-              }))}
-              stage="analysis"
-              width={800}
-              height={600}
-              backgroundColor={[0, 0, 0]}
-            />
-            
-            {/* Root Points Info Overlay */}
-            <div className="absolute top-4 right-4 bg-slate-800/90 backdrop-blur-sm p-4 rounded-lg">
-              <h4 className="text-sm font-medium text-white mb-2">Root Points</h4>
-              <div className="space-y-1">
-                {state.rootPoints.map((point, index) => (
-                  <div key={point.id} className="text-xs text-slate-300">
-                    <span className="font-medium">{point.type.replace('_', ' ')}</span>
-                    <div className="text-slate-400">
-                      ({point.position[0].toFixed(1)}, {point.position[1].toFixed(1)}, {point.position[2].toFixed(1)})
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
       ) : state.currentStage === WorkflowStage.ANNULUS_DEFINITION && state.patientInfo && state.rootPoints.length >= 3 ? (
         <TrueCPRViewport
           patientInfo={state.patientInfo}
@@ -509,30 +456,35 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
         <ProperMPRViewport
           patientInfo={state.patientInfo}
           currentStage={state.currentStage}
+          existingSpheres={state.rootPoints.map((point, index) => ({
+            id: point.id,
+            pos: point.position as [number, number, number],
+            color: index === 0 ? 'yellow' : index === 1 ? 'red' : 'green'
+          }))}
           onImageLoaded={(imageData) => {
             console.log('DICOM images loaded for stage:', state.currentStage);
           }}
           onSpherePositionsUpdate={(spheres) => {
-            if (spheres.length === 3) {
-              console.log('3 spheres placed, updating root points');
+            if (spheres.length >= 3) {
+              console.log(`${spheres.length} spheres placed, updating root points`);
               
               // Clear existing root points first
               actions.clearRootPoints();
               
-              // Map spheres to root points with anatomical types
+              // Map spheres to root points with anatomical types for first 3, extended for rest
               const rootPointTypes = [RootPointType.LV_OUTFLOW, RootPointType.AORTIC_VALVE, RootPointType.ASCENDING_AORTA];
               
               spheres.forEach((sphere, index) => {
                 const rootPoint = {
                   id: sphere.id,
                   position: sphere.pos,
-                  type: rootPointTypes[index],
+                  type: index < 3 ? rootPointTypes[index] : RootPointType.EXTENDED,
                   timestamp: Date.now()
                 };
                 actions.addRootPoint(rootPoint);
               });
               
-              console.log('Root definition complete, can now advance to CPR Analysis');
+              console.log(`Root definition updated with ${spheres.length} points`);
             }
           }}
           onCuspDotsUpdate={async (dots) => {
@@ -622,9 +574,7 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             <div className="bg-slate-800 p-8 rounded-2xl max-w-md mx-auto">
               <div className="text-6xl mb-6 text-blue-500">{getStageIcon(state.currentStage)}</div>
               <h3 className="text-2xl mb-4 text-white">{getStageTitle(state.currentStage)}</h3>
-              {state.currentStage === WorkflowStage.CPR_ANALYSIS && state.rootPoints.length < 3 ? (
-                <p className="text-slate-300">Please complete the Root Definition stage first by placing 3 anatomical markers.</p>
-              ) : !state.patientInfo ? (
+              {!state.patientInfo ? (
                 <p className="text-slate-300">Please select a patient to begin the TAVI planning workflow.</p>
               ) : (
                 <p className="text-slate-300">Medical imaging viewport ready for this stage</p>

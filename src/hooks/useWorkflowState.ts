@@ -21,7 +21,6 @@ const initialState: WorkflowState = {
   isStageComplete: {
     [WorkflowStage.PATIENT_SELECTION]: false,
     [WorkflowStage.ROOT_DEFINITION]: false,
-    [WorkflowStage.CPR_ANALYSIS]: false,
     [WorkflowStage.ANNULUS_DEFINITION]: false,
     [WorkflowStage.MEASUREMENTS]: false,
   },
@@ -63,10 +62,8 @@ function workflowReducer(state: WorkflowState, action: WorkflowAction): Workflow
         updatedRootPoints = [...state.rootPoints, newRootPoint];
       }
 
-      const rootDefinitionComplete = updatedRootPoints.length === 3 &&
-        updatedRootPoints.some(p => p.type === RootPointType.LV_OUTFLOW) &&
-        updatedRootPoints.some(p => p.type === RootPointType.AORTIC_VALVE) &&
-        updatedRootPoints.some(p => p.type === RootPointType.ASCENDING_AORTA);
+      // Complete when we have at least 3 points
+      const rootDefinitionComplete = updatedRootPoints.length >= 3;
 
       return {
         ...state,
@@ -95,7 +92,6 @@ function workflowReducer(state: WorkflowState, action: WorkflowAction): Workflow
         isStageComplete: {
           ...state.isStageComplete,
           [WorkflowStage.ROOT_DEFINITION]: false,
-          [WorkflowStage.CPR_ANALYSIS]: false,
         },
       };
 
@@ -103,10 +99,6 @@ function workflowReducer(state: WorkflowState, action: WorkflowAction): Workflow
       return {
         ...state,
         centerline: action.payload,
-        isStageComplete: {
-          ...state.isStageComplete,
-          [WorkflowStage.CPR_ANALYSIS]: true,
-        },
       };
 
     case WORKFLOW_ACTIONS.ADD_ANNULUS_POINT:
@@ -312,10 +304,8 @@ export function useWorkflowState() {
       switch (targetStage) {
         case WorkflowStage.ROOT_DEFINITION:
           return state.isStageComplete[WorkflowStage.PATIENT_SELECTION];
-        case WorkflowStage.CPR_ANALYSIS:
-          return state.isStageComplete[WorkflowStage.ROOT_DEFINITION];
         case WorkflowStage.ANNULUS_DEFINITION:
-          return state.isStageComplete[WorkflowStage.CPR_ANALYSIS];
+          return state.isStageComplete[WorkflowStage.ROOT_DEFINITION];
         case WorkflowStage.MEASUREMENTS:
           return state.isStageComplete[WorkflowStage.ANNULUS_DEFINITION];
         default:
@@ -326,7 +316,7 @@ export function useWorkflowState() {
     getCurrentStageProgress: useCallback((): number => {
       switch (state.currentStage) {
         case WorkflowStage.ROOT_DEFINITION:
-          return Math.min(state.rootPoints.length / 3, 1) * 100;
+          return state.rootPoints.length >= 3 ? 100 : (state.rootPoints.length / 3) * 100;
         case WorkflowStage.ANNULUS_DEFINITION:
           return Math.min(state.annulusPoints.length / 3, 1) * 100;
         case WorkflowStage.MEASUREMENTS:
@@ -343,8 +333,6 @@ export function useWorkflowState() {
           return "Patient Selection";
         case WorkflowStage.ROOT_DEFINITION:
           return "Aortic Root Definition";
-        case WorkflowStage.CPR_ANALYSIS:
-          return "CPR Analysis";
         case WorkflowStage.ANNULUS_DEFINITION:
           return "Annulus Definition";
         case WorkflowStage.MEASUREMENTS:

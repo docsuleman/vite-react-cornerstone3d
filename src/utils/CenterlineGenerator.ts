@@ -10,12 +10,14 @@ interface SplinePoint {
 
 export class CenterlineGenerator {
   /**
-   * Generate a smooth centerline from 3 root points
+   * Generate a smooth centerline from 3 or more root points
    */
   static generateFromRootPoints(rootPoints: RootPoint[]): CenterlineData {
-    if (rootPoints.length !== 3) {
-      throw new Error('Exactly 3 root points are required for centerline generation');
+    if (rootPoints.length < 3) {
+      throw new Error('At least 3 root points are required for centerline generation');
     }
+    
+    console.log(`🔧 Generating centerline from ${rootPoints.length} root points...`);
 
     // Sort points by anatomical order: LV -> Valve -> Ascending Aorta
     const sortedPoints = this.sortRootPointsByOrder(rootPoints);
@@ -58,18 +60,33 @@ export class CenterlineGenerator {
    * Sort root points in anatomical order
    */
   private static sortRootPointsByOrder(rootPoints: RootPoint[]): RootPoint[] {
-    const order = [
-      RootPointType.LV_OUTFLOW,
-      RootPointType.AORTIC_VALVE,
-      RootPointType.ASCENDING_AORTA,
-    ];
+    // If we have exactly 3 points with anatomical types, use the original sorting
+    if (rootPoints.length === 3 && rootPoints.every(p => p.type)) {
+      const order = [
+        RootPointType.LV_OUTFLOW,
+        RootPointType.AORTIC_VALVE,
+        RootPointType.ASCENDING_AORTA,
+      ];
 
-    return order.map(type => {
-      const point = rootPoints.find(p => p.type === type);
-      if (!point) {
-        throw new Error(`Missing root point of type: ${type}`);
+      return order.map(type => {
+        const point = rootPoints.find(p => p.type === type);
+        if (!point) {
+          throw new Error(`Missing root point of type: ${type}`);
+        }
+        return point;
+      });
+    }
+    
+    // For more than 3 points or points without specific types,
+    // sort by placement order or Z coordinate (inferior to superior)
+    return [...rootPoints].sort((a, b) => {
+      // Primary sort: by Z coordinate (inferior to superior)
+      const zDiff = a.position[2] - b.position[2];
+      if (Math.abs(zDiff) > 1) { // 1mm tolerance
+        return zDiff;
       }
-      return point;
+      // Secondary sort: by creation order if available
+      return 0; // Keep original order if Z coordinates are similar
     });
   }
 
@@ -226,42 +243,51 @@ export class CenterlineGenerator {
   static validateRootPoints(rootPoints: RootPoint[]): { isValid: boolean; errors: string[] } {
     const errors: string[] = [];
 
-    if (rootPoints.length !== 3) {
-      errors.push('Exactly 3 root points are required');
+    if (rootPoints.length < 3) {
+      errors.push('At least 3 root points are required');
       return { isValid: false, errors };
     }
 
-    const requiredTypes = [
-      RootPointType.LV_OUTFLOW,
-      RootPointType.AORTIC_VALVE,
-      RootPointType.ASCENDING_AORTA,
-    ];
+    if (rootPoints.length > 10) {
+      errors.push('Maximum of 10 root points allowed');
+      return { isValid: false, errors };
+    }
 
-    for (const type of requiredTypes) {
-      if (!rootPoints.some(p => p.type === type)) {
-        errors.push(`Missing required point type: ${type}`);
+    // If we have exactly 3 points, check for required anatomical types
+    if (rootPoints.length === 3 && rootPoints.every(p => p.type)) {
+      const requiredTypes = [
+        RootPointType.LV_OUTFLOW,
+        RootPointType.AORTIC_VALVE,
+        RootPointType.ASCENDING_AORTA,
+      ];
+
+      for (const type of requiredTypes) {
+        if (!rootPoints.some(p => p.type === type)) {
+          errors.push(`Missing required point type: ${type}`);
+        }
       }
     }
 
-    // Check distances between points
+    // Check distances between consecutive points
     const sortedPoints = this.sortRootPointsByOrder(rootPoints);
-    const dist1 = vec3.distance(sortedPoints[0].position, sortedPoints[1].position);
-    const dist2 = vec3.distance(sortedPoints[1].position, sortedPoints[2].position);
-
-    if (dist1 < 10 || dist2 < 10) {
-      errors.push('Points are too close together (minimum 10mm separation)');
+    for (let i = 0; i < sortedPoints.length - 1; i++) {
+      const dist = vec3.distance(sortedPoints[i].position, sortedPoints[i + 1].position);
+      
+      if (dist < 5) {
+        errors.push(`Points ${i + 1} and ${i + 2} are too close together (minimum 5mm separation)`);
+      }
+      
+      if (dist > 200) {
+        errors.push(`Points ${i + 1} and ${i + 2} are too far apart (maximum 200mm separation)`);
+      }
     }
 
-    if (dist1 > 150 || dist2 > 150) {
-      errors.push('Points are too far apart (maximum 150mm separation)');
-    }
-
-    // Check that the path is generally ascending (Z-direction for typical CT orientation)
-    const lvZ = sortedPoints[0].position[2];
-    const aortaZ = sortedPoints[2].position[2];
+    // Check that the overall path is generally ascending (Z-direction for typical CT orientation)
+    const firstZ = sortedPoints[0].position[2];
+    const lastZ = sortedPoints[sortedPoints.length - 1].position[2];
     
-    if (aortaZ <= lvZ) {
-      errors.push('Ascending aorta point should be superior to LV outflow point');
+    if (lastZ <= firstZ) {
+      errors.push('Last point should be superior to first point (ascending path expected)');
     }
 
     return { isValid: errors.length === 0, errors };

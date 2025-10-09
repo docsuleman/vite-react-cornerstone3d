@@ -67,6 +67,44 @@ This is a React + Vite application for medical imaging visualization using Corne
 - Expects DICOM server at `127.0.0.1/orthanc/dicom-web`
 - Sample data includes Study/Series instance UIDs for testing
 
+## TAVI Workflow Application (TAVIApp.tsx)
+
+The application implements a comprehensive 5-stage TAVI (Transcatheter Aortic Valve Implantation) planning workflow using a state machine pattern:
+
+### Workflow Architecture
+
+**State Management**: Uses `useWorkflowState` hook with reducer pattern for centralized state management:
+- Patient selection and DICOM series loading
+- Aortic root landmark placement (3 points: LV outflow, aortic valve, ascending aorta)
+- CPR generation and analysis from centerline
+- Annulus definition using cusp nadir points (3 points: left/right/non-coronary)
+- Automated measurements and calculations
+
+**Stage Dependencies**: Each stage must be completed before advancing (enforced via `canAdvanceToStage()`)
+
+**Key Components**:
+- `TAVIApp.tsx` - Main workflow orchestrator with visual progress tracking
+- `useWorkflowState` hook - Reducer-based state management for workflow stages, points, measurements
+- `WorkflowTypes.ts` - TypeScript definitions for all workflow entities
+- `ProperMPRViewport` - Standard MPR views for root definition and measurements stages
+- `TrueCPRViewport` - Specialized CPR views for analysis and annulus definition stages
+
+### Workflow Stages
+
+1. **Patient Selection**: DICOM server connection and series selection
+2. **Root Definition**: Place 3 anatomical spheres (LV outflow → valve → ascending aorta)
+3. **CPR Analysis**: Automated centerline generation and CPR visualization
+4. **Annulus Definition**: Mark 3 cusp nadir points for annular plane calculation
+5. **Measurements**: Extract annulus metrics (area, perimeter, diameters)
+
+### Integration Notes
+
+- Spheres placed in ProperMPRViewport map to `RootPoint[]` via `onSpherePositionsUpdate`
+- Cusp dots in TrueCPRViewport/ProperMPRViewport map to `AnnulusPoint[]` via `onCuspDotsUpdate`
+- Centerline generated from root points using `CenterlineGenerator.generateFromRootPoints()`
+- Annular plane calculated from 3 cusp points, used to modify centerline perpendicularity
+- All measurements auto-calculated and stored in workflow state
+
 ## TAVI CPR Viewport Configuration (TrueCPRViewport.tsx)
 
 ### Working CPR Configuration for TAVI Planning

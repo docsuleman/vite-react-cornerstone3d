@@ -3,7 +3,6 @@ import { Vector3 } from '@kitware/vtk.js/types';
 export enum WorkflowStage {
   PATIENT_SELECTION = 'patient_selection',
   ROOT_DEFINITION = 'root_definition',
-  CPR_ANALYSIS = 'cpr_analysis',
   ANNULUS_DEFINITION = 'annulus_definition',
   MEASUREMENTS = 'measurements'
 }
@@ -11,7 +10,8 @@ export enum WorkflowStage {
 export enum RootPointType {
   LV_OUTFLOW = 'lv_outflow',
   AORTIC_VALVE = 'aortic_valve',
-  ASCENDING_AORTA = 'ascending_aorta'
+  ASCENDING_AORTA = 'ascending_aorta',
+  EXTENDED = 'extended'
 }
 
 export enum AnnulusPointType {
@@ -91,7 +91,6 @@ export interface WorkflowState {
   isStageComplete: {
     [WorkflowStage.PATIENT_SELECTION]: boolean;
     [WorkflowStage.ROOT_DEFINITION]: boolean;
-    [WorkflowStage.CPR_ANALYSIS]: boolean;
     [WorkflowStage.ANNULUS_DEFINITION]: boolean;
     [WorkflowStage.MEASUREMENTS]: boolean;
   };

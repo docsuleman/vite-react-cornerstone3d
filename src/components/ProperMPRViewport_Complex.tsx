@@ -68,7 +68,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const [imageInfo, setImageInfo] = useState<any>(null);
   const [renderingEngine, setRenderingEngine] = useState<RenderingEngine | null>(null);
   const [activeTool, setActiveTool] = useState<string>('Zoom');
-  const [windowLevel, setWindowLevel] = useState({ window: 400, level: 40 });
+  const [windowLevel, setWindowLevel] = useState({ window: 350, level: 40 }); // CT Angiography
   const running = useRef(false);
   const synchronizerRef = useRef<any>(null);
 

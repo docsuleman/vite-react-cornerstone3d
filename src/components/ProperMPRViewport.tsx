@@ -12,7 +12,7 @@ import { init as csToolsInit } from "@cornerstonejs/tools";
 import { init as dicomImageLoaderInit } from "@cornerstonejs/dicom-image-loader";
 import * as cornerstoneTools from "@cornerstonejs/tools";
 import { initializeCornerstone, isCornerStoneInitialized } from '../utils/cornerstoneInit';
-import { FaCrosshairs, FaSearchPlus, FaArrowsAlt, FaAdjust, FaCircle, FaMousePointer, FaScroll, FaTrash, FaDotCircle } from "react-icons/fa";
+import { FaCrosshairs, FaSearchPlus, FaArrowsAlt, FaAdjust, FaCircle, FaMousePointer, FaScroll, FaTrash, FaDotCircle, FaPlay, FaPause } from "react-icons/fa";
 import SphereMarkerTool from '../customTools/Spheremarker';
 import CuspNadirTool from '../customTools/CuspNadirTool';
 import { WorkflowStage } from '../types/WorkflowTypes';
@@ -28,7 +28,7 @@ const {
   synchronizers,
 } = cornerstoneTools;
 
-const { createSlabThicknessSynchronizer, createCameraPositionSynchronizer, getSynchronizer } = synchronizers;
+const { createSlabThicknessSynchronizer, createCameraPositionSynchronizer } = synchronizers;
 const { MouseBindings } = csToolsEnums;
 
 // Register volume loader
@@ -62,10 +62,23 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [imageInfo, setImageInfo] = useState<any>(null);
   const [activeTool, setActiveTool] = useState<string>('Zoom');
-  const [windowLevel, setWindowLevel] = useState({ window: 400, level: 40 });
+
+  // Use refs for imageInfo to avoid re-renders that break CrosshairsTool
+  const imageInfoRef = useRef<any>(null);
+  const [windowLevel, setWindowLevel] = useState({ window: 900, level: 350 }); // Cardiac CTA default
+  const [phaseInfo, setPhaseInfo] = useState<any>(null); // Cardiac phase information
+  const [selectedPhase, setSelectedPhase] = useState<number | null>(null); // Currently selected phase
+  const [isPlayingCine, setIsPlayingCine] = useState(false); // Cine playback state
+  const [isPreloading, setIsPreloading] = useState(false); // Track if we're in preloading mode
   const running = useRef(false);
+  const cineIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const preloadedVolumesRef = useRef<{ [phaseIndex: number]: string }>({}); // Store preloaded volume IDs
+  const renderingEngineRef = useRef<RenderingEngine | null>(null);
+  const allPhasesLoadedRef = useRef(false); // Track if all phases have been loaded once
+  const isSwitchingPhaseRef = useRef(false); // Track if we're currently switching phases
+  const savedCameraStatesRef = useRef<any>({}); // Store camera states to preserve crosshair position
+  const savedCrosshairFocalPointRef = useRef<any>(null); // Store crosshair focal point during phase switching
 
   // Use static IDs like App.tsx
   const toolGroupId = "MPR_TOOLGROUP_ID";
@@ -73,11 +86,191 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const synchronizerId = "MPR_SLAB_THICKNESS_SYNCHRONIZER_ID";
   const cameraPositionSynchronizerId = "MPR_CAMERA_POSITION_SYNCHRONIZER_ID";
 
+  // Store synchronizer refs for cleanup
+  const slabSynchronizerRef = useRef<any>(null);
+  const cameraSynchronizerRef = useRef<any>(null);
+
+  // Preload all phases sequentially when play is first hit
+  useEffect(() => {
+    if (!isPlayingCine || !phaseInfo || !phaseInfo.isMultiPhase || !patientInfo) {
+      return;
+    }
+
+    const preloadSequentially = async () => {
+      // Check if all phases are already loaded
+      const allLoaded = Object.keys(preloadedVolumesRef.current).length === phaseInfo.totalPhases;
+
+      if (allLoaded) {
+        console.log('✅ All phases already loaded, starting cine immediately');
+        allPhasesLoadedRef.current = true;
+        setIsPreloading(false);
+        return;
+      }
+
+      console.log('🔄 First time play - preloading all phases sequentially...');
+      setIsPreloading(true);
+
+      try {
+        // Load each phase one by one and display it
+        for (let phaseIndex = 0; phaseIndex < phaseInfo.totalPhases; phaseIndex++) {
+          if (!preloadedVolumesRef.current[phaseIndex]) {
+            console.log(`📥 Preloading phase ${phaseIndex + 1}/${phaseInfo.totalPhases}...`);
+
+            // Set this as the current phase so it displays
+            setSelectedPhase(phaseIndex);
+
+            // Wait a bit for the phase to load and display
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+        }
+
+        console.log('✅ All phases preloaded! Starting 1.5s loop...');
+        allPhasesLoadedRef.current = true;
+        setIsPreloading(false);
+      } catch (error) {
+        console.error('❌ Error during sequential preload:', error);
+        setIsPreloading(false);
+      }
+    };
+
+    preloadSequentially();
+  }, [isPlayingCine, phaseInfo, patientInfo]);
+
+  // Cine playback effect - play all phases in 1.5 seconds loop (only after preloading)
+  useEffect(() => {
+    if (isPlayingCine && phaseInfo && phaseInfo.isMultiPhase && !isPreloading && allPhasesLoadedRef.current) {
+      // Calculate interval: 1500ms (1.5 seconds) divided by number of phases
+      const totalDuration = 1500; // 1.5 seconds in milliseconds
+      const interval = totalDuration / phaseInfo.totalPhases;
+
+      console.log(`🎬 Starting 1.5s cine loop: ${phaseInfo.totalPhases} phases (${interval.toFixed(0)}ms per phase)`);
+
+      cineIntervalRef.current = setInterval(() => {
+        setSelectedPhase(prevPhase => {
+          const currentPhase = prevPhase ?? 0;
+          const nextPhase = (currentPhase + 1) % phaseInfo.totalPhases;
+          return nextPhase;
+        });
+      }, interval);
+
+      return () => {
+        if (cineIntervalRef.current) {
+          clearInterval(cineIntervalRef.current);
+          cineIntervalRef.current = null;
+        }
+      };
+    } else {
+      if (cineIntervalRef.current) {
+        clearInterval(cineIntervalRef.current);
+        cineIntervalRef.current = null;
+      }
+    }
+  }, [isPlayingCine, phaseInfo, isPreloading]);
+
+  // Phase switching effect - load and display the selected phase
+  useEffect(() => {
+    if (!phaseInfo || !phaseInfo.isMultiPhase || selectedPhase === null || !patientInfo) {
+      return;
+    }
+
+    const switchPhase = async () => {
+      try {
+        isSwitchingPhaseRef.current = true;
+        console.log(`🔄 Switching to phase ${selectedPhase + 1}/${phaseInfo.totalPhases}`);
+
+        // Get or create volume for this phase
+        let phaseVolumeId = preloadedVolumesRef.current[selectedPhase];
+
+        if (!phaseVolumeId) {
+          // Load this phase's volume by calling createImageIdsAndCacheMetaData with the selected phase
+          console.log(`📥 Loading volume for phase ${selectedPhase + 1}...`);
+
+          const { imageIds: phaseImageIds } = await createImageIdsAndCacheMetaData({
+            StudyInstanceUID: patientInfo.studyInstanceUID!,
+            SeriesInstanceUID: patientInfo.seriesInstanceUID!,
+            wadoRsRoot: "http://127.0.0.1/orthanc/dicom-web",
+            selectedPhase: selectedPhase, // Pass the selected phase
+          });
+
+          phaseVolumeId = `streamingImageVolume_phase${selectedPhase}_${Date.now()}`;
+
+          const phaseVolume = await volumeLoader.createAndCacheVolume(phaseVolumeId, {
+            imageIds: phaseImageIds,
+          });
+
+          // WAIT for the volume to fully load before continuing
+          await phaseVolume.load();
+
+          // Cache the volume ID
+          preloadedVolumesRef.current[selectedPhase] = phaseVolumeId;
+          console.log(`✅ Loaded phase ${selectedPhase + 1} volume: ${phaseVolumeId}`);
+        }
+
+        // Apply the phase volume to all viewports
+        const viewportIds = ["axial", "sagittal", "coronal"];
+        const renderingEngine = renderingEngineRef.current || new RenderingEngine(renderingEngineId);
+
+        // Calculate W/L once
+        const lower = windowLevel.level - windowLevel.window / 2;
+        const upper = windowLevel.level + windowLevel.window / 2;
+
+        // Save current camera states for all viewports BEFORE any changes
+        viewportIds.forEach(id => {
+          const viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
+          if (viewport) {
+            savedCameraStatesRef.current[id] = viewport.getCamera();
+          }
+        });
+
+        // CRITICAL: Save crosshair focal point from axial viewport
+        const axialViewport = renderingEngine.getViewport("axial") as Types.IVolumeViewport;
+        if (axialViewport) {
+          const camera = axialViewport.getCamera();
+          savedCrosshairFocalPointRef.current = [...camera.focalPoint]; // Clone the array
+          console.log(`💾 Saved crosshair focal point:`, savedCrosshairFocalPointRef.current);
+        }
+
+        // Update all viewports with new volume - do all at once to minimize time
+        await Promise.all(viewportIds.map(async (id) => {
+          const viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
+          if (viewport) {
+            await viewport.setVolumes([{
+              volumeId: phaseVolumeId,
+              callback: ({ volumeActor }) => {
+                volumeActor.getProperty().getRGBTransferFunction(0).setRange(lower, upper);
+              }
+            }], false);
+          }
+        }));
+
+        // Restore cameras for all viewports after volumes are set
+        viewportIds.forEach(id => {
+          const viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
+          const savedCamera = savedCameraStatesRef.current[id];
+          if (viewport && savedCamera) {
+            viewport.setCamera(savedCamera);
+          }
+        });
+
+        // CRITICAL: Force render ALL viewports synchronously to restore crosshair sync
+        renderingEngine.renderViewports(viewportIds);
+        console.log(`✅ Rendered all viewports with restored cameras`);
+
+        console.log(`✅ Switched to phase ${selectedPhase + 1} with W/L: ${windowLevel.window}/${windowLevel.level}`);
+        isSwitchingPhaseRef.current = false;
+      } catch (error) {
+        console.error(`❌ Failed to switch to phase ${selectedPhase}:`, error);
+        isSwitchingPhaseRef.current = false;
+      }
+    };
+
+    switchPhase();
+  }, [selectedPhase, phaseInfo, patientInfo]);
+
   useEffect(() => {
     if (!patientInfo?.seriesInstanceUID) return;
 
-    console.log('🔄 Stage changed to:', currentStage, '- Initializing Simple MPR Viewport');
-    console.log('🔄 Is annulus definition stage?', currentStage === WorkflowStage.ANNULUS_DEFINITION);
+    console.log('🔄 Stage changed to:', currentStage, '- Initializing MPR Viewport');
     initializeMPRViewport();
 
     // Cleanup function
@@ -90,20 +283,13 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     if (!running.current) {
       return;
     }
-    
+
     try {
       console.log('🧹 Cleaning up MPR Viewport...');
-      
-      // Clean up synchronizer
-      try {
-        const existingSynchronizer = getSynchronizer(synchronizerId);
-        if (existingSynchronizer) {
-          existingSynchronizer.destroy();
-        }
-      } catch (error) {
-        console.warn('Failed to destroy synchronizer:', error);
-      }
-      
+
+      // DON'T destroy synchronizer - keep it alive for reuse (fixes sync issues)
+      // slabSynchronizerRef.current = null;
+
       // Clean up tool group
       try {
         const existingToolGroup = ToolGroupManager.getToolGroup(toolGroupId);
@@ -153,8 +339,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       console.log('🔍 Loading DICOM images...');
 
-      // Load DICOM images using the same method as App.tsx
-      const imageIds = await createImageIdsAndCacheMetaData({
+      // Load DICOM images and get phase information
+      const { imageIds, phaseInfo: detectedPhaseInfo } = await createImageIdsAndCacheMetaData({
         StudyInstanceUID: patientInfo!.studyInstanceUID!,
         SeriesInstanceUID: patientInfo!.seriesInstanceUID!,
         wadoRsRoot: "http://127.0.0.1/orthanc/dicom-web",
@@ -164,17 +350,49 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         throw new Error('No DICOM images found for this series');
       }
 
+      // Store phase information
+      setPhaseInfo(detectedPhaseInfo);
       console.log(`📋 Found ${imageIds.length} DICOM images`);
+      console.log(`📊 Phase Info:`, detectedPhaseInfo);
 
-      // Create rendering engine (exactly like App.tsx)
-      const renderingEngine = new RenderingEngine(renderingEngineId);
+      // Set initial phase if multi-phase
+      if (detectedPhaseInfo && detectedPhaseInfo.isMultiPhase) {
+        setSelectedPhase(0); // Default to first phase
+        console.log(`🎬 Multi-phase dataset detected with ${detectedPhaseInfo.totalPhases} phases`);
+      }
+
+      // Try to reuse existing rendering engine if it exists (this is what makes it work when coming back!)
+      let renderingEngine = renderingEngineRef.current;
+      const isFirstLoad = !renderingEngine;
+      if (!renderingEngine) {
+        renderingEngine = new RenderingEngine(renderingEngineId);
+        renderingEngineRef.current = renderingEngine;
+        console.log('🆕🆕🆕 FIRST LOAD - Created new rendering engine');
+      } else {
+        console.log('♻️♻️♻️ SECOND LOAD - Reusing existing rendering engine');
+      }
+
+      // Log the state of everything
+      console.log('📊 State Check:');
+      console.log('  - Is First Load:', isFirstLoad);
+      console.log('  - Rendering Engine exists:', !!renderingEngine);
+      console.log('  - Synchronizer exists:', !!slabSynchronizerRef.current);
+      console.log('  - Viewports on engine:', renderingEngine.getViewports().map(v => v.id));
       
       // Create volume (exactly like App.tsx)
       const volumeId = `streamingImageVolume_${Date.now()}`;
       const volume = await volumeLoader.createAndCacheVolume(volumeId, {
         imageIds,
       });
+
+      // Start volume loading (streaming)
       volume.load();
+
+      // If multi-phase, cache the first phase volume
+      if (detectedPhaseInfo && detectedPhaseInfo.isMultiPhase) {
+        preloadedVolumesRef.current[0] = volumeId;
+        console.log(`💾 Cached phase 0 volume: ${volumeId}`);
+      }
 
       // Setup viewports (exactly like App.tsx)
       const viewports = [
@@ -183,97 +401,50 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         { id: "coronal", orientation: Enums.OrientationAxis.CORONAL },
       ];
 
-      // Enable viewports and set volumes (exactly like App.tsx)
+      // Enable viewports and set volumes (check if already enabled first)
+      // CRITICAL: Don't await setVolumes - let it stream in background like App.tsx
+      console.log('🔧 Setting up viewports...');
       viewports.forEach(({ id, orientation }) => {
-        renderingEngine.enableElement({
-          viewportId: id,
-          type: Enums.ViewportType.ORTHOGRAPHIC,
-          element: elementRefs[id].current,
-          defaultOptions: { 
-            orientation,
-            background: [0, 0, 0]
-          },
-        });
+        // Check if viewport already exists
+        let viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
 
-        const viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
+        if (!viewport) {
+          // Viewport doesn't exist, enable it
+          console.log(`  🆕 ${id}: Creating NEW viewport`);
+          renderingEngine.enableElement({
+            viewportId: id,
+            type: Enums.ViewportType.ORTHOGRAPHIC,
+            element: elementRefs[id].current,
+            defaultOptions: {
+              orientation,
+              background: [0, 0, 0]
+            },
+          });
+          viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
+        } else {
+          console.log(`  ♻️ ${id}: REUSING existing viewport`);
+        }
+
+        // Don't await - let volumes load in background like App.tsx
         viewport.setVolumes([{ volumeId }]);
         viewport.render();
+        console.log(`  ✅ ${id}: setVolumes and render called`);
       });
 
-      // Setup tools first
+      // Setup tools first WITHOUT any state updates
       await setupTools();
 
-      // Camera fitting after a delay - ensure consistent zoom across all viewports
-      setTimeout(() => {
-        try {
-          // Calculate camera settings once based on the first viewport for consistency
-          const firstViewport = renderingEngine.getViewport("axial") as Types.IVolumeViewport;
-          firstViewport.resetCamera();
-          
-          const bounds = firstViewport.getBounds();
-          const canvas = firstViewport.getCanvas();
-          
-          let commonParallelScale = 100; // Smaller scale for better zoom
-          
-          if (bounds && canvas) {
-            const { width: canvasWidth, height: canvasHeight } = canvas;
-            const [xMin, xMax, yMin, yMax, zMin, zMax] = bounds;
-            const imageWidth = Math.abs(xMax - xMin);
-            const imageHeight = Math.abs(yMax - yMin);
-            
-            // Better scaling calculation to fill viewports
-            const scaleX = canvasWidth / imageWidth;
-            const scaleY = canvasHeight / imageHeight;
-            const scale = Math.min(scaleX, scaleY) * 0.8; // Fill more of the viewport
-            commonParallelScale = Math.max(imageWidth, imageHeight) / (2 * scale);
-            
-            console.log(`📏 Calculated scale: imageWidth=${imageWidth}, imageHeight=${imageHeight}, scale=${scale}, parallelScale=${commonParallelScale}`);
-          }
-          
-          // Apply the same camera settings to ALL viewports for consistent zoom and positioning
-          viewports.forEach(({ id }) => {
-            const viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
-            viewport.resetCamera();
-            
-            // Set consistent camera with proper fitting
-            viewport.setCamera({
-              parallelScale: commonParallelScale,
-            });
-            
-            // Additional viewport fitting to reduce black space
-            try {
-              const bounds = viewport.getBounds();
-              if (bounds) {
-                viewport.fitToCanvas();
-              }
-            } catch (error) {
-              console.warn(`Viewport ${id} fitToCanvas failed:`, error);
-            }
-            
-            viewport.render();
-            console.log(`📷 Set camera for viewport ${id}: parallelScale=${commonParallelScale}`);
-          });
-          
-          console.log(`📷 Applied consistent camera settings (parallelScale: ${commonParallelScale})`);
-        } catch (error) {
-          console.warn('Error setting consistent camera:', error);
-          // Fallback: individual reset
-          viewports.forEach(({ id }) => {
-            const viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
-            viewport.resetCamera();
-            viewport.render();
-          });
-        }
-      }, 2000);
-
-      setImageInfo({
+      // CRITICAL: Set imageInfo in ref (no re-render since it's a ref)
+      // The layout shift from the info bar was the real issue, not this assignment
+      console.log('📊 Setting imageInfo in ref...');
+      imageInfoRef.current = {
         width: 512,
         height: 512,
         numberOfImages: imageIds.length,
         seriesInstanceUID: patientInfo?.seriesInstanceUID,
         volumeId: volumeId,
         status: 'MPR Viewport Active'
-      });
+      };
 
       if (onImageLoaded) {
         onImageLoaded({ imageIds, volume });
@@ -281,6 +452,26 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       console.log('✅ MPR Viewport initialized successfully!');
       setIsLoading(false);
+
+      // Apply initial window/level AFTER everything else to avoid interfering with CrosshairsTool
+      // Small delay to let CrosshairsTool fully stabilize
+      setTimeout(() => {
+        console.log('🎨 Applying initial window/level to viewports...');
+        const viewportIds = ["axial", "sagittal", "coronal"];
+        viewportIds.forEach((id) => {
+          const viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
+          if (viewport) {
+            viewport.setProperties({
+              voiRange: {
+                lower: windowLevel.level - windowLevel.window / 2,
+                upper: windowLevel.level + windowLevel.window / 2,
+              },
+            });
+            viewport.render();
+          }
+        });
+        console.log(`✅ Applied initial W/L: ${windowLevel.window}/${windowLevel.level}`);
+      }, 200);
 
     } catch (err) {
       console.error('❌ Failed to initialize MPR Viewport:', err);
@@ -291,6 +482,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
   const setupTools = async () => {
     try {
+      console.log('🔧🔧🔧 SETUP TOOLS STARTING...');
+
       // Add tools to Cornerstone3D (exactly like App.tsx)
       cornerstoneTools.addTool(CrosshairsTool);
       cornerstoneTools.addTool(ZoomTool);
@@ -304,20 +497,24 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       try {
         const existingToolGroup = ToolGroupManager.getToolGroup(toolGroupId);
         if (existingToolGroup) {
+          console.log('  🗑️ Destroying existing tool group');
           ToolGroupManager.destroyToolGroup(toolGroupId);
         }
       } catch (error) {
         // Tool group doesn't exist, which is fine
+        console.log('  ✅ No existing tool group to destroy');
       }
 
       // Create tool group
+      console.log('  🆕 Creating new tool group');
       const toolGroup = ToolGroupManager.createToolGroup(toolGroupId);
-      
+
       if (!toolGroup) {
         throw new Error('Failed to create tool group');
       }
 
       // Add Crosshairs tool and configure it to link the three viewports (exactly like App.tsx)
+      // Note: Don't activate yet - wait until viewports are added
       toolGroup.addTool(CrosshairsTool.toolName, {
         getReferenceLineColor: (viewportId) => {
           const colors = {
@@ -330,13 +527,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         getReferenceLineControllable: () => true,
         getReferenceLineDraggableRotatable: () => true,
         getReferenceLineSlabThicknessControlsOn: () => true,
-      });
-      toolGroup.setToolActive(CrosshairsTool.toolName, {
-        bindings: [
-         {
-            mouseButton: MouseBindings.Primary, // Left Click
-          },
-        ],
       });
 
       toolGroup.addTool(ZoomTool.toolName, {
@@ -353,10 +543,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       });
 
       toolGroup.addTool(PanTool.toolName);
-
-      toolGroup.addTool(CrosshairsTool.toolName, {
-        bindings: [{ mouseButton: MouseBindings.Primary }],
-      });
 
       toolGroup.addTool(WindowLevelTool.toolName, {
         bindings: [{ mouseButton: MouseBindings.Primary }],
@@ -402,23 +588,46 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         }
       }
 
-      // Add viewports to the tool group (exactly like App.tsx)
+      // CRITICAL: Activate CrosshairsTool BEFORE adding viewports (like App.tsx)
+      // This is the correct order for proper synchronization
+      console.log('  🎯 Activating CrosshairsTool BEFORE adding viewports...');
+      toolGroup.setToolActive(CrosshairsTool.toolName, {
+        bindings: [{
+          mouseButton: MouseBindings.Primary,
+        }],
+      });
+      console.log('  ✅ CrosshairsTool activated');
+
+      // Add viewports to the tool group AFTER activating CrosshairsTool
       const viewportIds = ["axial", "sagittal", "coronal"];
+      console.log('  📌 Adding viewports to tool group:', viewportIds);
       viewportIds.forEach((id) => {
         toolGroup.addViewport(id, renderingEngineId);
+        console.log(`    - Added ${id} to tool group`);
       });
 
-      // Set up synchronizers (exactly like App.tsx)
-      const synchronizer = createSlabThicknessSynchronizer(synchronizerId);
-      viewportIds.forEach((id) => {
-        synchronizer.add({
-          renderingEngineId,
-          viewportId: id,
+      // CRITICAL: Force render ALL viewports AFTER CrosshairsTool activation
+      // This ensures CrosshairsTool's initial state is rendered correctly
+      const renderingEngine = renderingEngineRef.current;
+      if (renderingEngine) {
+        console.log('  🎨 Force rendering all viewports...');
+        renderingEngine.renderViewports(viewportIds);
+        console.log('  ✅ Force rendered all viewports');
+      }
+
+      // Setup slab synchronizer
+      const synchronizerId = 'MPR_SLAB_THICKNESS_SYNCHRONIZER_ID';
+      if (!slabSynchronizerRef.current) {
+        const synchronizer = createSlabThicknessSynchronizer(synchronizerId);
+        slabSynchronizerRef.current = synchronizer;
+        viewportIds.forEach((id) => {
+          synchronizer.add({ renderingEngineId, viewportId: id });
         });
-      });
-      synchronizer.setEnabled(true);
+        synchronizer.setEnabled(true);
+        console.log('  ✅ Created and enabled slab synchronizer');
+      }
 
-      console.log('✅ Tools setup complete (App.tsx pattern)');
+      console.log('✅✅✅ SETUP TOOLS COMPLETE');
     } catch (error) {
       console.error('❌ Failed to setup tools:', error);
       throw error;
@@ -541,11 +750,11 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const handleWindowLevelChange = (window: number, level: number) => {
     try {
       setWindowLevel({ window, level });
-      
+
       // Apply window/level to all viewports
       const viewportIds = ["axial", "sagittal", "coronal"];
-      const renderingEngine = new RenderingEngine(renderingEngineId);
-      
+      const renderingEngine = renderingEngineRef.current || new RenderingEngine(renderingEngineId);
+
       viewportIds.forEach((id) => {
         try {
           const viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
@@ -562,12 +771,104 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           console.warn(`Failed to set W/L for viewport ${id}:`, error);
         }
       });
-      
+
       console.log(`📊 Applied W/L: Window=${window}, Level=${level}`);
     } catch (error) {
       console.warn('Window/Level error:', error);
     }
   };
+
+  // Listen for VOI changes from WindowLevel tool and update state
+  useEffect(() => {
+    if (!renderingEngineRef.current) return;
+
+    const handleVOIModified = (evt: any) => {
+      // Don't update state if we're currently switching phases
+      if (isSwitchingPhaseRef.current) {
+        console.log('📊 Ignoring VOI event during phase switch');
+        return;
+      }
+
+      const { viewportId, volumeId, range } = evt.detail;
+
+      // Calculate window/level from VOI range
+      const newWindow = Math.round(range.upper - range.lower);
+      const newLevel = Math.round((range.upper + range.lower) / 2);
+
+      // Update state to match current viewport settings
+      setWindowLevel({ window: newWindow, level: newLevel });
+
+      console.log(`📊 W/L changed by tool: Window=${newWindow}, Level=${newLevel}`);
+    };
+
+    const handleCameraModified = (evt: any) => {
+      const { element, camera } = evt.detail;
+
+      // If we're NOT switching phases, this is a user interaction - save it
+      if (!isSwitchingPhaseRef.current && element && camera) {
+        const viewportId = element.viewportId || element.getAttribute?.('data-viewport-uid');
+        if (viewportId) {
+          // Update the saved camera state so phase switching uses the new position
+          savedCameraStatesRef.current[viewportId] = camera;
+        }
+      }
+    };
+
+    // Listen for events
+    document.addEventListener('CORNERSTONE_VOI_MODIFIED', handleVOIModified);
+    document.addEventListener('CORNERSTONE_CAMERA_MODIFIED', handleCameraModified);
+
+    return () => {
+      document.removeEventListener('CORNERSTONE_VOI_MODIFIED', handleVOIModified);
+      document.removeEventListener('CORNERSTONE_CAMERA_MODIFIED', handleCameraModified);
+    };
+  }, [renderingEngineRef.current]);
+
+  // Preload adjacent phases for smooth cine playback
+  const preloadAdjacentPhases = async () => {
+    if (!phaseInfo || !phaseInfo.isMultiPhase || selectedPhase === null || !patientInfo) {
+      return;
+    }
+
+    try {
+      const currentPhase = selectedPhase;
+      const nextPhase = (currentPhase + 1) % phaseInfo.totalPhases;
+      const prevPhase = (currentPhase - 1 + phaseInfo.totalPhases) % phaseInfo.totalPhases;
+
+      // Preload next and previous phases
+      for (const phaseIndex of [nextPhase, prevPhase]) {
+        if (!preloadedVolumesRef.current[phaseIndex]) {
+          console.log(`🔄 Preloading phase ${phaseIndex + 1}...`);
+
+          const { imageIds: phaseImageIds } = await createImageIdsAndCacheMetaData({
+            StudyInstanceUID: patientInfo.studyInstanceUID!,
+            SeriesInstanceUID: patientInfo.seriesInstanceUID!,
+            wadoRsRoot: "http://127.0.0.1/orthanc/dicom-web",
+            selectedPhase: phaseIndex,
+          });
+
+          const phaseVolumeId = `streamingImageVolume_phase${phaseIndex}_${Date.now()}`;
+
+          const phaseVolume = await volumeLoader.createAndCacheVolume(phaseVolumeId, {
+            imageIds: phaseImageIds,
+          });
+          await phaseVolume.load();
+
+          preloadedVolumesRef.current[phaseIndex] = phaseVolumeId;
+          console.log(`✅ Preloaded phase ${phaseIndex + 1}`);
+        }
+      }
+    } catch (error) {
+      console.warn('Phase preloading error:', error);
+    }
+  };
+
+  // Preload adjacent phases when phase changes (only when not in preloading mode)
+  useEffect(() => {
+    if (phaseInfo && phaseInfo.isMultiPhase && selectedPhase !== null && !isPreloading && allPhasesLoadedRef.current) {
+      preloadAdjacentPhases();
+    }
+  }, [selectedPhase, phaseInfo, isPreloading]);
 
   return (
     <div className="flex flex-col w-full h-full">
@@ -656,6 +957,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               Soft Tissue
             </button>
             <button
+              onClick={() => handleWindowLevelChange(900, 350)}
+              className="bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded text-white text-sm"
+            >
+              Angio
+            </button>
+            <button
               onClick={() => handleWindowLevelChange(1500, 300)}
               className="bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded text-white text-sm"
             >
@@ -674,23 +981,73 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         </div>
       </div>
 
-      {/* Image Info */}
-      {imageInfo && !isLoading && (
-        <div className="px-3 py-2 bg-slate-900 border-b border-slate-700 text-xs text-slate-400">
-          <span className="mr-4">
-            Series: {patientInfo?.seriesInstanceUID}
-          </span>
-          <span className="mr-4">
-            Images: {imageInfo.numberOfImages}
-          </span>
-          <span className="mr-4">
-            Volume: {imageInfo.volumeId}
-          </span>
-          <span className="text-green-400">
-            {imageInfo.status}
-          </span>
-        </div>
-      )}
+      {/* Image Info and Phase Controls */}
+      {/* CRITICAL: Use absolute positioning to prevent layout shift that breaks CrosshairsTool */}
+      <div
+        className="px-3 py-2 bg-slate-900 border-b border-slate-700 text-xs text-slate-400 flex items-center justify-between absolute top-[60px] left-0 right-0 z-10"
+        style={{
+          opacity: (!isLoading && imageInfoRef.current) ? 1 : 0,
+          pointerEvents: (!isLoading && imageInfoRef.current) ? 'auto' : 'none'
+        }}
+      >
+          {imageInfoRef.current && (
+            <>
+              <div>
+                <span className="mr-4">
+                  Series: {patientInfo?.seriesInstanceUID}
+                </span>
+                <span className="mr-4">
+                  Images: {imageInfoRef.current.numberOfImages}
+                </span>
+                <span className="mr-4">
+                  Volume: {imageInfoRef.current.volumeId}
+                </span>
+                <span className="text-green-400">
+                  {imageInfoRef.current.status}
+                </span>
+              </div>
+
+              {/* Phase Controls - only show if multi-phase */}
+              {phaseInfo && phaseInfo.isMultiPhase && (
+            <div className="flex items-center gap-3">
+              <span className="text-slate-300">Cardiac Phase:</span>
+              <button
+                onClick={() => setIsPlayingCine(!isPlayingCine)}
+                className={`p-2 rounded ${isPlayingCine ? 'bg-red-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                title={isPlayingCine ? 'Pause Cine' : 'Play Cine'}
+              >
+                {isPlayingCine ? <FaPause /> : <FaPlay />}
+              </button>
+              <select
+                value={selectedPhase ?? 0}
+                onChange={(e) => {
+                  setIsPlayingCine(false);
+                  setSelectedPhase(parseInt(e.target.value));
+                }}
+                className="bg-slate-700 text-white px-3 py-1 rounded"
+                disabled={isPreloading}
+              >
+                {phaseInfo.phases.map((phase, index) => (
+                  <option key={index} value={index}>
+                    {phase.phaseName || `Phase ${index + 1}`}
+                  </option>
+                ))}
+              </select>
+              {isPreloading ? (
+                <span className="text-xs text-yellow-400 flex items-center gap-2">
+                  <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-yellow-400"></div>
+                  Loading phases...
+                </span>
+              ) : (
+                <span className="text-xs text-slate-400">
+                  ({phaseInfo.totalPhases} phases, 1.5s loop)
+                </span>
+              )}
+                </div>
+              )}
+            </>
+          )}
+      </div>
 
       {/* MPR Viewports */}
       <div className="flex-1 relative">
