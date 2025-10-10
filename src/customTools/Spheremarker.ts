@@ -1506,7 +1506,7 @@ class SphereMarkerTool extends BaseTool {
         const maxIndex = absNormal.indexOf(Math.max(...absNormal));
         sliceSpacing = spacing[maxIndex];
 
-        console.log(`🔍 ${viewport.id}: viewPlaneNormal=[${viewPlaneNormal.map(v => v.toFixed(2)).join(',')}], scroll axis=${['X','Y','Z'][maxIndex]}, spacing=${sliceSpacing.toFixed(2)}mm`);
+        // console.log(`🔍 ${viewport.id}: viewPlaneNormal=[${viewPlaneNormal.map(v => v.toFixed(2)).join(',')}], scroll axis=${['X','Y','Z'][maxIndex]}, spacing=${sliceSpacing.toFixed(2)}mm`);
       }
     } catch (error) {
       console.warn('Could not get volume spacing, using default:', error);

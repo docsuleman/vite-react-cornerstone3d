@@ -54,6 +54,13 @@ class FixedCrosshairTool extends BaseTool {
   }
 
   /**
+   * Get the current rotation angle
+   */
+  getRotationAngle(): number {
+    return this.rotationAngle;
+  }
+
+  /**
    * Clear the fixed position (hide crosshairs)
    */
   clearFixedPosition() {
@@ -191,10 +198,10 @@ class FixedCrosshairTool extends BaseTool {
           const isLongAxisView = viewportId === 'sagittal' || viewportId === 'coronal';
           const gapSize = isLongAxisView ? this.gapSizeLongAxis : this.gapSizeShortAxis;
 
-          // Debug logging (once per second)
-          if (Date.now() % 1000 < 16) {
-            console.log(`📐 ${viewportId}: client=${width}x${height}, point=[${clientPoint[0].toFixed(1)}, ${clientPoint[1].toFixed(1)}]`);
-          }
+          // Debug logging (disabled to reduce console noise)
+          // if (Date.now() % 1000 < 16) {
+          //   console.log(`📐 ${viewportId}: client=${width}x${height}, point=[${clientPoint[0].toFixed(1)}, ${clientPoint[1].toFixed(1)}]`);
+          // }
 
           // Determine horizontal line color based on viewport
           // Axial: red horizontal, Coronal: red horizontal, Sagittal: green horizontal
@@ -255,10 +262,10 @@ class FixedCrosshairTool extends BaseTool {
           const hLineRightStart = rotatePoint(rightLineStart, clientPoint[1], clientPoint[0], clientPoint[1], rotationToApply);
           const hLineRightEnd = rotatePoint(rightLineEnd, clientPoint[1], clientPoint[0], clientPoint[1], rotationToApply);
 
-          // Debug logging for horizontal line calculations (once per second)
-          if (Date.now() % 1000 < 16) {
-            console.log(`  📏 ${viewportId} rotation=${(this.rotationAngle * 180 / Math.PI).toFixed(1)}°`);
-          }
+          // Debug logging for horizontal line calculations (disabled to reduce console noise)
+          // if (Date.now() % 1000 < 16) {
+          //   console.log(`  📏 ${viewportId} rotation=${(this.rotationAngle * 180 / Math.PI).toFixed(1)}°`);
+          // }
 
           // Draw horizontal line with gap (LEFT side) - ALL VIEWS
           const horizontalLineLeft = document.createElementNS(svgns, 'line');
@@ -407,15 +414,15 @@ class FixedCrosshairTool extends BaseTool {
         }
       });
 
-      // Log status periodically (once per second)
-      if (Date.now() % 1000 < 16) {
-        if (drawnCount > 0) {
-          console.log(`✅ FixedCrosshairTool: Drew on ${drawnCount}/3 viewports`);
-        }
-        if (errors.length > 0) {
-          console.warn(`⚠️ FixedCrosshairTool errors:`, errors);
-        }
-      }
+      // Log status periodically (disabled to reduce console noise)
+      // if (Date.now() % 1000 < 16) {
+      //   if (drawnCount > 0) {
+      //     console.log(`✅ FixedCrosshairTool: Drew on ${drawnCount}/3 viewports`);
+      //   }
+      //   if (errors.length > 0) {
+      //     console.warn(`⚠️ FixedCrosshairTool errors:`, errors);
+      //   }
+      // }
     } catch (error) {
       console.error('FixedCrosshairTool draw error:', error);
     }
@@ -465,7 +472,7 @@ class FixedCrosshairTool extends BaseTool {
 
     if (distance < 150) {
       this.isDragging = true;
-      // Store the initial angle
+      // Store the initial angle (matching the calculation in mouseDragCallback)
       this.dragStartAngle = Math.atan2(dy, dx) - this.rotationAngle;
       console.log('🔄 Starting crosshair rotation');
       evt.preventDefault();
@@ -500,6 +507,9 @@ class FixedCrosshairTool extends BaseTool {
     // Calculate angle from center to current mouse position
     const dx = canvas[0] - centerCanvas[0];
     const dy = canvas[1] - centerCanvas[1];
+
+    // Calculate angle from center to current mouse position
+    // Negate to fix rotation direction (make mouse movement intuitive)
     const currentAngle = Math.atan2(dy, dx);
 
     // Calculate rotation delta
@@ -507,10 +517,10 @@ class FixedCrosshairTool extends BaseTool {
     this.rotationAngle = currentAngle - this.dragStartAngle;
     const deltaAngle = this.rotationAngle - oldRotation;
 
-    // Only update if there's a meaningful change
-    if (Math.abs(deltaAngle) > 0.01) {
-      // Rotate the MPR viewing planes
-      this.rotateMPRPlanes(renderingEngine, viewportId, deltaAngle);
+    // Only update if there's a meaningful change (lower threshold for smoother rotation)
+    if (Math.abs(deltaAngle) > 0.001) {
+      // Rotate the MPR viewing planes (negate deltaAngle to fix direction)
+      this.rotateMPRPlanes(renderingEngine, viewportId, -deltaAngle);
       console.log(`🔄 Rotating MPR planes: ${(this.rotationAngle * 180 / Math.PI).toFixed(1)}°`);
     }
 

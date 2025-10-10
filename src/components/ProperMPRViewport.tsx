@@ -635,7 +635,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               position: cameraPos,
               focalPoint: valveCenterlinePos as Types.Point3,
               viewUp: viewUp,
-              parallelScale: 50, // Adjust zoom to show annulus area
+              parallelScale: 100, // Increased to show more anatomy around valve
             });
 
             // Store the locked focal point for annulus definition
@@ -657,67 +657,103 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
             console.log('   ViewUp:', camera.viewUp);
             console.log('   View plane normal:', camera.viewPlaneNormal);
 
-            // Now align sagittal and coronal views to be perpendicular to the centerline-aligned axial
-            // Create an orthogonal coordinate system based on the centerline
+            // CRITICAL FIX: Get the ACTUAL screen-space directions from the axial camera
+            // Instead of using calculated viewUp and sagittalDirection, use what Cornerstone actually set up
+            // This ensures the sagittal/coronal views match the crosshair lines exactly
 
-            // Calculate the second perpendicular vector (for sagittal)
-            // This is perpendicular to both the tangent and viewUp
-            const sagittalDirection = [
-              tangent[1] * viewUp[2] - tangent[2] * viewUp[1],
-              tangent[2] * viewUp[0] - tangent[0] * viewUp[2],
-              tangent[0] * viewUp[1] - tangent[1] * viewUp[0]
+            // Get actual viewUp from camera (this is the GREEN vertical line direction in screen space)
+            const actualViewUp = camera.viewUp;
+
+            // Calculate viewRight (RED horizontal line direction) = viewUp × viewPlaneNormal
+            // IMPORTANT: Use actualViewUp × viewPlaneNormal (not the reverse) for correct right-hand coordinate system
+            const viewPlaneNormal = camera.viewPlaneNormal;
+            const actualViewRight = [
+              actualViewUp[1] * viewPlaneNormal[2] - actualViewUp[2] * viewPlaneNormal[1],
+              actualViewUp[2] * viewPlaneNormal[0] - actualViewUp[0] * viewPlaneNormal[2],
+              actualViewUp[0] * viewPlaneNormal[1] - actualViewUp[1] * viewPlaneNormal[0]
             ];
 
             // Normalize
-            const sagLen = Math.sqrt(sagittalDirection[0] ** 2 + sagittalDirection[1] ** 2 + sagittalDirection[2] ** 2);
-            if (sagLen > 0) {
-              sagittalDirection[0] /= sagLen;
-              sagittalDirection[1] /= sagLen;
-              sagittalDirection[2] /= sagLen;
+            const rightLen = Math.sqrt(actualViewRight[0] ** 2 + actualViewRight[1] ** 2 + actualViewRight[2] ** 2);
+            if (rightLen > 0) {
+              actualViewRight[0] /= rightLen;
+              actualViewRight[1] /= rightLen;
+              actualViewRight[2] /= rightLen;
             }
 
-            // Position sagittal viewport
-            // ViewUp should be negative tangent so centerline appears vertical (top to bottom)
+            console.log('📐 Screen-space directions from axial camera:');
+            console.log('   actualViewUp (GREEN line):', actualViewUp);
+            console.log('   actualViewRight (RED line):', actualViewRight);
+            console.log('   viewPlaneNormal (forward):', viewPlaneNormal);
+
+            // CRITICAL FIX: Get initial rotation angle from FixedCrosshairTool
+            // The crosshair might already have a rotation offset that we need to account for
+            const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+            const fixedCrosshairTool = toolGroup?.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
+            const initialRotation = fixedCrosshairTool?.getRotationAngle ? fixedCrosshairTool.getRotationAngle() : 0;
+
+            console.log('🔄 Initial crosshair rotation:', (initialRotation * 180 / Math.PI).toFixed(1), '°');
+
+            // Apply initial rotation to the screen-space directions
+            // This ensures cameras match the actual crosshair line orientations
+            const cos = Math.cos(initialRotation);
+            const sin = Math.sin(initialRotation);
+
+            // Rotate actualViewRight and actualViewUp by the initial rotation angle
+            const rotatedViewRight = [
+              actualViewRight[0] * cos - actualViewUp[0] * sin,
+              actualViewRight[1] * cos - actualViewUp[1] * sin,
+              actualViewRight[2] * cos - actualViewUp[2] * sin
+            ];
+
+            const rotatedViewUp = [
+              actualViewRight[0] * sin + actualViewUp[0] * cos,
+              actualViewRight[1] * sin + actualViewUp[1] * cos,
+              actualViewRight[2] * sin + actualViewUp[2] * cos
+            ];
+
+            console.log('📐 Rotated directions (matching crosshair lines):');
+            console.log('   rotatedViewUp (GREEN line after rotation):', rotatedViewUp);
+            console.log('   rotatedViewRight (RED line after rotation):', rotatedViewRight);
+
+            // Position sagittal viewport - looks perpendicular to GREEN line
             const sagittalViewport = renderingEngine.getViewport('sagittal') as Types.IVolumeViewport;
             if (sagittalViewport) {
               const sagCameraPos = [
-                valveCenterlinePos[0] + sagittalDirection[0] * cameraDistance,
-                valveCenterlinePos[1] + sagittalDirection[1] * cameraDistance,
-                valveCenterlinePos[2] + sagittalDirection[2] * cameraDistance
+                valveCenterlinePos[0] + rotatedViewRight[0] * cameraDistance,
+                valveCenterlinePos[1] + rotatedViewRight[1] * cameraDistance,
+                valveCenterlinePos[2] + rotatedViewRight[2] * cameraDistance
               ] as Types.Point3;
 
-              // Use negative tangent as viewUp so centerline runs vertically (top = ascending aorta, bottom = LV)
               sagittalViewport.setCamera({
                 position: sagCameraPos,
                 focalPoint: valveCenterlinePos as Types.Point3,
-                viewUp: [-tangent[0], -tangent[1], -tangent[2]] as Types.Point3,
-                parallelScale: 50,
+                viewUp: [-viewPlaneNormal[0], -viewPlaneNormal[1], -viewPlaneNormal[2]] as Types.Point3,
+                parallelScale: 100,
               });
 
               sagittalViewport.render();
-              console.log('✅ Sagittal viewport aligned - centerline vertical (top=ascending, bottom=LV)');
+              console.log('✅ Sagittal viewport: camera perpendicular to GREEN line');
             }
 
-            // Position coronal viewport
-            // Coronal should also show centerline vertical (top to bottom)
+            // Position coronal viewport - looks perpendicular to RED line
             const coronalViewport = renderingEngine.getViewport('coronal') as Types.IVolumeViewport;
             if (coronalViewport) {
               const corCameraPos = [
-                valveCenterlinePos[0] + viewUp[0] * cameraDistance,
-                valveCenterlinePos[1] + viewUp[1] * cameraDistance,
-                valveCenterlinePos[2] + viewUp[2] * cameraDistance
+                valveCenterlinePos[0] + rotatedViewUp[0] * cameraDistance,
+                valveCenterlinePos[1] + rotatedViewUp[1] * cameraDistance,
+                valveCenterlinePos[2] + rotatedViewUp[2] * cameraDistance
               ] as Types.Point3;
 
-              // Use negative tangent as viewUp so centerline runs vertically
               coronalViewport.setCamera({
                 position: corCameraPos,
                 focalPoint: valveCenterlinePos as Types.Point3,
-                viewUp: [-tangent[0], -tangent[1], -tangent[2]] as Types.Point3,
-                parallelScale: 50,
+                viewUp: [-viewPlaneNormal[0], -viewPlaneNormal[1], -viewPlaneNormal[2]] as Types.Point3,
+                parallelScale: 100,
               });
 
               coronalViewport.render();
-              console.log('✅ Coronal viewport aligned - centerline vertical (top=ascending, bottom=LV)');
+              console.log('✅ Coronal viewport: camera perpendicular to RED line');
             }
 
             // For annulus definition, hide interactive crosshairs and show fixed ones
