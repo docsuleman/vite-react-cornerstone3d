@@ -143,6 +143,12 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       numPoints: number;
       segmentLengths: number[];
     };
+    centerlineTangent?: number[];
+    crossSectionCameraSetup?: {
+      position: Types.Point3;
+      focalPoint: Types.Point3;
+      parallelScale: number;
+    };
   }>({});
 
   useEffect(() => {
@@ -1184,22 +1190,21 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
 
 
   const setupOrthographicCrossSection = async (csViewport: any, centerlineData: any, viewportId: string) => {
-    
-    
-    // Get centerline points
+
+    // CRITICAL: This creates a FIXED orthographic view at the valve plane
+    // No rotation - just like a standard axial view (anterior up, posterior down, left on right)
+
     const numPoints = centerlineData.position.length / 3;
-    
-    // Use the dynamic cross-section position
     const position = cornerstoneObjects.current.crossSectionPosition || crossSectionPosition;
     const pointIndex = Math.floor(position * (numPoints - 1));
-    
+
     const centerPoint = [
       centerlineData.position[pointIndex * 3],
       centerlineData.position[pointIndex * 3 + 1],
       centerlineData.position[pointIndex * 3 + 2]
     ];
-    
-    // Calculate centerline direction at this point
+
+    // Calculate centerline direction at this point (tangent = normal of the plane)
     let tangent = [1, 0, 0]; // Default
     if (pointIndex > 0 && pointIndex < numPoints - 1) {
       const prevPoint = [
@@ -1212,13 +1217,13 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         centerlineData.position[(pointIndex + 1) * 3 + 1],
         centerlineData.position[(pointIndex + 1) * 3 + 2]
       ];
-      
+
       tangent = [
         nextPoint[0] - prevPoint[0],
         nextPoint[1] - prevPoint[1],
         nextPoint[2] - prevPoint[2]
       ];
-      
+
       // Normalize tangent
       const length = Math.sqrt(tangent[0] ** 2 + tangent[1] ** 2 + tangent[2] ** 2);
       if (length > 0) {
@@ -1227,10 +1232,14 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         tangent[2] /= length;
       }
     }
-    
-    // Position camera to look along the centerline direction (for cross-section)
-    const cameraDistance = 50; // Distance from the centerline point
-    
+
+    // FIXED viewUp - standard orientation (keep superior pointing up)
+    // Use Z-up as standard for anatomical orientation
+    const viewUp = [0, 0, 1] as Types.Point3;
+
+    // Position camera to look along the centerline direction (perpendicular to valve plane)
+    const cameraDistance = 50;
+
     const cameraConfig = {
       position: [
         centerPoint[0] + tangent[0] * cameraDistance,
@@ -1238,10 +1247,10 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         centerPoint[2] + tangent[2] * cameraDistance
       ] as Types.Point3,
       focalPoint: centerPoint as Types.Point3,
-      viewUp: [0, 0, 1] as Types.Point3, // Z-up for cross-section
-      parallelScale: 30 // Appropriate scale for cross-section
+      viewUp: viewUp,
+      parallelScale: 30
     };
-    
+
     csViewport.setCamera(cameraConfig);
 
     // Set slab thickness to original slice thickness
@@ -1255,12 +1264,8 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
 
     csViewport.render();
 
-    // Store initial view up vector for consistency
-    if (!cornerstoneObjects.current.lastViewUp) {
-      cornerstoneObjects.current.lastViewUp = [0, 0, 1];
-    }
-
-
+    // Store centerline tangent for CPR rotation
+    cornerstoneObjects.current.centerlineTangent = tangent;
   };
 
   const addCPRActorsToViewports = async (renderingEngine: any, centerlineData: any, viewports: any[]) => {
@@ -1684,11 +1689,13 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
   };
 
   const handleCrosshairRotation = async (rotation: number) => {
-    
+
     setCrosshairRotation(rotation);
     cornerstoneObjects.current.crosshairRotation = rotation;
-    
-    // Update CPR mapper orientations
+
+    // CRITICAL: En face view stays FIXED (standard orthographic orientation)
+    // Only the longitudinal CPR views rotate to show the rotated cutting plane
+    // The yellow line stays horizontal, the CT rotates around centerline at valve
     await updateCPROrientations(rotation);
   };
 
@@ -1702,6 +1709,9 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
 
     console.log('📊 Number of CPR mappers:', cornerstoneObjects.current.cprMappers.length);
 
+    // CRITICAL: Rotate CPR so the cutting plane (en face view at yellow line) stays horizontal
+    // The CT anatomy rotates, but the plane orientation in the view stays horizontal
+    // This means we rotate the CPR reconstruction by the SAME angle as the crosshair rotation
     const rotationRadians = (rotationDegrees * Math.PI) / 180;
     const cos = Math.cos(rotationRadians);
     const sin = Math.sin(rotationRadians);
@@ -1710,31 +1720,31 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       const { mapper, viewportConfig } = mapperInfo;
       console.log(`🔧 Updating mapper for ${viewportConfig.id}, cprView: ${viewportConfig.cprView}`);
 
-      if (viewportConfig.cprView === 'side') {
-        // For side view, apply 90-degree rotation relative to longitudinal
-        // This ensures they are truly orthogonal
-        const sideRotationRadians = rotationRadians + Math.PI / 2; // Add 90 degrees
+      // Both longitudinal views rotate the same way to keep the cutting plane horizontal
+      // The yellow line stays horizontal, the CT rotates underneath
+      if (viewportConfig.id === 'cpr-longitudinal') {
+        const directions = new Float32Array([
+          cos, -sin, 0,
+          sin, cos, 0,
+          0, 0, 1
+        ]);
+        mapper.setDirectionMatrix(directions);
+        console.log(`🔄 Updated longitudinal (green) view: ${Math.round(rotationDegrees)}°`);
+      } else if (viewportConfig.cprView === 'side') {
+        // Side view is orthogonal - rotates 90° relative to longitudinal
+        const sideRotationRadians = rotationRadians + Math.PI / 2;
         const sideCos = Math.cos(sideRotationRadians);
         const sideSin = Math.sin(sideRotationRadians);
-        
-        const sideDirections = new Float32Array([
-          sideCos, -sideSin, 0,   // Orthogonal X direction
-          sideSin, sideCos, 0,    // Orthogonal Y direction  
-          0, 0, 1                 // Z stays Z
+
+        const directions = new Float32Array([
+          sideCos, -sideSin, 0,
+          sideSin, sideCos, 0,
+          0, 0, 1
         ]);
-        mapper.setDirectionMatrix(sideDirections);
-        console.log(`🔄 Updated side view (${Math.round(sideRotationRadians * 180 / Math.PI)}°) for ${viewportConfig.id}`);
-      } else if (viewportConfig.id === 'cpr-longitudinal') {
-        // For longitudinal view, apply the rotation directly
-        const mainDirections = new Float32Array([
-          cos, -sin, 0,   // Main X direction
-          sin, cos, 0,    // Main Y direction
-          0, 0, 1         // Z stays Z
-        ]);
-        mapper.setDirectionMatrix(mainDirections);
-        console.log(`🔄 Updated longitudinal view (${Math.round(rotationDegrees)}°) for ${viewportConfig.id}`);
+        mapper.setDirectionMatrix(directions);
+        console.log(`🔄 Updated side (red) view: ${Math.round(sideRotationRadians * 180 / Math.PI)}°`);
       }
-      
+
       // Trigger re-render
       const renderingEngine = cornerstoneObjects.current.renderingEngine;
       if (renderingEngine) {

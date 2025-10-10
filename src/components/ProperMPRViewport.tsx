@@ -15,7 +15,9 @@ import { initializeCornerstone, isCornerStoneInitialized } from '../utils/corner
 import { FaCrosshairs, FaSearchPlus, FaArrowsAlt, FaAdjust, FaCircle, FaMousePointer, FaScroll, FaTrash, FaDotCircle, FaPlay, FaPause } from "react-icons/fa";
 import SphereMarkerTool from '../customTools/Spheremarker';
 import CuspNadirTool from '../customTools/CuspNadirTool';
+import FixedCrosshairTool from '../customTools/FixedCrosshairTool';
 import { WorkflowStage } from '../types/WorkflowTypes';
+import { CenterlineGenerator } from '../utils/CenterlineGenerator';
 
 const {
   ToolGroupManager,
@@ -45,14 +47,16 @@ interface ProperMPRViewportProps {
   onSpherePositionsUpdate?: (spheres: { id: string; pos: [number, number, number]; color: string }[]) => void;
   onCuspDotsUpdate?: (dots: { id: string; pos: [number, number, number]; color: string; cuspType: string }[]) => void;
   currentStage?: WorkflowStage;
+  existingSpheres?: { id: string; pos: [number, number, number]; color: string }[];
 }
 
-const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({ 
+const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   patientInfo,
   onImageLoaded,
   onSpherePositionsUpdate,
   onCuspDotsUpdate,
-  currentStage 
+  currentStage,
+  existingSpheres
 }) => {
   const elementRefs = {
     axial: useRef(null),
@@ -89,6 +93,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   // Store synchronizer refs for cleanup
   const slabSynchronizerRef = useRef<any>(null);
   const cameraSynchronizerRef = useRef<any>(null);
+  const lockedFocalPointRef = useRef<Types.Point3 | null>(null);
 
   // Preload all phases sequentially when play is first hit
   useEffect(() => {
@@ -256,6 +261,32 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         renderingEngine.renderViewports(viewportIds);
         console.log(`✅ Rendered all viewports with restored cameras`);
 
+        // CRITICAL FIX: Restore crosshair focal point after phase switch
+        // The CrosshairsTool maintains its own internal state that gets lost during volume changes
+        // We need to force it to update its focal point to the saved position
+        if (savedCrosshairFocalPointRef.current) {
+          console.log(`🎯 Restoring crosshair focal point:`, savedCrosshairFocalPointRef.current);
+
+          // Wait a small moment for renders to complete, then force focal point update
+          setTimeout(() => {
+            viewportIds.forEach(id => {
+              const viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
+              if (viewport) {
+                const camera = viewport.getCamera();
+                // Force set the camera with the saved focal point to trigger crosshair update
+                viewport.setCamera({
+                  ...camera,
+                  focalPoint: savedCrosshairFocalPointRef.current as Types.Point3
+                });
+              }
+            });
+
+            // Force render again to show updated crosshairs
+            renderingEngine.renderViewports(viewportIds);
+            console.log(`✅ Crosshair focal point restored and synced across all viewports`);
+          }, 50); // Small delay to ensure volumes are fully set
+        }
+
         console.log(`✅ Switched to phase ${selectedPhase + 1} with W/L: ${windowLevel.window}/${windowLevel.level}`);
         isSwitchingPhaseRef.current = false;
       } catch (error) {
@@ -299,6 +330,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       } catch (error) {
         console.warn('Failed to destroy tool group:', error);
       }
+
+      // CRITICAL: Reset running flag so re-initialization can happen
+      running.current = false;
 
       console.log('✅ MPR Viewport cleanup complete');
     } catch (error) {
@@ -473,6 +507,255 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         console.log(`✅ Applied initial W/L: ${windowLevel.window}/${windowLevel.level}`);
       }, 200);
 
+      // For ANNULUS_DEFINITION stage, position axial view perpendicular to centerline at valve
+      console.log('🔍 Checking annulus definition camera setup:', {
+        currentStage,
+        isAnnulusStage: currentStage === WorkflowStage.ANNULUS_DEFINITION,
+        hasExistingSpheres: !!existingSpheres,
+        sphereCount: existingSpheres?.length || 0
+      });
+
+      if (currentStage === WorkflowStage.ANNULUS_DEFINITION && existingSpheres && existingSpheres.length >= 3) {
+        console.log('✅ Condition met! Setting up centerline camera in 500ms...');
+        setTimeout(() => {
+          console.log('🎯 Setting up centerline-aligned axial view at valve position');
+
+          // Generate centerline from root points
+          const centerlineData = CenterlineGenerator.generateFromRootPoints(
+            existingSpheres.map((sphere, index) => ({
+              id: sphere.id,
+              position: sphere.pos,
+              type: index === 0 ? 'lv_outflow' : index === 1 ? 'aortic_valve' : 'ascending_aorta',
+              timestamp: Date.now()
+            }))
+          );
+
+          const numPoints = centerlineData.position.length / 3;
+
+          // Find valve point (middle sphere, red one) on centerline
+          const valvePos = existingSpheres[1].pos;
+
+          // Find closest centerline point to valve
+          let closestIndex = 0;
+          let minDist = Infinity;
+
+          for (let i = 0; i < numPoints; i++) {
+            const x = centerlineData.position[i * 3];
+            const y = centerlineData.position[i * 3 + 1];
+            const z = centerlineData.position[i * 3 + 2];
+
+            const dist = Math.sqrt(
+              Math.pow(x - valvePos[0], 2) +
+              Math.pow(y - valvePos[1], 2) +
+              Math.pow(z - valvePos[2], 2)
+            );
+
+            if (dist < minDist) {
+              minDist = dist;
+              closestIndex = i;
+            }
+          }
+
+          // Get valve point on centerline
+          const valveCenterlinePos = [
+            centerlineData.position[closestIndex * 3],
+            centerlineData.position[closestIndex * 3 + 1],
+            centerlineData.position[closestIndex * 3 + 2]
+          ];
+
+          // Calculate centerline tangent at valve
+          let tangent = [0, 0, 1];
+          if (closestIndex > 0 && closestIndex < numPoints - 1) {
+            const prevPoint = [
+              centerlineData.position[(closestIndex - 1) * 3],
+              centerlineData.position[(closestIndex - 1) * 3 + 1],
+              centerlineData.position[(closestIndex - 1) * 3 + 2]
+            ];
+            const nextPoint = [
+              centerlineData.position[(closestIndex + 1) * 3],
+              centerlineData.position[(closestIndex + 1) * 3 + 1],
+              centerlineData.position[(closestIndex + 1) * 3 + 2]
+            ];
+
+            tangent = [
+              nextPoint[0] - prevPoint[0],
+              nextPoint[1] - prevPoint[1],
+              nextPoint[2] - prevPoint[2]
+            ];
+
+            // Normalize
+            const len = Math.sqrt(tangent[0] ** 2 + tangent[1] ** 2 + tangent[2] ** 2);
+            if (len > 0) {
+              tangent[0] /= len;
+              tangent[1] /= len;
+              tangent[2] /= len;
+            }
+          }
+
+          console.log('📍 Valve position:', valveCenterlinePos);
+          console.log('📐 Centerline tangent at valve:', tangent);
+
+          // Position axial viewport to look along centerline at valve
+          // This makes the viewing plane PERPENDICULAR to the centerline
+          const axialViewport = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
+          if (axialViewport) {
+            const cameraDistance = 200; // Distance from focal point
+
+            // Camera looks ALONG the centerline tangent (toward the focal point)
+            // This creates a plane perpendicular to the centerline
+            const cameraPos = [
+              valveCenterlinePos[0] + tangent[0] * cameraDistance,
+              valveCenterlinePos[1] + tangent[1] * cameraDistance,
+              valveCenterlinePos[2] + tangent[2] * cameraDistance
+            ] as Types.Point3;
+
+            // Calculate viewUp perpendicular to tangent
+            // Use cross product to get a consistent perpendicular vector
+            let viewUp: Types.Point3;
+
+            // Choose a reference vector that's not parallel to tangent
+            const reference = Math.abs(tangent[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+
+            // Cross product: tangent × reference = perpendicular
+            const cross = [
+              tangent[1] * reference[2] - tangent[2] * reference[1],
+              tangent[2] * reference[0] - tangent[0] * reference[2],
+              tangent[0] * reference[1] - tangent[1] * reference[0]
+            ];
+
+            // Normalize
+            const crossLen = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
+            if (crossLen > 0) {
+              viewUp = [cross[0] / crossLen, cross[1] / crossLen, cross[2] / crossLen] as Types.Point3;
+            } else {
+              viewUp = [0, 0, 1] as Types.Point3;
+            }
+
+            axialViewport.setCamera({
+              position: cameraPos,
+              focalPoint: valveCenterlinePos as Types.Point3,
+              viewUp: viewUp,
+              parallelScale: 50, // Adjust zoom to show annulus area
+            });
+
+            // Store the locked focal point for annulus definition
+            lockedFocalPointRef.current = valveCenterlinePos as Types.Point3;
+            console.log('🔒 Locked focal point at valve:', lockedFocalPointRef.current);
+
+            axialViewport.render();
+
+            // Force another render after a short delay to ensure it sticks
+            setTimeout(() => {
+              axialViewport.render();
+              renderingEngine.renderViewports(['axial', 'sagittal', 'coronal']);
+            }, 100);
+
+            const camera = axialViewport.getCamera();
+            console.log('✅ Axial viewport plane perpendicular to centerline at valve');
+            console.log('   Camera position:', camera.position);
+            console.log('   Focal point:', camera.focalPoint);
+            console.log('   ViewUp:', camera.viewUp);
+            console.log('   View plane normal:', camera.viewPlaneNormal);
+
+            // Now align sagittal and coronal views to be perpendicular to the centerline-aligned axial
+            // Create an orthogonal coordinate system based on the centerline
+
+            // Calculate the second perpendicular vector (for sagittal)
+            // This is perpendicular to both the tangent and viewUp
+            const sagittalDirection = [
+              tangent[1] * viewUp[2] - tangent[2] * viewUp[1],
+              tangent[2] * viewUp[0] - tangent[0] * viewUp[2],
+              tangent[0] * viewUp[1] - tangent[1] * viewUp[0]
+            ];
+
+            // Normalize
+            const sagLen = Math.sqrt(sagittalDirection[0] ** 2 + sagittalDirection[1] ** 2 + sagittalDirection[2] ** 2);
+            if (sagLen > 0) {
+              sagittalDirection[0] /= sagLen;
+              sagittalDirection[1] /= sagLen;
+              sagittalDirection[2] /= sagLen;
+            }
+
+            // Position sagittal viewport
+            // ViewUp should be negative tangent so centerline appears vertical (top to bottom)
+            const sagittalViewport = renderingEngine.getViewport('sagittal') as Types.IVolumeViewport;
+            if (sagittalViewport) {
+              const sagCameraPos = [
+                valveCenterlinePos[0] + sagittalDirection[0] * cameraDistance,
+                valveCenterlinePos[1] + sagittalDirection[1] * cameraDistance,
+                valveCenterlinePos[2] + sagittalDirection[2] * cameraDistance
+              ] as Types.Point3;
+
+              // Use negative tangent as viewUp so centerline runs vertically (top = ascending aorta, bottom = LV)
+              sagittalViewport.setCamera({
+                position: sagCameraPos,
+                focalPoint: valveCenterlinePos as Types.Point3,
+                viewUp: [-tangent[0], -tangent[1], -tangent[2]] as Types.Point3,
+                parallelScale: 50,
+              });
+
+              sagittalViewport.render();
+              console.log('✅ Sagittal viewport aligned - centerline vertical (top=ascending, bottom=LV)');
+            }
+
+            // Position coronal viewport
+            // Coronal should also show centerline vertical (top to bottom)
+            const coronalViewport = renderingEngine.getViewport('coronal') as Types.IVolumeViewport;
+            if (coronalViewport) {
+              const corCameraPos = [
+                valveCenterlinePos[0] + viewUp[0] * cameraDistance,
+                valveCenterlinePos[1] + viewUp[1] * cameraDistance,
+                valveCenterlinePos[2] + viewUp[2] * cameraDistance
+              ] as Types.Point3;
+
+              // Use negative tangent as viewUp so centerline runs vertically
+              coronalViewport.setCamera({
+                position: corCameraPos,
+                focalPoint: valveCenterlinePos as Types.Point3,
+                viewUp: [-tangent[0], -tangent[1], -tangent[2]] as Types.Point3,
+                parallelScale: 50,
+              });
+
+              coronalViewport.render();
+              console.log('✅ Coronal viewport aligned - centerline vertical (top=ascending, bottom=LV)');
+            }
+
+            // For annulus definition, hide interactive crosshairs and show fixed ones
+            setTimeout(() => {
+              try {
+                const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+                if (toolGroup) {
+                  console.log('🔄 Switching to fixed crosshairs for annulus definition...');
+
+                  // Disable interactive CrosshairsTool
+                  toolGroup.setToolDisabled(CrosshairsTool.toolName);
+
+                  // Enable FixedCrosshairTool and set its position
+                  const fixedCrosshairTool = toolGroup.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
+                  if (fixedCrosshairTool) {
+                    fixedCrosshairTool.setFixedPosition(valveCenterlinePos as Types.Point3, renderingEngineId);
+
+                    // CRITICAL: Set tool to ACTIVE (not just enabled) so mouse callbacks work
+                    toolGroup.setToolActive(FixedCrosshairTool.toolName, {
+                      bindings: [{ mouseButton: MouseBindings.Primary }],
+                    });
+
+                    console.log('✅ Fixed crosshairs activated at valve position with rotation enabled');
+                  }
+
+                  // Force render all viewports to show fixed crosshairs
+                  renderingEngine.renderViewports(['axial', 'sagittal', 'coronal']);
+                }
+              } catch (error) {
+                console.error('Failed to setup fixed crosshairs:', error);
+              }
+
+              console.log('🔄 All viewports aligned to centerline-based coordinate system');
+            }, 200);
+          }
+        }, 500); // Delay after tools are set up
+      }
+
     } catch (err) {
       console.error('❌ Failed to initialize MPR Viewport:', err);
       setError(`Failed to load DICOM images: ${err}`);
@@ -492,6 +775,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       cornerstoneTools.addTool(StackScrollTool);
       cornerstoneTools.addTool(SphereMarkerTool);
       cornerstoneTools.addTool(CuspNadirTool);
+      cornerstoneTools.addTool(FixedCrosshairTool);
 
       // Destroy existing tool group if it exists
       try {
@@ -515,6 +799,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       // Add Crosshairs tool and configure it to link the three viewports (exactly like App.tsx)
       // Note: Don't activate yet - wait until viewports are added
+      // CRITICAL: During ANNULUS_DEFINITION, lock crosshair center at valve (allow rotation, no translation)
       toolGroup.addTool(CrosshairsTool.toolName, {
         getReferenceLineColor: (viewportId) => {
           const colors = {
@@ -524,6 +809,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           };
           return colors[viewportId];
         },
+        // Allow all crosshair interactions (we'll lock focal point via event listener)
         getReferenceLineControllable: () => true,
         getReferenceLineDraggableRotatable: () => true,
         getReferenceLineSlabThicknessControlsOn: () => true,
@@ -567,6 +853,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       toolGroup.addTool(CuspNadirTool.toolName, {
         bindings: [{ mouseButton: MouseBindings.Primary }],
       });
+
+      // Add FixedCrosshairTool for annulus definition (fixed, non-draggable crosshairs)
+      toolGroup.addTool(FixedCrosshairTool.toolName);
 
       // Set up callback for sphere position updates
       if (onSpherePositionsUpdate) {
@@ -639,8 +928,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
       if (!toolGroup) return;
 
-      // Set all tools to passive first
-      toolGroup.setToolPassive(CrosshairsTool.toolName);
+      // During annulus definition, keep CrosshairsTool disabled (don't set to passive)
+      if (currentStage !== WorkflowStage.ANNULUS_DEFINITION) {
+        toolGroup.setToolPassive(CrosshairsTool.toolName);
+      }
+
+      // Set other tools to passive first
       toolGroup.setToolPassive(ZoomTool.toolName);
       toolGroup.setToolPassive(PanTool.toolName);
       toolGroup.setToolPassive(SphereMarkerTool.toolName);
@@ -674,6 +967,13 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           bindings: [{ mouseButton: MouseBindings.Primary }],
         });
       } else if (toolName === 'Crosshairs') {
+        // During annulus definition, crosshairs are fixed (non-interactive)
+        // Don't allow switching to regular crosshairs
+        if (currentStage === WorkflowStage.ANNULUS_DEFINITION) {
+          console.log('⚠️ Crosshairs are locked during annulus definition');
+          return; // Don't activate regular crosshairs
+        }
+
         toolGroup.setToolActive(CrosshairsTool.toolName, {
           bindings: [{ mouseButton: MouseBindings.Primary }],
         });
@@ -719,13 +1019,14 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     }
   };
 
-  // Handle stage changes to lock/unlock tools
+  // Handle stage changes to lock/unlock tools and switch crosshair modes
   useEffect(() => {
     const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
     if (!toolGroup) return;
 
     const sphereTool = toolGroup.getToolInstance(SphereMarkerTool.toolName) as SphereMarkerTool;
     const cuspTool = toolGroup.getToolInstance(CuspNadirTool.toolName) as CuspNadirTool;
+    const fixedCrosshairTool = toolGroup.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
 
     if (currentStage === WorkflowStage.ANNULUS_DEFINITION) {
       // Lock sphere tool, unlock cusp tool
@@ -735,7 +1036,38 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       if (cuspTool) {
         cuspTool.setDraggable(true);
       }
-      console.log('🔒 Stage: Annulus Definition - Locked spheres, unlocked cusp dots');
+
+      // Switch to fixed crosshairs if we have a locked position
+      if (lockedFocalPointRef.current && fixedCrosshairTool) {
+        console.log('🔄 Switching to fixed crosshairs...');
+
+        // Disable regular crosshairs and other primary button tools
+        toolGroup.setToolDisabled(CrosshairsTool.toolName);
+        toolGroup.setToolPassive(SphereMarkerTool.toolName);
+        toolGroup.setToolPassive(WindowLevelTool.toolName);
+
+        fixedCrosshairTool.setFixedPosition(lockedFocalPointRef.current, renderingEngineId);
+
+        // CRITICAL: Set tool to ACTIVE (not just enabled) so mouse callbacks work
+        toolGroup.setToolActive(FixedCrosshairTool.toolName, {
+          bindings: [{ mouseButton: MouseBindings.Primary }],
+        });
+
+        // Keep zoom and scroll active on their own bindings
+        toolGroup.setToolActive(ZoomTool.toolName, {
+          bindings: [{ mouseButton: MouseBindings.Secondary }],
+        });
+        toolGroup.setToolActive(StackScrollTool.toolName, {
+          bindings: [{ mouseButton: MouseBindings.Wheel }],
+        });
+
+        // Force render all viewports
+        if (renderingEngineRef.current) {
+          renderingEngineRef.current.renderViewports(['axial', 'sagittal', 'coronal']);
+        }
+      }
+
+      console.log('🔒 Stage: Annulus Definition - Locked spheres, unlocked cusp dots, fixed crosshairs');
     } else {
       // Unlock sphere tool, lock cusp tool
       if (sphereTool && typeof sphereTool.setDraggable === 'function') {
@@ -744,6 +1076,23 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       if (cuspTool) {
         cuspTool.setDraggable(false);
       }
+
+      // Switch back to regular crosshairs
+      if (fixedCrosshairTool) {
+        console.log('🔄 Switching to interactive crosshairs...');
+        toolGroup.setToolDisabled(FixedCrosshairTool.toolName);
+        fixedCrosshairTool.clearFixedPosition();
+        toolGroup.setToolActive(CrosshairsTool.toolName, {
+          bindings: [{ mouseButton: MouseBindings.Primary }],
+        });
+
+        // Force render all viewports
+        if (renderingEngineRef.current) {
+          renderingEngineRef.current.renderViewports(['axial', 'sagittal', 'coronal']);
+        }
+      }
+
+      console.log('🔓 Stage changed - Unlocked spheres, interactive crosshairs');
     }
   }, [currentStage]);
 
@@ -823,6 +1172,63 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       document.removeEventListener('CORNERSTONE_CAMERA_MODIFIED', handleCameraModified);
     };
   }, [renderingEngineRef.current]);
+
+  // Lock crosshair focal point during annulus definition by using a synchronizer
+  useEffect(() => {
+    if (!renderingEngineRef.current || !lockedFocalPointRef.current || currentStage !== WorkflowStage.ANNULUS_DEFINITION) {
+      return;
+    }
+
+    const renderingEngine = renderingEngineRef.current;
+    const lockedFocalPoint = lockedFocalPointRef.current;
+    const viewportIds = ['axial', 'sagittal', 'coronal'];
+
+    console.log('🔒 Setting up focal point locking synchronizer');
+
+    // Use requestAnimationFrame to continuously enforce the locked focal point
+    let rafId: number;
+    const enforceLock = () => {
+      viewportIds.forEach(id => {
+        try {
+          const viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
+          if (viewport) {
+            const camera = viewport.getCamera();
+            const currentFocalPoint = camera.focalPoint;
+
+            // Check if focal point has drifted
+            const dx = currentFocalPoint[0] - lockedFocalPoint[0];
+            const dy = currentFocalPoint[1] - lockedFocalPoint[1];
+            const dz = currentFocalPoint[2] - lockedFocalPoint[2];
+            const distance = Math.sqrt(dx*dx + dy*dy + dz*dz);
+
+            if (distance > 0.1) { // Threshold to avoid floating point issues
+              // Restore the locked focal point while preserving other camera properties
+              viewport.setCamera({
+                ...camera,
+                focalPoint: lockedFocalPoint
+              });
+              console.log(`🔒 Enforced locked focal point on ${id} (drift: ${distance.toFixed(2)}mm)`);
+            }
+          }
+        } catch (error) {
+          // Viewport might not be ready yet
+        }
+      });
+
+      // Continue the loop
+      rafId = requestAnimationFrame(enforceLock);
+    };
+
+    // Start the enforcement loop
+    rafId = requestAnimationFrame(enforceLock);
+
+    console.log('✅ Focal point locking active');
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      console.log('🔓 Focal point locking deactivated');
+    };
+  }, [currentStage, lockedFocalPointRef.current, renderingEngineRef.current]);
 
   // Preload adjacent phases for smooth cine playback
   const preloadAdjacentPhases = async () => {
