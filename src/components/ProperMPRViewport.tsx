@@ -109,11 +109,13 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const spherePositionsRef = useRef<Types.Point3[]>([]); // Store the 3 sphere positions
   const currentSphereIndexRef = useRef<number>(1); // Current sphere (0=LV, 1=valve, 2=ascending)
   const currentCenterlineIndexRef = useRef<number>(0); // Current position along centerline - now supports fractional values for smooth scrolling
+  const cprScrollStepSizeRef = useRef<number>(0.1); // Fractional step size for CPR scrolling (in index units, not mm)
   const cuspDotsRef = useRef<{ id: string; pos: [number, number, number]; color: string; cuspType: string }[]>([]); // Store cusp dots
   const savedCameraZoomRef = useRef<number>(60); // Store zoom level (parallelScale) for preservation between stages
   const annulusLineActorsRef = useRef<{ sagittal: any; coronal: any } | null>(null); // Store annulus reference line actors
   const cprPositionLineActorsRef = useRef<{ sagittal: any; coronal: any } | null>(null); // Store CPR position indicator line actors
   const cprPositionRatioRef = useRef<number>(0); // Store current position ratio for redrawing after render
+  const cprAnnulusRatioRef = useRef<number | undefined>(undefined); // Store annulus position ratio for reference line
   const cprActorsRef = useRef<{ actor: any; mapper: any; viewportId: string; config: any }[]>([]); // Store CPR actors and mappers when in CPR mode
   const currentVolumeRef = useRef<any>(null); // Store current volume for CPR conversion
   const centerlinePolyDataRef = useRef<any>(null); // Store VTK centerline polydata for CPR rotation
@@ -1307,8 +1309,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     });
   };
 
-  // Draw CPR position line on a viewport canvas
-  const drawCPRPositionLineOnCanvas = (viewportId: string, positionRatio: number) => {
+  // Draw CPR crosshair line on a viewport canvas (like MPR long axis view)
+  const drawCPRPositionLineOnCanvas = (viewportId: string, positionRatio: number, annulusRatio?: number) => {
     if (!renderingEngineRef.current) {
       console.warn(`   ⚠️ No rendering engine for ${viewportId}`);
       return;
@@ -1333,6 +1335,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     // Calculate Y position in screen space (pixels)
     // Position ratio 0 = top of CPR (Y=0), ratio 1 = bottom (Y=height)
     const yPixel = positionRatio * height;
+    const annulusYPixel = annulusRatio !== undefined ? annulusRatio * height : null;
 
     // Get 2D context for overlay
     const ctx = canvas.getContext('2d');
@@ -1340,20 +1343,101 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       return;
     }
 
-    // Draw bright yellow horizontal line
-    ctx.save();
-    ctx.strokeStyle = 'rgba(255, 255, 0, 0.95)'; // Bright yellow
-    ctx.lineWidth = 3;
-    ctx.setLineDash([]);
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
-    ctx.shadowBlur = 2;
+    // Draw horizontal crosshair line with gap in the middle (like MPR long axis views)
+    // Coronal view = red line, Sagittal view = green line
+    const centerX = width / 2;
+    const gapSize = 35; // Larger gap at center (like MPR long axis views)
+    const lineMargin = 50; // Margin from edges
+    const markerRadius = 5; // Circle marker radius
+    const lineColor = viewportId === 'coronal' ? 'rgba(255, 50, 50, 0.7)' : 'rgba(50, 255, 50, 0.7)'; // Red for coronal, green for sagittal
 
+    ctx.save();
+    ctx.strokeStyle = lineColor;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([]);
+
+    // Left segment (from margin to gap)
+    const leftStart = lineMargin;
+    const leftEnd = centerX - gapSize;
     ctx.beginPath();
-    ctx.moveTo(0, yPixel);
-    ctx.lineTo(width, yPixel);
+    ctx.moveTo(leftStart, yPixel);
+    ctx.lineTo(leftEnd, yPixel);
+    ctx.stroke();
+
+    // Right segment (from gap to margin)
+    const rightStart = centerX + gapSize;
+    const rightEnd = width - lineMargin;
+    ctx.beginPath();
+    ctx.moveTo(rightStart, yPixel);
+    ctx.lineTo(rightEnd, yPixel);
+    ctx.stroke();
+
+    // Left end marker - filled circle
+    ctx.fillStyle = lineColor;
+    ctx.beginPath();
+    ctx.arc(leftStart, yPixel, markerRadius, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Right end marker - hollow circle
+    ctx.fillStyle = 'none';
+    ctx.strokeStyle = lineColor;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(rightEnd, yPixel, markerRadius, 0, 2 * Math.PI);
     ctx.stroke();
 
     ctx.restore();
+
+    // Draw fixed annulus reference line (if annulus position is provided)
+    if (annulusYPixel !== null) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255, 255, 0, 0.8)'; // Yellow line for annulus
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 5]); // Dashed line
+
+      ctx.beginPath();
+      ctx.moveTo(0, annulusYPixel);
+      ctx.lineTo(width, annulusYPixel);
+      ctx.stroke();
+
+      ctx.restore();
+
+      // Calculate distance from annulus (in pixels, then convert to mm)
+      const distancePixels = annulusYPixel - yPixel; // REVERSED: annulus - current (negative = below annulus)
+      // Approximate: assume height represents total centerline length
+      // Get total centerline length from centerlineDataRef
+      if (centerlineDataRef.current) {
+        const positions = centerlineDataRef.current.position;
+        const numPoints = positions.length / 3;
+        let totalLength = 0;
+        for (let i = 1; i < numPoints; i++) {
+          const dx = positions[i * 3] - positions[(i - 1) * 3];
+          const dy = positions[i * 3 + 1] - positions[(i - 1) * 3 + 1];
+          const dz = positions[i * 3 + 2] - positions[(i - 1) * 3 + 2];
+          totalLength += Math.sqrt(dx * dx + dy * dy + dz * dz);
+        }
+
+        // Convert pixel distance to mm
+        const distanceMM = (distancePixels / height) * totalLength;
+
+        // Draw distance label above the crosshair on the left
+        ctx.save();
+        ctx.fillStyle = 'yellow';
+        ctx.font = 'bold 13px monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'bottom';
+        // Black outline for visibility
+        ctx.strokeStyle = 'black';
+        ctx.lineWidth = 3;
+        const distanceText = distanceMM >= 0 ? `+${distanceMM.toFixed(1)}mm` : `${distanceMM.toFixed(1)}mm`;
+        ctx.strokeText(distanceText, leftStart, yPixel - 10);
+        ctx.fillText(distanceText, leftStart, yPixel - 10);
+        ctx.restore();
+      }
+    }
   };
 
   // Update CPR position indicator lines showing current scroll position
@@ -1367,14 +1451,27 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     const positions = centerlineDataRef.current.position; // Float32Array of [x,y,z, x,y,z, ...]
     const numCenterlinePoints = positions.length / 3;
 
-    // Calculate cumulative arc length up to current index
+    // Calculate cumulative arc length up to current index (supports fractional indices)
     let cumulativeDistance = 0;
-    for (let i = 1; i <= centerlineIndex && i < numCenterlinePoints; i++) {
+    const floorIndex = Math.floor(centerlineIndex);
+    const fraction = centerlineIndex - floorIndex;
+
+    // Add full segments up to floor index
+    for (let i = 1; i <= floorIndex && i < numCenterlinePoints; i++) {
       const dx = positions[i * 3] - positions[(i - 1) * 3];
       const dy = positions[i * 3 + 1] - positions[(i - 1) * 3 + 1];
       const dz = positions[i * 3 + 2] - positions[(i - 1) * 3 + 2];
       const segmentLength = Math.sqrt(dx * dx + dy * dy + dz * dz);
       cumulativeDistance += segmentLength;
+    }
+
+    // Add fractional part of the last segment
+    if (fraction > 0 && floorIndex + 1 < numCenterlinePoints) {
+      const dx = positions[(floorIndex + 1) * 3] - positions[floorIndex * 3];
+      const dy = positions[(floorIndex + 1) * 3 + 1] - positions[floorIndex * 3 + 1];
+      const dz = positions[(floorIndex + 1) * 3 + 2] - positions[floorIndex * 3 + 2];
+      const segmentLength = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      cumulativeDistance += segmentLength * fraction; // Add only the fractional part
     }
 
     // Calculate total arc length
@@ -1395,10 +1492,52 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     // Store position ratio for redrawing after renders
     cprPositionRatioRef.current = positionRatio;
 
+    // Calculate annulus position ratio (find closest point to red sphere = valve/annulus)
+    // Only calculate once and store in ref
+    if (cprAnnulusRatioRef.current === undefined && spherePositionsRef.current.length > 1) {
+      // Red sphere (index 1) is at the valve/annulus position
+      const annulusWorldPos = spherePositionsRef.current[1]; // Red sphere at valve
+
+      // Find closest centerline point to annulus position
+      let closestIndex = -1;
+      let minDist = Infinity;
+
+      for (let i = 0; i < numCenterlinePoints; i++) {
+        const x = positions[i * 3];
+        const y = positions[i * 3 + 1];
+        const z = positions[i * 3 + 2];
+        const dx = x - annulusWorldPos[0];
+        const dy = y - annulusWorldPos[1];
+        const dz = z - annulusWorldPos[2];
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+        if (dist < minDist) {
+          minDist = dist;
+          closestIndex = i;
+        }
+      }
+
+      if (closestIndex >= 0) {
+        // Calculate arc length to annulus
+        let annulusCumulativeDistance = 0;
+        for (let i = 1; i <= closestIndex; i++) {
+          const dx = positions[i * 3] - positions[(i - 1) * 3];
+          const dy = positions[i * 3 + 1] - positions[(i - 1) * 3 + 1];
+          const dz = positions[i * 3 + 2] - positions[(i - 1) * 3 + 2];
+          const segmentLength = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          annulusCumulativeDistance += segmentLength;
+        }
+        cprAnnulusRatioRef.current = totalDistance > 0 ? annulusCumulativeDistance / totalDistance : 0.4;
+        console.log(`📍 Annulus (red sphere) at centerline index ${closestIndex}, arc ${annulusCumulativeDistance.toFixed(2)}mm, ratio ${cprAnnulusRatioRef.current.toFixed(3)}`);
+      } else {
+        console.warn('⚠️ Could not find annulus position on centerline');
+      }
+    }
+
     // Draw lines immediately
     requestAnimationFrame(() => {
-      drawCPRPositionLineOnCanvas('sagittal', positionRatio);
-      drawCPRPositionLineOnCanvas('coronal', positionRatio);
+      drawCPRPositionLineOnCanvas('sagittal', positionRatio, cprAnnulusRatioRef.current);
+      drawCPRPositionLineOnCanvas('coronal', positionRatio, cprAnnulusRatioRef.current);
     });
   };
 
@@ -1587,11 +1726,24 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           // Store centerline data for scrolling
           centerlineDataRef.current = centerlineData;
 
+          // Calculate optimal scroll step size for 0.1mm precision
+          const numPoints = centerlineData.position.length / 3;
+          let totalLength = 0;
+          for (let i = 1; i < numPoints; i++) {
+            const dx = centerlineData.position[i * 3] - centerlineData.position[(i - 1) * 3];
+            const dy = centerlineData.position[i * 3 + 1] - centerlineData.position[(i - 1) * 3 + 1];
+            const dz = centerlineData.position[i * 3 + 2] - centerlineData.position[(i - 1) * 3 + 2];
+            totalLength += Math.sqrt(dx * dx + dy * dy + dz * dz);
+          }
+          const avgSegmentLength = totalLength / (numPoints - 1);
+          const targetStepMM = 0.1; // 0.1mm per scroll event
+          cprScrollStepSizeRef.current = targetStepMM / avgSegmentLength;
+          console.log(`📏 Centerline: ${numPoints} points, ${totalLength.toFixed(1)}mm total, avg ${avgSegmentLength.toFixed(3)}mm/segment`);
+          console.log(`📏 Scroll step: ${cprScrollStepSizeRef.current.toFixed(3)} index units = ${targetStepMM}mm`);
+
           // Store the 3 sphere positions for discrete scrolling
           spherePositionsRef.current = existingSpheres.map(sphere => sphere.pos as Types.Point3);
           currentSphereIndexRef.current = 1; // Start at valve (middle sphere)
-
-          const numPoints = centerlineData.position.length / 3;
 
           // Use valve sphere position directly (middle sphere)
           const valveCenterlinePos = existingSpheres[1].pos;
@@ -2375,6 +2527,21 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       }))
     );
     centerlineDataRef.current = updatedCenterlineData;
+
+    // Recalculate scroll step size for updated centerline
+    const numPoints = updatedCenterlineData.position.length / 3;
+    let totalLength = 0;
+    for (let i = 1; i < numPoints; i++) {
+      const dx = updatedCenterlineData.position[i * 3] - updatedCenterlineData.position[(i - 1) * 3];
+      const dy = updatedCenterlineData.position[i * 3 + 1] - updatedCenterlineData.position[(i - 1) * 3 + 1];
+      const dz = updatedCenterlineData.position[i * 3 + 2] - updatedCenterlineData.position[(i - 1) * 3 + 2];
+      totalLength += Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+    const avgSegmentLength = totalLength / (numPoints - 1);
+    const targetStepMM = 0.1; // 0.1mm per scroll event
+    cprScrollStepSizeRef.current = targetStepMM / avgSegmentLength;
+    console.log(`📏 Updated scroll step: ${cprScrollStepSizeRef.current.toFixed(3)} index units = ${targetStepMM}mm`);
+
     console.log('✅ Centerline regenerated with projected valve');
 
     // IMPORTANT: Use the annulus center (centroid of 3 cusp dots) as the focal point
@@ -3446,37 +3613,34 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     const axialElement = axialViewport.element;
 
     const handleWheel = (evt: WheelEvent) => {
-      console.log('🎡 Annulus definition scroll handler triggered!', evt.deltaY);
-
       evt.preventDefault();
       evt.stopPropagation();
       evt.stopImmediatePropagation();
 
-      // Calculate scroll step (1 index per scroll notch)
-      const scrollStep = evt.deltaY > 0 ? 1 : -1;
-      const newIndex = Math.max(0, Math.min(numCenterlinePoints - 1, currentCenterlineIndexRef.current + scrollStep));
+      // Use fractional scrolling for ultra-smooth navigation
+      const scrollDirection = evt.deltaY > 0 ? 1 : -1;
+      const fractionalStep = cprScrollStepSizeRef.current * scrollDirection;
 
-      console.log(`   Current index: ${currentCenterlineIndexRef.current}, New index: ${newIndex}`);
+      // Accumulate fractional position
+      const newIndex = currentCenterlineIndexRef.current + fractionalStep;
+      const clampedIndex = Math.max(0, Math.min(numCenterlinePoints - 1, newIndex));
 
-      if (newIndex === currentCenterlineIndexRef.current) {
-        console.log('   ⚠️ Already at boundary');
+      if (clampedIndex === currentCenterlineIndexRef.current) {
         return; // Already at boundary
       }
 
-      currentCenterlineIndexRef.current = newIndex;
+      currentCenterlineIndexRef.current = clampedIndex;
 
-      // Get position and tangent at new centerline index
-      const newPosition = getCenterlinePositionAtIndex(newIndex);
-      const tangent = getCenterlineTangentAtIndex(newIndex);
+      // Get position and tangent at new centerline index (fractional supported)
+      const newPosition = getCenterlinePositionAtIndex(clampedIndex);
+      const tangent = getCenterlineTangentAtIndex(clampedIndex);
 
       if (!newPosition || !tangent) {
-        console.warn('⚠️ Failed to get centerline position or tangent at index', newIndex);
+        console.warn('⚠️ Failed to get centerline position or tangent at index', clampedIndex);
         return;
       }
 
-      console.log(`📜 Scrolling to centerline index ${newIndex}/${numCenterlinePoints - 1}`);
-      console.log('   Position:', newPosition);
-      console.log('   Tangent:', tangent);
+      console.log(`📜 MPR scroll to centerline index ${clampedIndex.toFixed(2)}/${numCenterlinePoints - 1}`);
 
       // Update axial viewport - position camera perpendicular to centerline
       const axialVp = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
@@ -3664,40 +3828,34 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     }
 
     const handleWheel = (evt: WheelEvent) => {
-      console.log('🎡 Measurements stage scroll handler triggered!', evt.deltaY);
-
       evt.preventDefault();
       evt.stopPropagation();
       evt.stopImmediatePropagation();
 
-      // Smooth scrolling with small steps (0.25 index per scroll notch)
-      // This gives approximately 4 scroll notches per centerline point for smooth movement
-      const stepSize = 0.25; // Adjust this for finer/coarser control
-      const scrollStep = evt.deltaY > 0 ? stepSize : -stepSize;
+      // Use fractional scrolling for ultra-smooth navigation
+      const scrollDirection = evt.deltaY > 0 ? 1 : -1;
+      const fractionalStep = cprScrollStepSizeRef.current * scrollDirection;
 
-      const newIndex = Math.max(0, Math.min(numCenterlinePoints - 1, currentCenterlineIndexRef.current + scrollStep));
+      // Accumulate fractional position
+      const newIndex = currentCenterlineIndexRef.current + fractionalStep;
+      const clampedIndex = Math.max(0, Math.min(numCenterlinePoints - 1, newIndex));
 
-      console.log(`   Current index: ${currentCenterlineIndexRef.current.toFixed(2)}, New index: ${newIndex.toFixed(2)}`);
-
-      if (newIndex === currentCenterlineIndexRef.current) {
-        console.log('   ⚠️ Already at boundary');
+      if (clampedIndex === currentCenterlineIndexRef.current) {
         return; // Already at boundary
       }
 
-      currentCenterlineIndexRef.current = newIndex;
+      currentCenterlineIndexRef.current = clampedIndex;
 
-      // Get position and tangent at new centerline index
-      const newPosition = getCenterlinePositionAtIndex(newIndex);
-      const tangent = getCenterlineTangentAtIndex(newIndex);
+      // Get position and tangent at new centerline index (fractional supported)
+      const newPosition = getCenterlinePositionAtIndex(clampedIndex);
+      const tangent = getCenterlineTangentAtIndex(clampedIndex);
 
       if (!newPosition || !tangent) {
-        console.warn('⚠️ Failed to get centerline position or tangent at index', newIndex);
+        console.warn('⚠️ Failed to get centerline position or tangent at index', clampedIndex);
         return;
       }
 
-      console.log(`📜 Scrolling to centerline index ${newIndex}/${numCenterlinePoints - 1}`);
-      console.log('   Position:', newPosition);
-      console.log('   Tangent:', tangent);
+      console.log(`📜 MPR scroll to centerline index ${clampedIndex.toFixed(2)}/${numCenterlinePoints - 1}`);
 
       // Update axial viewport - position camera perpendicular to centerline
       const axialVp = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
@@ -3871,32 +4029,37 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     let axialElement: HTMLElement | null = null;
 
     const handleWheel = (evt: WheelEvent) => {
-      console.log('🎡 CPR mode scroll handler triggered!', evt.deltaY);
-
       evt.preventDefault();
       evt.stopPropagation();
       evt.stopImmediatePropagation();
 
-      // Calculate scroll step
-      const scrollStep = evt.deltaY > 0 ? 1 : -1;
-      const newIndex = Math.max(0, Math.min(numCenterlinePoints - 1, currentCenterlineIndexRef.current + scrollStep));
+      // Use fractional scrolling for ultra-smooth navigation
+      // Step size of 0.1 index units = ~0.024mm with 500 points over 120mm
+      const scrollDirection = evt.deltaY > 0 ? 1 : -1;
+      const fractionalStep = cprScrollStepSizeRef.current * scrollDirection;
 
-      if (newIndex === currentCenterlineIndexRef.current) {
+      // Accumulate fractional position
+      const newIndex = currentCenterlineIndexRef.current + fractionalStep;
+
+      // Clamp to bounds
+      const clampedIndex = Math.max(0, Math.min(numCenterlinePoints - 1, newIndex));
+
+      if (clampedIndex === currentCenterlineIndexRef.current) {
         return; // Already at boundary
       }
 
-      currentCenterlineIndexRef.current = newIndex;
+      currentCenterlineIndexRef.current = clampedIndex;
 
-      // Get position and tangent at new centerline index
-      const newPosition = getCenterlinePositionAtIndex(newIndex);
-      const tangent = getCenterlineTangentAtIndex(newIndex);
+      // Get position and tangent at new centerline index (fractional index supported)
+      const newPosition = getCenterlinePositionAtIndex(clampedIndex);
+      const tangent = getCenterlineTangentAtIndex(clampedIndex);
 
       if (!newPosition || !tangent) {
-        console.warn('⚠️ Failed to get centerline position or tangent at index', newIndex);
+        console.warn('⚠️ Failed to get centerline position or tangent at index', clampedIndex);
         return;
       }
 
-      console.log(`📜 CPR scroll to centerline index ${newIndex}/${numCenterlinePoints - 1}`);
+      console.log(`📜 CPR scroll to centerline index ${clampedIndex.toFixed(2)}/${numCenterlinePoints - 1}`);
 
       // Update ONLY the axial viewport (cross-section)
       // Sagittal and coronal CPR views stay STATIC showing the full straightened vessel
@@ -3958,9 +4121,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       }
 
       // Update CPR position indicator lines on sagittal/coronal views
-      updateCPRPositionLines(newIndex);
+      updateCPRPositionLines(clampedIndex);
 
-      console.log('✅ Axial cross-section updated to centerline position', newIndex);
+      console.log('✅ Axial cross-section updated to centerline position', clampedIndex.toFixed(2));
       console.log('   (Sagittal/Coronal CPR views remain static)');
     };
 
@@ -3991,6 +4154,210 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   }, [renderMode, renderingEngineRef.current, centerlineDataRef.current]);
 
   // ============================================================================
+  // Drag Horizontal Line to Scroll (CPR Mode)
+  // ============================================================================
+
+  useEffect(() => {
+    // Only enable in CPR mode
+    if (renderMode !== 'cpr' || !renderingEngineRef.current || !centerlineDataRef.current) {
+      return;
+    }
+
+    const renderingEngine = renderingEngineRef.current;
+    const numCenterlinePoints = centerlineDataRef.current.position.length / 3;
+
+    let isDragging = false;
+    let dragStartY = 0;
+    let dragStartIndex = 0;
+
+    const handleMouseDown = (evt: MouseEvent, viewportId: string) => {
+      const viewport = renderingEngine.getViewport(viewportId);
+      if (!viewport) {
+        console.log('⚠️ No viewport for', viewportId);
+        return;
+      }
+
+      const canvas = viewport.getCanvas() as HTMLCanvasElement;
+      const rect = canvas.getBoundingClientRect();
+      const mouseY = evt.clientY - rect.top;
+
+      // Check if mouse is near the horizontal line
+      const positionRatio = cprPositionRatioRef.current;
+      // IMPORTANT: Use rect.height (displayed size) not canvas.height (internal resolution)
+      const lineY = positionRatio * rect.height;
+      const hitDistance = 30; // 30 pixels hit area (increased for easier interaction)
+      const distance = Math.abs(mouseY - lineY);
+
+      if (distance < hitDistance) {
+        isDragging = true;
+        dragStartY = mouseY;
+        dragStartIndex = currentCenterlineIndexRef.current;
+        evt.preventDefault();
+        evt.stopPropagation();
+        evt.stopImmediatePropagation();
+        canvas.style.cursor = 'ns-resize';
+      }
+    };
+
+    const handleMouseMove = (evt: MouseEvent, viewportId: string) => {
+      if (!isDragging) {
+        // Update cursor when hovering near line
+        const viewport = renderingEngine.getViewport(viewportId);
+        if (!viewport) return;
+        const canvas = viewport.getCanvas() as HTMLCanvasElement;
+        const rect = canvas.getBoundingClientRect();
+        const mouseY = evt.clientY - rect.top;
+        const positionRatio = cprPositionRatioRef.current;
+
+        // IMPORTANT: Use rect.height (displayed size) not canvas.height (internal resolution)
+        // Canvas might have 2x or 3x resolution due to device pixel ratio
+        const lineY = positionRatio * rect.height;
+        const hitDistance = 30; // 30 pixels hit area (increased for easier interaction)
+        const distance = Math.abs(mouseY - lineY);
+
+        if (distance < hitDistance) {
+          if (canvas.style.cursor !== 'ns-resize') {
+            canvas.style.cursor = 'ns-resize';
+            canvas.style.setProperty('cursor', 'ns-resize', 'important');
+          }
+        } else {
+          if (canvas.style.cursor === 'ns-resize') {
+            canvas.style.cursor = '';
+            canvas.style.removeProperty('cursor');
+          }
+        }
+        return;
+      }
+
+      const viewport = renderingEngine.getViewport(viewportId);
+      if (!viewport) return;
+      const canvas = viewport.getCanvas() as HTMLCanvasElement;
+      const rect = canvas.getBoundingClientRect();
+      const mouseY = evt.clientY - rect.top;
+
+      // Calculate delta in pixels, convert to centerline index
+      const deltaY = mouseY - dragStartY;
+
+      // Get total centerline length
+      const positions = centerlineDataRef.current.position;
+      let totalLength = 0;
+      for (let i = 1; i < numCenterlinePoints; i++) {
+        const dx = positions[i * 3] - positions[(i - 1) * 3];
+        const dy = positions[i * 3 + 1] - positions[(i - 1) * 3 + 1];
+        const dz = positions[i * 3 + 2] - positions[(i - 1) * 3 + 2];
+        totalLength += Math.sqrt(dx * dx + dy * dy + dz * dz);
+      }
+
+      // Convert pixel delta to mm, then to index delta
+      // IMPORTANT: Use rect.height (displayed size) not canvas.height
+      const deltaRatio = deltaY / rect.height;
+      const deltaMM = deltaRatio * totalLength;
+      const avgSegmentLength = totalLength / (numCenterlinePoints - 1);
+      const deltaIndex = deltaMM / avgSegmentLength;
+
+      const newIndex = Math.max(0, Math.min(numCenterlinePoints - 1, dragStartIndex + deltaIndex));
+
+      if (newIndex !== currentCenterlineIndexRef.current) {
+        currentCenterlineIndexRef.current = newIndex;
+
+        // Update axial viewport
+        const newPosition = getCenterlinePositionAtIndex(newIndex);
+        const tangent = getCenterlineTangentAtIndex(newIndex);
+
+        if (newPosition && tangent) {
+          const axialVp = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
+          if (axialVp) {
+            const cameraDistance = 200;
+            const newCameraPos = [
+              newPosition[0] + tangent[0] * cameraDistance,
+              newPosition[1] + tangent[1] * cameraDistance,
+              newPosition[2] + tangent[2] * cameraDistance
+            ] as Types.Point3;
+
+            let viewUp: Types.Point3;
+            const reference = Math.abs(tangent[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+            const cross = [
+              tangent[1] * reference[2] - tangent[2] * reference[1],
+              tangent[2] * reference[0] - tangent[0] * reference[2],
+              tangent[0] * reference[1] - tangent[1] * reference[0]
+            ];
+            const crossLen = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
+            if (crossLen > 0) {
+              viewUp = [cross[0] / crossLen, cross[1] / crossLen, cross[2] / crossLen] as Types.Point3;
+            } else {
+              viewUp = [0, 0, 1] as Types.Point3;
+            }
+
+            axialVp.setCamera({
+              position: newCameraPos,
+              focalPoint: newPosition,
+              viewUp: viewUp,
+              parallelScale: axialVp.getCamera().parallelScale,
+            });
+            axialVp.render();
+
+            // Update crosshair position
+            const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+            const fixedCrosshairTool = toolGroup?.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
+            if (fixedCrosshairTool) {
+              fixedCrosshairTool.setFixedPosition(newPosition, renderingEngineId);
+            }
+
+            // Update CPR position lines
+            updateCPRPositionLines(newIndex);
+          }
+        }
+      }
+
+      evt.preventDefault();
+      evt.stopPropagation();
+    };
+
+    const handleMouseUp = (evt: MouseEvent) => {
+      if (isDragging) {
+        isDragging = false;
+
+        // Reset cursor for all CPR canvases
+        ['sagittal', 'coronal'].forEach(vpId => {
+          const vp = renderingEngine.getViewport(vpId);
+          if (vp) {
+            const canvas = vp.getCanvas() as HTMLCanvasElement;
+            canvas.style.cursor = '';
+          }
+        });
+
+        evt.preventDefault();
+        evt.stopPropagation();
+      }
+    };
+
+    // Add event listeners to sagittal and coronal viewports
+    const sagittalElement = elementRefs.sagittal.current;
+    const coronalElement = elementRefs.coronal.current;
+
+    if (sagittalElement && coronalElement) {
+      const sagittalMouseDown = (e: MouseEvent) => handleMouseDown(e, 'sagittal');
+      const sagittalMouseMove = (e: MouseEvent) => handleMouseMove(e, 'sagittal');
+      const coronalMouseDown = (e: MouseEvent) => handleMouseDown(e, 'coronal');
+      const coronalMouseMove = (e: MouseEvent) => handleMouseMove(e, 'coronal');
+
+      sagittalElement.addEventListener('mousedown', sagittalMouseDown, { capture: true });
+      sagittalElement.addEventListener('mousemove', sagittalMouseMove, { capture: true });
+      coronalElement.addEventListener('mousedown', coronalMouseDown, { capture: true });
+      coronalElement.addEventListener('mousemove', coronalMouseMove, { capture: true });
+      document.addEventListener('mouseup', handleMouseUp);
+
+      return () => {
+        sagittalElement.removeEventListener('mousedown', sagittalMouseDown, { capture: true } as any);
+        sagittalElement.removeEventListener('mousemove', sagittalMouseMove, { capture: true } as any);
+        coronalElement.removeEventListener('mousedown', coronalMouseDown, { capture: true } as any);
+        coronalElement.removeEventListener('mousemove', coronalMouseMove, { capture: true } as any);
+        document.removeEventListener('mouseup', handleMouseUp);
+      };
+    }
+  }, [renderMode, renderingEngineRef.current, centerlineDataRef.current]);
+
+  // ============================================================================
   // Continuous Redraw CPR Position Lines
   // ============================================================================
 
@@ -4010,10 +4377,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       if (!isRunning) return;
 
       const positionRatio = cprPositionRatioRef.current;
+      const annulusRatio = cprAnnulusRatioRef.current;
+
       if (positionRatio !== null && positionRatio !== undefined) {
-        // Redraw lines on both CPR viewports
-        drawCPRPositionLineOnCanvas('sagittal', positionRatio);
-        drawCPRPositionLineOnCanvas('coronal', positionRatio);
+        // Redraw lines on both CPR viewports (with annulus reference line)
+        drawCPRPositionLineOnCanvas('sagittal', positionRatio, annulusRatio);
+        drawCPRPositionLineOnCanvas('coronal', positionRatio, annulusRatio);
       }
 
       // Continue loop
