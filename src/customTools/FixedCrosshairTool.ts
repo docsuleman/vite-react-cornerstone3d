@@ -9,6 +9,9 @@ import { getRenderingEngine } from '@cornerstonejs/core';
  */
 class FixedCrosshairTool extends BaseTool {
   static toolName = 'FixedCrosshair';
+  // Static callback shared across all instances - ensures it persists even if instance changes
+  private static globalCPRRotationCallback: ((deltaAngle: number) => void) | null = null;
+
   private fixedPosition: Types.Point3 | null = null;
   private renderingEngineId: string | null = null;
   private rafId: number | null = null;
@@ -100,6 +103,15 @@ class FixedCrosshairTool extends BaseTool {
     this.annulusReferencePosition = position ? [...position] as Types.Point3 : null;
     this.showDistanceFromAnnulus = position !== null;
     console.log(`📏 Distance measurement ${position ? 'ENABLED' : 'DISABLED'} at:`, position);
+  }
+
+  /**
+   * Set callback for CPR rotation (updates CPR mapper direction matrices)
+   * Pass null to use standard MPR rotation (camera position rotation)
+   * Uses static property to ensure callback persists across all instances
+   */
+  setCPRRotationCallback(callback: ((deltaAngle: number) => void) | null) {
+    FixedCrosshairTool.globalCPRRotationCallback = callback;
   }
 
   /**
@@ -967,14 +979,19 @@ class FixedCrosshairTool extends BaseTool {
   /**
    * Rotate the MPR viewing planes around the fixed center point
    * - Axial: Crosshair rotates visually only (image doesn't rotate)
-   * - Sagittal/Coronal: Actual CT planes rotate to match crosshair angle
+   * - Sagittal/Coronal: Actual CT planes rotate to match crosshair angle (MPR mode)
+   *                     OR update CPR direction matrices (CPR mode via callback)
    */
   private rotateMPRPlanes(renderingEngine: any, activeViewportId: string, deltaAngle: number) {
     if (!this.fixedPosition) return;
 
     // Only rotate if dragging in axial view
-    if (activeViewportId !== 'axial') {
-      return; // For now, only support rotation from axial view
+    if (activeViewportId !== 'axial') return;
+
+    // If CPR rotation callback is set (check static property), use it instead of standard rotation
+    if (FixedCrosshairTool.globalCPRRotationCallback) {
+      FixedCrosshairTool.globalCPRRotationCallback(deltaAngle);
+      return;
     }
 
     const axialViewport = renderingEngine.getViewport('axial') as Types.IVolumeViewport;

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import createImageIdsAndCacheMetaData from '../lib/createImageIdsAndCacheMetaData';
 import {
   RenderingEngine,
@@ -18,6 +18,14 @@ import CuspNadirTool from '../customTools/CuspNadirTool';
 import FixedCrosshairTool from '../customTools/FixedCrosshairTool';
 import { WorkflowStage } from '../types/WorkflowTypes';
 import { CenterlineGenerator } from '../utils/CenterlineGenerator';
+import vtkImageData from '@kitware/vtk.js/Common/DataModel/ImageData';
+import vtkImageCPRMapper from '@kitware/vtk.js/Rendering/Core/ImageCPRMapper';
+import vtkImageSlice from '@kitware/vtk.js/Rendering/Core/ImageSlice';
+import vtkPolyData from '@kitware/vtk.js/Common/DataModel/PolyData';
+import vtkPoints from '@kitware/vtk.js/Common/Core/Points';
+import vtkCellArray from '@kitware/vtk.js/Common/Core/CellArray';
+import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray';
+import { mat3, vec3 } from 'gl-matrix';
 
 const {
   ToolGroupManager,
@@ -48,6 +56,7 @@ interface ProperMPRViewportProps {
   onCuspDotsUpdate?: (dots: { id: string; pos: [number, number, number]; color: string; cuspType: string }[]) => void;
   currentStage?: WorkflowStage;
   existingSpheres?: { id: string; pos: [number, number, number]; color: string }[];
+  renderMode?: 'mpr' | 'cpr'; // Toggle between standard MPR and straightened CPR
 }
 
 const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
@@ -56,7 +65,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   onSpherePositionsUpdate,
   onCuspDotsUpdate,
   currentStage,
-  existingSpheres
+  existingSpheres,
+  renderMode = 'mpr' // Default to standard MPR
 }) => {
   const elementRefs = {
     axial: useRef(null),
@@ -75,6 +85,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const [selectedPhase, setSelectedPhase] = useState<number | null>(null); // Currently selected phase
   const [isPlayingCine, setIsPlayingCine] = useState(false); // Cine playback state
   const [isPreloading, setIsPreloading] = useState(false); // Track if we're in preloading mode
+  const [cprActorsReady, setCprActorsReady] = useState(false); // Track when CPR actors are set up
   const running = useRef(false);
   const cineIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const preloadedVolumesRef = useRef<{ [phaseIndex: number]: string }>({}); // Store preloaded volume IDs
@@ -101,6 +112,15 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const cuspDotsRef = useRef<{ id: string; pos: [number, number, number]; color: string; cuspType: string }[]>([]); // Store cusp dots
   const savedCameraZoomRef = useRef<number>(60); // Store zoom level (parallelScale) for preservation between stages
   const annulusLineActorsRef = useRef<{ sagittal: any; coronal: any } | null>(null); // Store annulus reference line actors
+  const cprActorsRef = useRef<{ actor: any; mapper: any; viewportId: string; config: any }[]>([]); // Store CPR actors and mappers when in CPR mode
+  const currentVolumeRef = useRef<any>(null); // Store current volume for CPR conversion
+  const centerlinePolyDataRef = useRef<any>(null); // Store VTK centerline polydata for CPR rotation
+  const cprRotationAngleRef = useRef<number>(0); // Store cumulative CPR rotation angle in radians
+  const cprRotationCallbackRef = useRef<((deltaAngle: number) => void) | null>(null); // Store CPR rotation callback in stable ref
+  const renderModeRef = useRef<string>(renderMode); // Store current render mode to avoid closure issues
+  const originalCameraStatesRef = useRef<{ [viewportId: string]: any }>({}); // Store original camera states before CPR
+  const isSettingUpCPRRef = useRef<boolean>(false); // Prevent concurrent setupCPRActors calls
+  const axialReferenceFrameRef = useRef<{ viewUp: Types.Point3; viewRight: Types.Point3; viewPlaneNormal: Types.Point3 } | null>(null); // Store axial camera reference frame for rotation
 
   // Preload all phases sequentially when play is first hit
   useEffect(() => {
@@ -317,6 +337,407 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     };
   }, [patientInfo, currentStage]);
 
+  // Setup/cleanup CPR actors when render mode changes
+  useEffect(() => {
+    const renderingEngine = renderingEngineRef.current;
+    if (!renderingEngine) return;
+
+    if (renderMode === 'cpr' && centerlineDataRef.current && currentVolumeRef.current) {
+      console.log('🔄 Render mode changed to CPR, setting up CPR actors...');
+
+      // Save camera states NOW, before any modifications (only if not already saved)
+      if (Object.keys(originalCameraStatesRef.current).length === 0) {
+        const viewportsToSave = ['axial', 'sagittal', 'coronal']; // Save all three viewports
+        viewportsToSave.forEach(viewportId => {
+          const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
+          if (viewport) {
+            const camera = viewport.getCamera();
+            originalCameraStatesRef.current[viewportId] = {
+              position: [...camera.position] as Types.Point3,
+              focalPoint: [...camera.focalPoint] as Types.Point3,
+              viewUp: [...camera.viewUp] as Types.Point3,
+              parallelScale: camera.parallelScale
+            };
+            console.log(`💾 [PRE-CPR] Saved original camera state for ${viewportId}:`, originalCameraStatesRef.current[viewportId]);
+          }
+        });
+      }
+
+      // Reset CPR rotation angle and mark actors as not ready
+      cprRotationAngleRef.current = 0;
+      setCprActorsReady(false);
+      // Wait a bit for viewports to be ready, then setup actors
+      // Callback will be set automatically by the useEffect once actors are ready
+      setTimeout(async () => {
+        await setupCPRActors();
+        console.log('✅ CPR actors setup complete, marking as ready');
+        setCprActorsReady(true); // This will trigger the callback setup useEffect
+      }, 500);
+    } else if (renderMode === 'mpr') {
+      console.log('🔄 Render mode changed to MPR, removing CPR actors...');
+      setCprActorsReady(false); // Mark actors as not ready
+      // Remove CPR actors when switching back to MPR
+      cprActorsRef.current.forEach(({ actor, viewportId }) => {
+        const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
+        if (viewport) {
+          try {
+            viewport.removeActors([`cprActor_${viewportId}`]);
+          } catch (e) {
+            console.warn('Failed to remove CPR actor:', e);
+          }
+        }
+      });
+      cprActorsRef.current = [];
+
+      // Show volume actors again and restore camera states
+      const viewportIds = ['axial', 'sagittal', 'coronal'];
+      viewportIds.forEach(id => {
+        const viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
+        if (viewport) {
+          // Re-enable volume actors
+          const allActors = viewport.getActors();
+          allActors.forEach((actorEntry: any) => {
+            if (actorEntry.actor && typeof actorEntry.actor.setVisibility === 'function') {
+              actorEntry.actor.setVisibility(true);
+              console.log(`  👁️ Restored volume actor visibility in ${id}`);
+            }
+          });
+
+          // Restore original camera state if available, otherwise reset camera
+          const savedCamera = originalCameraStatesRef.current[id];
+          if (savedCamera) {
+            console.log(`📷 Restoring original camera for ${id}:`, savedCamera);
+            viewport.setCamera(savedCamera);
+          } else {
+            console.log(`🔄 Resetting camera for ${id} (no saved state)`);
+            viewport.resetCamera();
+          }
+
+          viewport.render();
+        }
+      });
+
+      // Force a full re-render of all viewports
+      renderingEngine.renderViewports(viewportIds);
+
+      // CRITICAL: Jump to valve/annulus point to trigger scroll synchronization
+      // This ensures all viewports are correctly aligned when switching back to MPR
+      if (centerlineDataRef.current) {
+        const numCenterlinePoints = centerlineDataRef.current.position.length / 3;
+
+        // Find the centerline point closest to the red sphere (aortic valve, index 1)
+        let targetIndex = -1;
+
+        if (spherePositionsRef.current.length >= 2) {
+          // Get the red sphere position (middle sphere - aortic valve at index 1)
+          const redSpherePos = spherePositionsRef.current[1]; // [x, y, z]
+
+          // Find the closest centerline point to the red sphere
+          let minDistance = Infinity;
+          let closestIndex = -1;
+
+          for (let i = 0; i < numCenterlinePoints; i++) {
+            const x = centerlineDataRef.current.position[i * 3];
+            const y = centerlineDataRef.current.position[i * 3 + 1];
+            const z = centerlineDataRef.current.position[i * 3 + 2];
+
+            const distance = Math.sqrt(
+              Math.pow(x - redSpherePos[0], 2) +
+              Math.pow(y - redSpherePos[1], 2) +
+              Math.pow(z - redSpherePos[2], 2)
+            );
+
+            if (distance < minDistance) {
+              minDistance = distance;
+              closestIndex = i;
+            }
+          }
+
+          if (closestIndex >= 0) {
+            targetIndex = closestIndex;
+            console.log(`🎯 Found centerline point closest to red sphere (valve) at index ${targetIndex}/${numCenterlinePoints} (distance: ${minDistance.toFixed(2)}mm)`);
+          }
+        }
+
+        // Fallback: Try to find annulus plane marker in modified centerline
+        if (targetIndex < 0) {
+          const modifiedCenterline = centerlineDataRef.current.modifiedCenterline;
+          if (modifiedCenterline && Array.isArray(modifiedCenterline)) {
+            const annulusIndex = modifiedCenterline.findIndex((p: any) => p.isAnnulusPlane === true);
+            if (annulusIndex >= 0) {
+              const ratio = annulusIndex / modifiedCenterline.length;
+              targetIndex = Math.round(ratio * (numCenterlinePoints - 1));
+              console.log(`🎯 Found annulus plane marker at index ${targetIndex}/${numCenterlinePoints}`);
+            }
+          }
+        }
+
+        // Final fallback: Use 40% through centerline
+        if (targetIndex < 0) {
+          targetIndex = Math.round(numCenterlinePoints * 0.4);
+          console.log(`🎯 Using calculated annulus position at ~40% of centerline: index ${targetIndex}/${numCenterlinePoints}`);
+        }
+
+        // Update current index and trigger scroll synchronization
+        if (targetIndex >= 0 && targetIndex < numCenterlinePoints) {
+          currentCenterlineIndexRef.current = targetIndex;
+
+          // Manually update axial viewport camera at this centerline position
+          const axialViewport = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
+          if (axialViewport) {
+            // Get position at target index
+            const position = [
+              centerlineDataRef.current.position[targetIndex * 3],
+              centerlineDataRef.current.position[targetIndex * 3 + 1],
+              centerlineDataRef.current.position[targetIndex * 3 + 2]
+            ] as Types.Point3;
+
+            // Calculate tangent at this position
+            let tangent: Types.Point3;
+            if (targetIndex > 0 && targetIndex < numCenterlinePoints - 1) {
+              const prevPos = [
+                centerlineDataRef.current.position[(targetIndex - 1) * 3],
+                centerlineDataRef.current.position[(targetIndex - 1) * 3 + 1],
+                centerlineDataRef.current.position[(targetIndex - 1) * 3 + 2]
+              ];
+              const nextPos = [
+                centerlineDataRef.current.position[(targetIndex + 1) * 3],
+                centerlineDataRef.current.position[(targetIndex + 1) * 3 + 1],
+                centerlineDataRef.current.position[(targetIndex + 1) * 3 + 2]
+              ];
+              tangent = [
+                (nextPos[0] - prevPos[0]) / 2,
+                (nextPos[1] - prevPos[1]) / 2,
+                (nextPos[2] - prevPos[2]) / 2
+              ] as Types.Point3;
+            } else {
+              tangent = [0, 0, 1] as Types.Point3;
+            }
+
+            // Normalize tangent
+            const tangentLength = Math.sqrt(tangent[0] ** 2 + tangent[1] ** 2 + tangent[2] ** 2);
+            if (tangentLength > 0) {
+              tangent = [tangent[0] / tangentLength, tangent[1] / tangentLength, tangent[2] / tangentLength] as Types.Point3;
+            }
+
+            // Update axial camera to look perpendicular to centerline at this position
+            // Use saved parallelScale to maintain zoom level
+            const savedAxialCamera = originalCameraStatesRef.current['axial'];
+            const cameraDistance = 200;
+            const newCameraPos = [
+              position[0] + tangent[0] * cameraDistance,
+              position[1] + tangent[1] * cameraDistance,
+              position[2] + tangent[2] * cameraDistance
+            ] as Types.Point3;
+
+            // Calculate viewUp perpendicular to tangent
+            let viewUp: Types.Point3;
+            const reference = Math.abs(tangent[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+            const cross = [
+              tangent[1] * reference[2] - tangent[2] * reference[1],
+              tangent[2] * reference[0] - tangent[0] * reference[2],
+              tangent[0] * reference[1] - tangent[1] * reference[0]
+            ];
+            const crossLen = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
+            if (crossLen > 0) {
+              viewUp = [cross[0] / crossLen, cross[1] / crossLen, cross[2] / crossLen] as Types.Point3;
+            } else {
+              viewUp = [0, 0, 1] as Types.Point3;
+            }
+
+            axialViewport.setCamera({
+              position: newCameraPos,
+              focalPoint: position,
+              viewUp: viewUp,
+              parallelScale: savedAxialCamera?.parallelScale || 60, // Use saved zoom level or default to 60
+            });
+            axialViewport.render();
+
+            console.log(`✅ Updated axial viewport to centerline index ${targetIndex}`);
+
+            // Directly update sagittal and coronal viewports to be centered on the annulus point
+            // Get the actual camera after setting (to get viewPlaneNormal)
+            const updatedCamera = axialViewport.getCamera();
+            const viewPlaneNormal = updatedCamera.viewPlaneNormal;
+            const actualViewUp = updatedCamera.viewUp;
+
+            // Calculate actualViewRight (perpendicular to viewUp and viewPlaneNormal)
+            const actualViewRight = [
+              actualViewUp[1] * viewPlaneNormal[2] - actualViewUp[2] * viewPlaneNormal[1],
+              actualViewUp[2] * viewPlaneNormal[0] - actualViewUp[0] * viewPlaneNormal[2],
+              actualViewUp[0] * viewPlaneNormal[1] - actualViewUp[1] * viewPlaneNormal[0]
+            ];
+
+            const rightLen = Math.sqrt(actualViewRight[0] ** 2 + actualViewRight[1] ** 2 + actualViewRight[2] ** 2);
+            if (rightLen > 0) {
+              actualViewRight[0] /= rightLen;
+              actualViewRight[1] /= rightLen;
+              actualViewRight[2] /= rightLen;
+            }
+
+            // Apply rotation if any
+            const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+            const fixedCrosshairTool = toolGroup?.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
+            const rotationAngle = fixedCrosshairTool?.getRotationAngle() || 0;
+
+            const cos = Math.cos(rotationAngle);
+            const sin = Math.sin(rotationAngle);
+
+            const rotatedViewRight = [
+              actualViewRight[0] * cos - actualViewUp[0] * sin,
+              actualViewRight[1] * cos - actualViewUp[1] * sin,
+              actualViewRight[2] * cos - actualViewUp[2] * sin
+            ];
+
+            const rotatedViewUp = [
+              actualViewRight[0] * sin + actualViewUp[0] * cos,
+              actualViewRight[1] * sin + actualViewUp[1] * cos,
+              actualViewRight[2] * sin + actualViewUp[2] * cos
+            ];
+
+            // Update sagittal viewport - centered on annulus point
+            const sagittalVp = renderingEngine.getViewport('sagittal') as Types.IVolumeViewport;
+            if (sagittalVp) {
+              const savedSagCamera = originalCameraStatesRef.current['sagittal'];
+              const sagCameraPos = [
+                position[0] + rotatedViewRight[0] * cameraDistance,
+                position[1] + rotatedViewRight[1] * cameraDistance,
+                position[2] + rotatedViewRight[2] * cameraDistance
+              ] as Types.Point3;
+
+              sagittalVp.setCamera({
+                position: sagCameraPos,
+                focalPoint: position, // Centered on annulus point
+                viewUp: [-viewPlaneNormal[0], -viewPlaneNormal[1], -viewPlaneNormal[2]] as Types.Point3,
+                parallelScale: savedSagCamera?.parallelScale || sagittalVp.getCamera().parallelScale
+              });
+              sagittalVp.render();
+              console.log(`✅ Updated sagittal viewport centered on annulus point`);
+            }
+
+            // Update coronal viewport - centered on annulus point
+            const coronalVp = renderingEngine.getViewport('coronal') as Types.IVolumeViewport;
+            if (coronalVp) {
+              const savedCorCamera = originalCameraStatesRef.current['coronal'];
+              const corCameraPos = [
+                position[0] + rotatedViewUp[0] * cameraDistance,
+                position[1] + rotatedViewUp[1] * cameraDistance,
+                position[2] + rotatedViewUp[2] * cameraDistance
+              ] as Types.Point3;
+
+              coronalVp.setCamera({
+                position: corCameraPos,
+                focalPoint: position, // Centered on annulus point
+                viewUp: [-viewPlaneNormal[0], -viewPlaneNormal[1], -viewPlaneNormal[2]] as Types.Point3,
+                parallelScale: savedCorCamera?.parallelScale || coronalVp.getCamera().parallelScale
+              });
+              coronalVp.render();
+              console.log(`✅ Updated coronal viewport centered on annulus point`);
+            }
+          }
+        }
+      }
+
+      // Clear saved camera states so they can be re-saved next time
+      originalCameraStatesRef.current = {};
+
+      console.log('✅ MPR mode restored with camera states and annulus plane navigation');
+    }
+  }, [renderMode]);
+
+  // Sync window/level changes to CPR actors
+  useEffect(() => {
+    if (renderMode === 'cpr' && cprActorsRef.current.length > 0 && renderingEngineRef.current) {
+      console.log('🎨 Syncing window/level to CPR actors:', windowLevel);
+      cprActorsRef.current.forEach(({ actor }) => {
+        const property = actor.getProperty();
+        property.setColorWindow(windowLevel.window);
+        property.setColorLevel(windowLevel.level);
+      });
+      renderingEngineRef.current.renderViewports(['axial', 'sagittal', 'coronal']);
+    }
+  }, [windowLevel, renderMode]);
+
+  // Create the CPR rotation callback function and store it in ref
+  // This function is created once and stored, not recreated on every render
+  // Update renderMode ref whenever it changes
+  useEffect(() => {
+    renderModeRef.current = renderMode;
+    console.log(`📝 Render mode updated to: ${renderMode}`);
+  }, [renderMode]);
+
+  const createCPRRotationCallback = useCallback(() => {
+    const callback = (deltaAngle: number) => {
+      console.log(`🔄 CPR Rotation callback called! renderMode=${renderModeRef.current}, deltaAngle=${deltaAngle.toFixed(4)}`);
+
+      cprRotationAngleRef.current += deltaAngle;
+      const totalAngle = cprRotationAngleRef.current;
+
+      // Update direction matrices for all CPR actors (no need to recreate!)
+      console.log(`🔄 CPR Rotation - Total angle: ${(totalAngle * 180 / Math.PI).toFixed(1)}°, CPR actors count: ${cprActorsRef.current.length}`);
+
+      // Update rotation using setDirectionMatrix (fast, no recreation needed)
+      updateCPRRotations(totalAngle);
+      console.log(`✅ CPR rotation complete at ${(totalAngle * 180 / Math.PI).toFixed(1)}°`);
+    };
+
+    cprRotationCallbackRef.current = callback;
+    return callback;
+  }, []); // Empty deps - create once and reuse
+
+  // Function to ensure CPR rotation callback is set on the tool
+  const ensureCPRRotationCallbackSet = useCallback(() => {
+    const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+    if (!toolGroup) return false;
+
+    const fixedCrosshairTool = toolGroup.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
+    if (!fixedCrosshairTool || typeof fixedCrosshairTool.setCPRRotationCallback !== 'function') {
+      return false;
+    }
+
+    // Create callback if not already created
+    if (!cprRotationCallbackRef.current) {
+      createCPRRotationCallback();
+    }
+
+    // Set the callback on the tool
+    fixedCrosshairTool.setCPRRotationCallback(cprRotationCallbackRef.current);
+    return true;
+  }, [createCPRRotationCallback]);
+
+  // Manage CPR rotation callback based on render mode
+  useEffect(() => {
+    if (renderMode === 'mpr') {
+      const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+      if (toolGroup) {
+        const fixedCrosshairTool = toolGroup.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
+        if (fixedCrosshairTool && typeof fixedCrosshairTool.setCPRRotationCallback === 'function') {
+          fixedCrosshairTool.setCPRRotationCallback(null);
+          cprRotationAngleRef.current = 0;
+          cprRotationCallbackRef.current = null;
+        }
+      }
+    }
+  }, [renderMode]);
+
+  // Ensure CPR callback is always set when CPR actors are ready
+  useEffect(() => {
+    if (renderMode !== 'cpr' || !cprActorsReady) {
+      return;
+    }
+
+    ensureCPRRotationCallbackSet();
+
+    // Re-check periodically to ensure callback stays set
+    const intervalId = setInterval(() => {
+      ensureCPRRotationCallbackSet();
+    }, 1000);
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [renderMode, cprActorsReady, ensureCPRRotationCallbackSet]);
+
   const cleanup = () => {
     if (!running.current) {
       return;
@@ -345,6 +766,491 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     } catch (error) {
       console.warn('Cleanup error:', error);
     }
+  };
+
+  // Helper function to convert Cornerstone volume to VTK ImageData
+  const convertCornerstoneVolumeToVTK = async (volume: any): Promise<any> => {
+    try {
+      // Get volume data using voxelManager (avoids timeout issues)
+      const scalarData = volume.voxelManager.getCompleteScalarDataArray();
+
+      if (!scalarData || scalarData.length === 0) {
+        throw new Error('Volume scalar data is empty or not available');
+      }
+
+      const { dimensions, spacing, origin, direction } = volume;
+
+      // Create VTK ImageData
+      const imageData = vtkImageData.newInstance();
+      imageData.setDimensions(dimensions);
+      imageData.setSpacing(spacing);
+      imageData.setOrigin(origin);
+      imageData.setDirection(direction);
+
+      // Create scalar array manually
+      const scalarArray = vtkDataArray.newInstance({
+        name: 'Pixels',
+        numberOfComponents: 1,
+        values: scalarData
+      });
+
+      // Set the scalars on the imageData
+      imageData.getPointData().setScalars(scalarArray);
+
+      console.log('✅ Converted Cornerstone volume to VTK ImageData');
+      return imageData;
+    } catch (error) {
+      console.error('❌ Failed to convert volume to VTK:', error);
+      throw error;
+    }
+  };
+
+  // Helper to rotate a vector around an axis by an angle (Rodrigues' formula)
+  const rotateVectorAroundAxis = (v: number[], axis: number[], angle: number): number[] => {
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const dot = v[0]*axis[0] + v[1]*axis[1] + v[2]*axis[2];
+
+    return [
+      v[0]*cos + (axis[1]*v[2] - axis[2]*v[1])*sin + axis[0]*dot*(1-cos),
+      v[1]*cos + (axis[2]*v[0] - axis[0]*v[2])*sin + axis[1]*dot*(1-cos),
+      v[2]*cos + (axis[0]*v[1] - axis[1]*v[0])*sin + axis[2]*dot*(1-cos)
+    ];
+  };
+
+  // Helper function to densely interpolate centerline points to reduce banding artifacts
+  const interpolateCenterline = (originalPoints: Float32Array, targetNumPoints: number = 500): Float32Array => {
+    const numOriginal = originalPoints.length / 3;
+
+    // Calculate cumulative arc lengths
+    const arcLengths = [0];
+    for (let i = 1; i < numOriginal; i++) {
+      const dx = originalPoints[i*3] - originalPoints[(i-1)*3];
+      const dy = originalPoints[i*3+1] - originalPoints[(i-1)*3+1];
+      const dz = originalPoints[i*3+2] - originalPoints[(i-1)*3+2];
+      const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+      arcLengths.push(arcLengths[i-1] + dist);
+    }
+
+    const totalLength = arcLengths[numOriginal - 1];
+    const interpolated = new Float32Array(targetNumPoints * 3);
+
+    // Interpolate points evenly along arc length
+    for (let i = 0; i < targetNumPoints; i++) {
+      const targetLength = (i / (targetNumPoints - 1)) * totalLength;
+
+      // Find segment containing this arc length
+      let segmentIdx = 0;
+      for (let j = 1; j < arcLengths.length; j++) {
+        if (arcLengths[j] >= targetLength) {
+          segmentIdx = j - 1;
+          break;
+        }
+      }
+
+      // Interpolate within segment
+      const segmentStart = arcLengths[segmentIdx];
+      const segmentEnd = arcLengths[segmentIdx + 1];
+      const t = segmentEnd > segmentStart ? (targetLength - segmentStart) / (segmentEnd - segmentStart) : 0;
+
+      interpolated[i*3] = originalPoints[segmentIdx*3] + t * (originalPoints[(segmentIdx+1)*3] - originalPoints[segmentIdx*3]);
+      interpolated[i*3+1] = originalPoints[segmentIdx*3+1] + t * (originalPoints[(segmentIdx+1)*3+1] - originalPoints[segmentIdx*3+1]);
+      interpolated[i*3+2] = originalPoints[segmentIdx*3+2] + t * (originalPoints[(segmentIdx+1)*3+2] - originalPoints[segmentIdx*3+2]);
+    }
+
+    return interpolated;
+  };
+
+  // Helper function to convert centerline to VTK PolyData with orientation tensors for straightened mode
+  const convertCenterlineToVTKPolyData = (centerlineData: any, rotationAngle: number = 0): any => {
+    try {
+      // CRITICAL: Densely interpolate centerline to avoid banding artifacts
+      const originalPoints = new Float32Array(centerlineData.position);
+      const pointsArray = interpolateCenterline(originalPoints, 500);
+      const numPoints = pointsArray.length / 3;
+
+      console.log(`📊 Interpolated centerline from ${originalPoints.length/3} to ${numPoints} points`);
+
+      const polyData = vtkPolyData.newInstance();
+      const points = vtkPoints.newInstance();
+      const lines = vtkCellArray.newInstance();
+
+      points.setData(pointsArray, 3);
+
+      // Calculate orientation matrices using ROTATION-MINIMIZING FRAMES
+      // VTK ImageCPRMapper expects 3x3 orientation matrices (9 components per point)
+      const orientationMatrices = new Float32Array(numPoints * 9); // 3x3 matrix per point
+
+      // Use a CONSTANT reference direction (world "up" = patient superior) for all points
+      // This prevents wobble/twist as frame propagates along centerline
+      const worldUp = [0, 0, 1]; // Z-axis = superior in patient coordinates
+
+      for (let i = 0; i < numPoints; i++) {
+        // Calculate tangent at this point
+        let tangent: number[];
+
+        if (i === 0) {
+          // First point: use direction to next point
+          if (numPoints > 1) {
+            tangent = [
+              pointsArray[3] - pointsArray[0],
+              pointsArray[4] - pointsArray[1],
+              pointsArray[5] - pointsArray[2]
+            ];
+          } else {
+            tangent = [0, 0, 1];
+          }
+        } else if (i === numPoints - 1) {
+          // Last point: use direction from previous
+          tangent = [
+            pointsArray[i * 3] - pointsArray[(i - 1) * 3],
+            pointsArray[i * 3 + 1] - pointsArray[(i - 1) * 3 + 1],
+            pointsArray[i * 3 + 2] - pointsArray[(i - 1) * 3 + 2]
+          ];
+        } else {
+          // Middle points: average of directions
+          tangent = [
+            (pointsArray[(i + 1) * 3] - pointsArray[(i - 1) * 3]) / 2,
+            (pointsArray[(i + 1) * 3 + 1] - pointsArray[(i - 1) * 3 + 1]) / 2,
+            (pointsArray[(i + 1) * 3 + 2] - pointsArray[(i - 1) * 3 + 2]) / 2
+          ];
+        }
+
+        // Normalize tangent
+        const tangentLength = Math.sqrt(tangent[0] * tangent[0] + tangent[1] * tangent[1] + tangent[2] * tangent[2]);
+        if (tangentLength > 0) {
+          tangent[0] /= tangentLength;
+          tangent[1] /= tangentLength;
+          tangent[2] /= tangentLength;
+        } else {
+          tangent = [0, 0, 1];
+        }
+
+        // Calculate normal: project worldUp onto plane perpendicular to tangent
+        // normal = worldUp - (worldUp · tangent) * tangent
+        const dot = worldUp[0] * tangent[0] + worldUp[1] * tangent[1] + worldUp[2] * tangent[2];
+        let normal = [
+          worldUp[0] - dot * tangent[0],
+          worldUp[1] - dot * tangent[1],
+          worldUp[2] - dot * tangent[2]
+        ];
+
+        // Normalize normal
+        const normalLength = Math.sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+        if (normalLength > 1e-6) {
+          normal[0] /= normalLength;
+          normal[1] /= normalLength;
+          normal[2] /= normalLength;
+        } else {
+          // Tangent is parallel to worldUp - use a different reference
+          const altRef = [1, 0, 0];
+          const altDot = altRef[0] * tangent[0] + altRef[1] * tangent[1] + altRef[2] * tangent[2];
+          normal = [
+            altRef[0] - altDot * tangent[0],
+            altRef[1] - altDot * tangent[1],
+            altRef[2] - altDot * tangent[2]
+          ];
+          const altNormalLength = Math.sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+          if (altNormalLength > 0) {
+            normal[0] /= altNormalLength;
+            normal[1] /= altNormalLength;
+            normal[2] /= altNormalLength;
+          }
+        }
+
+        // Calculate binormal = tangent × normal (right-handed system)
+        const binormal = [
+          tangent[1] * normal[2] - tangent[2] * normal[1],
+          tangent[2] * normal[0] - tangent[0] * normal[2],
+          tangent[0] * normal[1] - tangent[1] * normal[0]
+        ];
+
+        // Store orientation matrix for this point (3x3, COLUMN-MAJOR: [normal, binormal, tangent])
+        const offset = i * 9;
+        orientationMatrices[offset + 0] = normal[0];
+        orientationMatrices[offset + 1] = binormal[0];
+        orientationMatrices[offset + 2] = tangent[0];
+        orientationMatrices[offset + 3] = normal[1];
+        orientationMatrices[offset + 4] = binormal[1];
+        orientationMatrices[offset + 5] = tangent[1];
+        orientationMatrices[offset + 6] = normal[2];
+        orientationMatrices[offset + 7] = binormal[2];
+        orientationMatrices[offset + 8] = tangent[2];
+      }
+
+      // Create line connectivity
+      const lineArray = new Uint32Array(numPoints + 1);
+      lineArray[0] = numPoints;
+      for (let i = 0; i < numPoints; i++) {
+        lineArray[i + 1] = i;
+      }
+
+      lines.setData(lineArray);
+
+      // Set up polydata
+      polyData.setPoints(points);
+      polyData.setLines(lines);
+
+      // Add orientation matrices as point data (9 components for 3x3 matrix)
+      // CRITICAL: Must be named "Orientation" for vtkImageCPRMapper to recognize it
+      const orientationData = vtkDataArray.newInstance({
+        name: 'Orientation',
+        numberOfComponents: 9,
+        values: orientationMatrices,
+      });
+      polyData.getPointData().addArray(orientationData);
+
+      console.log(`✅ Converted centerline to VTK PolyData with ${numPoints} points and orientation matrices (rotation: ${(rotationAngle * 180 / Math.PI).toFixed(1)}°)`);
+      return polyData;
+    } catch (error) {
+      console.error('❌ Failed to convert centerline to VTK:', error);
+      throw error;
+    }
+  };
+
+  // Helper function to setup CPR actors on Cornerstone viewports
+  const setupCPRActors = async () => {
+    // Guard against concurrent calls
+    if (isSettingUpCPRRef.current) {
+      console.log('⏭️ Skipping CPR setup - already in progress');
+      return;
+    }
+
+    try {
+      isSettingUpCPRRef.current = true;
+      console.log('🔄 Setting up CPR actors...');
+
+      if (!currentVolumeRef.current || !centerlineDataRef.current) {
+        console.warn('⚠️ Volume or centerline not available for CPR setup');
+        isSettingUpCPRRef.current = false;
+        return;
+      }
+
+      const renderingEngine = renderingEngineRef.current;
+      if (!renderingEngine) {
+        console.warn('⚠️ Rendering engine not available');
+        isSettingUpCPRRef.current = false;
+        return;
+      }
+
+      // Convert Cornerstone volume to VTK ImageData
+      const vtkImageData = await convertCornerstoneVolumeToVTK(currentVolumeRef.current);
+
+      // Get current rotation angle
+      const rotationAngle = cprRotationAngleRef.current;
+
+      // Clear any existing CPR actors
+      cprActorsRef.current.forEach(({ actor, viewportId }) => {
+        const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
+        if (viewport) {
+          try {
+            viewport.removeActors([`cprActor_${viewportId}`]);
+          } catch (e) {
+            console.warn('Failed to remove existing CPR actor:', e);
+          }
+        }
+      });
+      cprActorsRef.current = [];
+
+      // Create CPR actors ONLY for sagittal and coronal (axial stays as cross-section)
+      // Use straightened mode with orientation tensors for rotation support
+      const viewportConfigs = [
+        { id: 'sagittal', mode: 'straightened', cprWidth: 50, rotationOffset: 0 },  // 50mm width - zoomed to aorta only
+        { id: 'coronal', mode: 'straightened', cprWidth: 50, rotationOffset: Math.PI / 2 }
+      ];
+
+      // First pass: Create all mappers and actors
+      const setupData: Array<{ config: any; viewport: any; mapper: any; actor: any }> = [];
+
+      for (const config of viewportConfigs) {
+        const viewport = renderingEngine.getViewport(config.id) as Types.IVolumeViewport;
+        if (!viewport) {
+          console.warn(`⚠️ Viewport ${config.id} not found`);
+          continue;
+        }
+
+        // Calculate rotation angle for this viewport (base rotation + offset for orthogonal views)
+        const currentRotation = cprRotationAngleRef.current;
+        const viewportRotation = currentRotation + config.rotationOffset;
+
+        // CRITICAL: Create SEPARATE centerline WITHOUT rotation in orientation matrices
+        // Orientation matrices provide smooth parallel transport only
+        const viewportCenterline = convertCenterlineToVTKPolyData(centerlineDataRef.current, 0);
+
+        // Create CPR mapper
+        const mapper = vtkImageCPRMapper.newInstance();
+        mapper.setBackgroundColor(0, 0, 0, 0); // Transparent background
+
+        // Use straightened mode with orientation tensors
+        mapper.useStraightenedMode();
+
+        // Set image data and centerline (orientation matrices for smooth parallel transport)
+        mapper.setImageData(vtkImageData);
+        mapper.setCenterlineData(viewportCenterline);
+        mapper.setWidth(config.cprWidth);
+
+        // Apply rotation via direction matrix (like TrueCPRViewport)
+        const cos = Math.cos(viewportRotation);
+        const sin = Math.sin(viewportRotation);
+        const directions = new Float32Array([
+          cos, -sin, 0,
+          sin, cos, 0,
+          0, 0, 1
+        ]);
+        mapper.setDirectionMatrix(directions);
+
+        // Force mapper to update
+        mapper.modified();
+
+        console.log(`✅ CPR mapper configured for ${config.id}:`, {
+          mode: config.mode,
+          width: config.cprWidth,
+          rotation: `${(viewportRotation * 180 / Math.PI).toFixed(1)}°`,
+          rotationOffset: `${(config.rotationOffset * 180 / Math.PI).toFixed(1)}°`,
+          height: mapper.getHeight(),
+          centerlinePoints: viewportCenterline.getPoints().getNumberOfPoints()
+        });
+
+        // Create actor
+        const actor = vtkImageSlice.newInstance();
+        actor.setMapper(mapper);
+
+        // Set window/level on actor property
+        const property = actor.getProperty();
+        property.setColorWindow(windowLevel.window);
+        property.setColorLevel(windowLevel.level);
+        property.setInterpolationTypeToLinear();
+
+        setupData.push({ config, viewport, mapper, actor });
+
+        // Store mapper reference for later rotation updates
+        cprActorsRef.current.push({ actor, mapper, viewportId: config.id, config });
+      }
+
+      // Second pass: Add actors to viewports
+      for (const { config, viewport, actor } of setupData) {
+        // CRITICAL: Hide all volume actors before adding CPR actor
+        // Otherwise the volume will render on top of the CPR
+        const allActors = viewport.getActors();
+        allActors.forEach((actorEntry: any) => {
+          if (actorEntry.actor && typeof actorEntry.actor.setVisibility === 'function') {
+            actorEntry.actor.setVisibility(false);
+            console.log(`  🙈 Hid volume actor in ${config.id}`);
+          }
+        });
+
+        // Add actor to Cornerstone viewport
+        const actorUID = `cprActor_${config.id}`;
+        viewport.addActor({ uid: actorUID, actor });
+
+        // Set up camera for CPR viewing
+        const bounds = actor.getBounds();
+        if (bounds && bounds.length === 6) {
+          const center = [
+            (bounds[0] + bounds[1]) / 2,
+            (bounds[2] + bounds[3]) / 2,
+            (bounds[4] + bounds[5]) / 2
+          ];
+
+          const maxDim = Math.max(
+            bounds[1] - bounds[0],
+            bounds[3] - bounds[2],
+            bounds[5] - bounds[4]
+          );
+
+          // Position camera to look at the CPR reconstruction
+          const cameraConfig = {
+            position: [center[0], center[1], center[2] + maxDim] as Types.Point3,
+            focalPoint: center as Types.Point3,
+            viewUp: [0, 1, 0] as Types.Point3,
+            parallelScale: maxDim / 2
+          };
+
+          viewport.setCamera(cameraConfig);
+        }
+
+        // Render this viewport
+        viewport.render();
+
+        console.log(`✅ Added CPR actor to ${config.id} viewport`);
+      }
+
+      // Capture axial camera reference frame for rotation alignment
+      const axialViewport = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
+      if (axialViewport) {
+        const axialCamera = axialViewport.getCamera();
+        const viewUp = axialCamera.viewUp;
+        const viewPlaneNormal = axialCamera.viewPlaneNormal;
+
+        // Calculate viewRight = viewUp × viewPlaneNormal
+        const viewRight: Types.Point3 = [
+          viewUp[1] * viewPlaneNormal[2] - viewUp[2] * viewPlaneNormal[1],
+          viewUp[2] * viewPlaneNormal[0] - viewUp[0] * viewPlaneNormal[2],
+          viewUp[0] * viewPlaneNormal[1] - viewUp[1] * viewPlaneNormal[0]
+        ];
+
+        axialReferenceFrameRef.current = {
+          viewUp: viewUp as Types.Point3,
+          viewRight,
+          viewPlaneNormal: viewPlaneNormal as Types.Point3
+        };
+
+        console.log('📐 Captured axial reference frame for CPR rotation:', {
+          viewUp,
+          viewRight,
+          viewPlaneNormal
+        });
+      }
+
+      // Direction matrices already set during mapper creation above
+      // Final render all viewports to show CPR
+      renderingEngine.renderViewports(['axial', 'sagittal', 'coronal']);
+      console.log('✅ CPR actors setup complete');
+
+    } catch (error) {
+      console.error('❌ Failed to setup CPR actors:', error);
+    } finally {
+      isSettingUpCPRRef.current = false;
+    }
+  };
+
+  // Update CPR rotation dynamically (like TrueCPRViewport's updateCPROrientations)
+  const updateCPRRotations = (rotationRadians: number) => {
+    if (!cprActorsRef.current || cprActorsRef.current.length === 0) {
+      console.warn('⚠️ No CPR actors available for rotation update');
+      return;
+    }
+
+    console.log(`🔄 Updating CPR rotations to ${(rotationRadians * 180 / Math.PI).toFixed(1)}°`);
+
+    cprActorsRef.current.forEach(({ mapper, viewportId, config }) => {
+      if (!mapper || !config) return;
+
+      // Calculate rotation for this view (base rotation + viewport-specific offset)
+      const viewportRotation = rotationRadians + (config.rotationOffset || 0);
+
+      // Update rotation via direction matrix (like TrueCPRViewport approach)
+      const cos = Math.cos(viewportRotation);
+      const sin = Math.sin(viewportRotation);
+      const directions = new Float32Array([
+        cos, -sin, 0,
+        sin, cos, 0,
+        0, 0, 1
+      ]);
+      mapper.setDirectionMatrix(directions);
+      mapper.modified();
+
+      console.log(`  🔄 Updated ${viewportId}: ${(viewportRotation * 180 / Math.PI).toFixed(1)}° (offset: ${((config.rotationOffset || 0) * 180 / Math.PI).toFixed(1)}°)`);
+
+      // Trigger re-render
+      const renderingEngine = renderingEngineRef.current;
+      if (renderingEngine) {
+        const viewport = renderingEngine.getViewport(viewportId);
+        if (viewport) {
+          viewport.render();
+        }
+      }
+    });
   };
 
   const initializeMPRViewport = async () => {
@@ -425,6 +1331,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       const volume = await volumeLoader.createAndCacheVolume(volumeId, {
         imageIds,
       });
+
+      // Store volume for CPR conversion
+      currentVolumeRef.current = volume;
 
       // Start volume loading (streaming)
       volume.load();
@@ -2170,6 +3079,17 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         }
       });
 
+      // Also update CPR actors if in CPR mode
+      if (renderMode === 'cpr' && cprActorsRef.current.length > 0) {
+        console.log('🎨 Updating CPR actors window/level:', { window, level });
+        cprActorsRef.current.forEach(({ actor }) => {
+          const property = actor.getProperty();
+          property.setColorWindow(window);
+          property.setColorLevel(level);
+        });
+        renderingEngine.renderViewports(viewportIds);
+      }
+
       console.log(`📊 Applied W/L: Window=${window}, Level=${level}`);
     } catch (error) {
       console.warn('Window/Level error:', error);
@@ -2353,7 +3273,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   useEffect(() => {
     if (currentStage !== WorkflowStage.ANNULUS_DEFINITION ||
         !centerlineDataRef.current ||
-        !renderingEngineRef.current) {
+        !renderingEngineRef.current ||
+        renderMode === 'cpr') {  // Skip scroll handler in CPR mode
       return;
     }
 
@@ -2560,7 +3481,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       console.log('🧹 Removing continuous centerline scroll handler (annulus definition)');
       axialElement.removeEventListener('wheel', handleWheel, { capture: true });
     };
-  }, [currentStage, renderingEngineRef.current, centerlineDataRef.current]);
+  }, [currentStage, renderingEngineRef.current, centerlineDataRef.current, renderMode]);
 
   // ============================================================================
   // Continuous Centerline Scrolling for Measurements Stage
@@ -2571,7 +3492,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     if (currentStage !== WorkflowStage.MEASUREMENTS ||
         !centerlineDataRef.current ||
         !renderingEngineRef.current ||
-        !lockedFocalPointRef.current) {
+        !lockedFocalPointRef.current ||
+        renderMode === 'cpr') {  // Skip scroll handler in CPR mode
       return;
     }
 
@@ -2780,7 +3702,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       console.log('🧹 Removing continuous centerline scroll handler');
       axialElement.removeEventListener('wheel', handleWheel, { capture: true });
     };
-  }, [currentStage, renderingEngineRef.current, centerlineDataRef.current, lockedFocalPointRef.current]);
+  }, [currentStage, renderingEngineRef.current, centerlineDataRef.current, lockedFocalPointRef.current, renderMode]);
 
   // ============================================================================
   // Cleanup Annulus Reference Lines when leaving Measurements Stage

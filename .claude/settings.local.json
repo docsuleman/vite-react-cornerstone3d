@@ -28,7 +28,10 @@
       "WebSearch",
       "WebFetch(domain:www.cornerstonejs.org)",
       "Bash(claude mcp add:*)",
-      "Bash(claude mcp:*)"
+      "Bash(claude mcp:*)",
+      "Bash(for:*)",
+      "Bash(do echo \"=== $file ===\")",
+      "Bash(done)"
     ],
     "deny": []
   }

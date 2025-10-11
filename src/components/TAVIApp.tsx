@@ -3,7 +3,7 @@ import { FaUser, FaStethoscope, FaEye, FaRuler, FaCog, FaChevronRight, FaCheck, 
 import PatientSearch from './PatientSearch';
 // import HybridCPRViewport from './HybridCPRViewport'; // Disabled - ImageCPRMapper not suitable for data extraction
 import CornerstoneCPRViewport from './CornerstoneCPRViewport';
-// import TriViewCPRViewport from './TriViewCPRViewport'; // Replaced with pure Cornerstone3D CPR approach
+import TriViewCPRViewport from './TriViewCPRViewport'; // Pure VTK.js CPR with working rotation
 import TrueCPRViewport from './TrueCPRViewport'; // Fixed volume loading with voxelManager approach
 import ProperMPRViewport from './ProperMPRViewport';
 import { useWorkflowState } from '../hooks/useWorkflowState';
@@ -16,8 +16,9 @@ interface TAVIAppProps {
 
 const TAVIApp: React.FC<TAVIAppProps> = () => {
   const [showPatientSearch, setShowPatientSearch] = useState(false);
+  const [viewType, setViewType] = useState<'mpr' | 'cpr'>('mpr'); // Toggle between MPR and CPR views
   const { state, actions, canAdvanceToStage, getCurrentStageProgress, getStageTitle } = useWorkflowState();
-  
+
 
   useEffect(() => {
     // Initialize the workflow with patient selection
@@ -217,10 +218,41 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
         )}
       </div>
 
+      {/* View Type Selector - Only show when patient is loaded and not in PATIENT_SELECTION stage */}
+      {state.patientInfo && state.currentStage !== WorkflowStage.PATIENT_SELECTION && state.rootPoints.length >= 3 && (
+        <div className="px-6 py-4 border-b border-slate-700">
+          <h4 className="text-sm font-semibold mb-2 text-slate-300">Viewport Mode</h4>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setViewType('mpr')}
+              className={`flex-1 px-3 py-2 text-sm rounded transition-colors ${
+                viewType === 'mpr'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+              }`}
+            >
+              <div className="font-medium">Standard MPR</div>
+              <div className="text-xs opacity-75">Multiplanar</div>
+            </button>
+            <button
+              onClick={() => setViewType('cpr')}
+              className={`flex-1 px-3 py-2 text-sm rounded transition-colors ${
+                viewType === 'cpr'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+              }`}
+            >
+              <div className="font-medium">CPR View</div>
+              <div className="text-xs opacity-75">Straightened</div>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Tools Section */}
       <div className="flex-1 p-6 overflow-y-auto">
         <h4 className="text-lg font-semibold mb-4 text-slate-200">Available Tools</h4>
-        
+
         <div className="space-y-3">
           {state.currentStage === WorkflowStage.ROOT_DEFINITION && (
             <button className="w-full p-4 bg-blue-600 hover:bg-blue-700 rounded-lg flex items-center gap-3 transition-colors text-left">
@@ -354,120 +386,121 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             state.currentStage === WorkflowStage.ANNULUS_DEFINITION ||
             state.currentStage === WorkflowStage.MEASUREMENTS) && state.patientInfo ? (
         <ProperMPRViewport
-          patientInfo={state.patientInfo}
-          currentStage={state.currentStage}
-          existingSpheres={state.rootPoints.map((point, index) => ({
-            id: point.id,
-            pos: point.position as [number, number, number],
-            color: index === 0 ? 'yellow' : index === 1 ? 'red' : 'green'
-          }))}
-          onImageLoaded={(imageData) => {
-            console.log('DICOM images loaded for stage:', state.currentStage);
-          }}
-          onSpherePositionsUpdate={(spheres) => {
-            if (spheres.length >= 3) {
-              console.log(`${spheres.length} spheres placed, updating root points`);
-              
-              // Clear existing root points first
-              actions.clearRootPoints();
-              
-              // Map spheres to root points with anatomical types for first 3, extended for rest
-              const rootPointTypes = [RootPointType.LV_OUTFLOW, RootPointType.AORTIC_VALVE, RootPointType.ASCENDING_AORTA];
-              
-              spheres.forEach((sphere, index) => {
-                const rootPoint = {
-                  id: sphere.id,
-                  position: sphere.pos,
-                  type: index < 3 ? rootPointTypes[index] : RootPointType.EXTENDED,
-                  timestamp: Date.now()
-                };
-                actions.addRootPoint(rootPoint);
-              });
-              
-              console.log(`Root definition updated with ${spheres.length} points`);
-            }
-          }}
-          onCuspDotsUpdate={async (dots) => {
-            if (dots.length === 3) {
-              console.log('3 cusp nadir dots placed in MPR, updating annulus points');
-              
-              // Clear existing annulus points first
-              actions.clearAnnulusPoints();
-              
-              // Map cusp dots to annulus points with proper type conversion
-              const cuspTypeMapping = {
-                'left': 'left_coronary_cusp',
-                'right': 'right_coronary_cusp', 
-                'non-coronary': 'non_coronary_cusp'
-              };
-              
-              const annulusPoints: any[] = [];
-              
-              dots.forEach((dot) => {
-                const annulusPoint = {
-                  id: dot.id,
-                  position: dot.pos,
-                  type: cuspTypeMapping[dot.cuspType] || dot.cuspType,
-                  timestamp: Date.now()
-                };
-                actions.addAnnulusPoint(annulusPoint);
-                annulusPoints.push(annulusPoint);
-              });
-              
-              // Calculate annular plane and measurements from the 3 cusp points
-              try {
-                const { AnnulusCalculator } = await import('../utils/AnnulusCalculator');
-                const annularPlane = AnnulusCalculator.calculateAnnularPlane(annulusPoints);
-                actions.setAnnularPlane(annularPlane);
-                
-                // Calculate initial annulus measurements
-                const area = AnnulusCalculator.calculateAnnulusArea(annulusPoints);
-                const perimeter = AnnulusCalculator.calculateAnnulusPerimeter(annulusPoints);
-                const diameter = AnnulusCalculator.calculateAnnulusDiameter(annulusPoints);
-                
-                const annulusMeasurements = {
-                  area: area,
-                  perimeter: perimeter,
-                  areaDerivedDiameter: Math.sqrt(4 * area / Math.PI), // Diameter from area
-                  perimeterDerivedDiameter: perimeter / Math.PI, // Diameter from perimeter
-                  polygonPoints: annulusPoints.map(p => p.position),
-                  timestamp: Date.now()
-                };
-                
-                actions.updateMeasurement({ annulus: annulusMeasurements });
-                
-                // Modify centerline to be perpendicular to annular plane
-                const { CenterlineModifier } = await import('../utils/CenterlineModifier');
-                const modifiedCenterline = CenterlineModifier.modifyCenterlineWithAnnulusPlane(
-                  state.rootPoints.map(p => ({ x: p.position[0], y: p.position[1], z: p.position[2], type: p.type })),
-                  annularPlane
-                );
-                
-                // Update centerline data in workflow state
-                const centerlineData = {
-                  position: new Float32Array(modifiedCenterline.flatMap(p => [p.x, p.y, p.z])),
-                  orientation: new Float32Array(modifiedCenterline.length * 3), // Will be calculated as needed
-                  length: modifiedCenterline.length,
-                  generatedFrom: state.rootPoints
-                };
-                
-                actions.setCenterline(centerlineData);
-                
-                console.log('📐 Annular plane calculated from MPR:', annularPlane);
-                console.log('📏 Annulus measurements calculated:', annulusMeasurements);
-                console.log('🔄 Centerline modified to be perpendicular to annular plane (MPR):', {
-                  originalPoints: modifiedCenterline.length,
-                  storedLength: centerlineData.length,
-                  positionArrayLength: centerlineData.position.length
+            renderMode={viewType}
+            patientInfo={state.patientInfo}
+            currentStage={state.currentStage}
+            existingSpheres={state.rootPoints.map((point, index) => ({
+              id: point.id,
+              pos: point.position as [number, number, number],
+              color: index === 0 ? 'yellow' : index === 1 ? 'red' : 'green'
+            }))}
+            onImageLoaded={(imageData) => {
+              console.log('DICOM images loaded for stage:', state.currentStage);
+            }}
+            onSpherePositionsUpdate={(spheres) => {
+              if (spheres.length >= 3) {
+                console.log(`${spheres.length} spheres placed, updating root points`);
+
+                // Clear existing root points first
+                actions.clearRootPoints();
+
+                // Map spheres to root points with anatomical types for first 3, extended for rest
+                const rootPointTypes = [RootPointType.LV_OUTFLOW, RootPointType.AORTIC_VALVE, RootPointType.ASCENDING_AORTA];
+
+                spheres.forEach((sphere, index) => {
+                  const rootPoint = {
+                    id: sphere.id,
+                    position: sphere.pos,
+                    type: index < 3 ? rootPointTypes[index] : RootPointType.EXTENDED,
+                    timestamp: Date.now()
+                  };
+                  actions.addRootPoint(rootPoint);
                 });
-                console.log('✅ Annulus definition complete with 3 cusp nadir points');
-              } catch (error) {
-                console.error('Failed to calculate annular plane:', error);
-                actions.addError('Failed to calculate annular plane from cusp points');
+
+                console.log(`Root definition updated with ${spheres.length} points`);
               }
-            }
-          }}
-        />
+            }}
+            onCuspDotsUpdate={async (dots) => {
+              if (dots.length === 3) {
+                console.log('3 cusp nadir dots placed in MPR, updating annulus points');
+
+                // Clear existing annulus points first
+                actions.clearAnnulusPoints();
+
+                // Map cusp dots to annulus points with proper type conversion
+                const cuspTypeMapping = {
+                  'left': 'left_coronary_cusp',
+                  'right': 'right_coronary_cusp',
+                  'non-coronary': 'non_coronary_cusp'
+                };
+
+                const annulusPoints: any[] = [];
+
+                dots.forEach((dot) => {
+                  const annulusPoint = {
+                    id: dot.id,
+                    position: dot.pos,
+                    type: cuspTypeMapping[dot.cuspType] || dot.cuspType,
+                    timestamp: Date.now()
+                  };
+                  actions.addAnnulusPoint(annulusPoint);
+                  annulusPoints.push(annulusPoint);
+                });
+
+                // Calculate annular plane and measurements from the 3 cusp points
+                try {
+                  const { AnnulusCalculator } = await import('../utils/AnnulusCalculator');
+                  const annularPlane = AnnulusCalculator.calculateAnnularPlane(annulusPoints);
+                  actions.setAnnularPlane(annularPlane);
+
+                  // Calculate initial annulus measurements
+                  const area = AnnulusCalculator.calculateAnnulusArea(annulusPoints);
+                  const perimeter = AnnulusCalculator.calculateAnnulusPerimeter(annulusPoints);
+                  const diameter = AnnulusCalculator.calculateAnnulusDiameter(annulusPoints);
+
+                  const annulusMeasurements = {
+                    area: area,
+                    perimeter: perimeter,
+                    areaDerivedDiameter: Math.sqrt(4 * area / Math.PI), // Diameter from area
+                    perimeterDerivedDiameter: perimeter / Math.PI, // Diameter from perimeter
+                    polygonPoints: annulusPoints.map(p => p.position),
+                    timestamp: Date.now()
+                  };
+
+                  actions.updateMeasurement({ annulus: annulusMeasurements });
+
+                  // Modify centerline to be perpendicular to annular plane
+                  const { CenterlineModifier } = await import('../utils/CenterlineModifier');
+                  const modifiedCenterline = CenterlineModifier.modifyCenterlineWithAnnulusPlane(
+                    state.rootPoints.map(p => ({ x: p.position[0], y: p.position[1], z: p.position[2], type: p.type })),
+                    annularPlane
+                  );
+
+                  // Update centerline data in workflow state
+                  const centerlineData = {
+                    position: new Float32Array(modifiedCenterline.flatMap(p => [p.x, p.y, p.z])),
+                    orientation: new Float32Array(modifiedCenterline.length * 3), // Will be calculated as needed
+                    length: modifiedCenterline.length,
+                    generatedFrom: state.rootPoints
+                  };
+
+                  actions.setCenterline(centerlineData);
+
+                  console.log('📐 Annular plane calculated from MPR:', annularPlane);
+                  console.log('📏 Annulus measurements calculated:', annulusMeasurements);
+                  console.log('🔄 Centerline modified to be perpendicular to annular plane (MPR):', {
+                    originalPoints: modifiedCenterline.length,
+                    storedLength: centerlineData.length,
+                    positionArrayLength: centerlineData.position.length
+                  });
+                  console.log('✅ Annulus definition complete with 3 cusp nadir points');
+                } catch (error) {
+                  console.error('Failed to calculate annular plane:', error);
+                  actions.addError('Failed to calculate annular plane from cusp points');
+                }
+              }
+            }}
+          />
       ) : (
         <div className="h-full flex items-center justify-center">
           <div className="text-center text-gray-400">

@@ -15,7 +15,13 @@ import {
   annotation,
   addTool,
   init as toolsInit,
+  ZoomTool,
+  PanTool,
+  StackScrollMouseWheelTool,
+  WindowLevelTool,
 } from "@cornerstonejs/tools";
+import { FixedCrosshairTool } from '../customTools/FixedCrosshairTool';
+import vtkImageData from '@kitware/vtk.js/Common/DataModel/ImageData';
 import vtkImageCPRMapper from '@kitware/vtk.js/Rendering/Core/ImageCPRMapper';
 import { ProjectionMode } from '@kitware/vtk.js/Rendering/Core/ImageCPRMapper/Constants';
 import vtkImageSlice from '@kitware/vtk.js/Rendering/Core/ImageSlice';
@@ -923,29 +929,29 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
     
     // Setup viewports - mix of true cross-sections and CPR with wider coverage
     const viewports = [
-      { 
-        ref: cprMainRef, 
+      {
+        ref: cprMainRef,
         id: 'cpr-main',
         title: 'Cross Section (Orthographic)',
         orientation: CornerstoneEnums.OrientationAxis.AXIAL,
-        type: 'orthographic',  // True cross-section like before
+        type: 'orthographic',  // True cross-section
         cprWidth: 150  // Increased width for better coverage
       },
-      { 
-        ref: cprLongRef, 
-        id: 'cpr-longitudinal', 
-        title: 'CPR Longitudinal (Stretched)',
+      {
+        ref: cprLongRef,
+        id: 'cpr-longitudinal',
+        title: 'CPR Longitudinal (Straightened)',
         orientation: CornerstoneEnums.OrientationAxis.SAGITTAL,
-        mode: 'stretched',  // Keep this working CPR
+        mode: 'straightened',  // STRAIGHTENED mode - flattens the curved vessel
         type: 'cpr',
         cprWidth: 150  // Increased width to reduce cropping
       },
-      { 
-        ref: cprCrossRef, 
+      {
+        ref: cprCrossRef,
         id: 'cpr-cross',
-        title: 'CPR Long Axis (Side View)',
+        title: 'CPR Long Axis (Side View - Straightened)',
         orientation: CornerstoneEnums.OrientationAxis.CORONAL,
-        mode: 'stretched',  // Same as middle but rotated camera
+        mode: 'straightened',  // STRAIGHTENED mode - same as longitudinal but rotated
         type: 'cpr',
         cprWidth: 150,  // Increased width to reduce cropping
         cprView: 'side'  // Flag for side view camera
@@ -2041,7 +2047,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
             True CPR: Longitudinal
           </div>
           <div className="absolute bottom-2 left-2 z-10 bg-black bg-opacity-70 text-teal-300 text-[10px] px-2 py-1 rounded">
-            Stretched CPR mode
+            Straightened CPR mode
           </div>
           {/* Green indicator for this view */}
           <div className="absolute top-2 right-2 z-10 w-4 h-4 bg-green-500 border border-white rounded" title="Green crosshair line"></div>
@@ -2109,7 +2115,7 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
             True CPR: Side View
           </div>
           <div className="absolute bottom-2 left-2 z-10 bg-black bg-opacity-70 text-teal-300 text-[10px] px-2 py-1 rounded">
-            Stretched CPR mode
+            Straightened CPR mode
           </div>
           {/* Red indicator for this view */}
           <div className="absolute top-2 right-2 z-10 w-4 h-4 bg-red-500 border border-white rounded" title="Red crosshair line"></div>

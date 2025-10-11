@@ -53,7 +53,7 @@ export class CenterlineModifier {
     console.log('📍 New AV point (annulus center):', newAVPoint);
 
     // Create modified centerline that ensures perpendicularity to annular plane
-    const modifiedCenterline: ModifiedCenterlinePoint[] = [];
+    let modifiedCenterline: ModifiedCenterlinePoint[] = [];
 
     // Segment 1: LV Outflow to Annulus Center
     const segment1Length = this.calculateDistance(lvOutflowPoint, newAVPoint);
@@ -142,6 +142,17 @@ export class CenterlineModifier {
       totalLength: segment1Length + segment2Length
     });
 
+    // Apply smoothing at the annular plane junction to reduce stitch artifacts
+    const annulusPlaneIndex = modifiedCenterline.findIndex(p => p.isAnnulusPlane);
+    if (annulusPlaneIndex > 0) {
+      modifiedCenterline = this.smoothCenterlineJunction(
+        modifiedCenterline,
+        annulusPlaneIndex,
+        10 // Smoothing window of 10 points (~5 before and ~5 after junction)
+      );
+      console.log('✅ Applied Catmull-Rom smoothing at annular plane junction');
+    }
+
     return modifiedCenterline;
   }
 
@@ -207,12 +218,88 @@ export class CenterlineModifier {
   }
 
   /**
+   * Smooth the centerline junction using Catmull-Rom spline interpolation
+   * to reduce stitching artifacts at the annular plane
+   */
+  public static smoothCenterlineJunction(
+    centerline: ModifiedCenterlinePoint[],
+    junctionIndex: number,
+    smoothingWindow: number
+  ): ModifiedCenterlinePoint[] {
+
+    const halfWindow = Math.floor(smoothingWindow / 2);
+    const startIdx = Math.max(0, junctionIndex - halfWindow);
+    const endIdx = Math.min(centerline.length - 1, junctionIndex + halfWindow);
+
+    console.log(`🔄 Smoothing centerline junction at index ${junctionIndex} (window: ${startIdx} to ${endIdx})`);
+
+    // Create a copy of the centerline
+    const smoothed = [...centerline];
+
+    // Get control points for Catmull-Rom spline
+    const p0Idx = Math.max(0, startIdx - 1);
+    const p1Idx = startIdx;
+    const p2Idx = endIdx;
+    const p3Idx = Math.min(centerline.length - 1, endIdx + 1);
+
+    const p0 = centerline[p0Idx];
+    const p1 = centerline[p1Idx];
+    const p2 = centerline[p2Idx];
+    const p3 = centerline[p3Idx];
+
+    // Interpolate points between startIdx and endIdx using Catmull-Rom
+    for (let i = startIdx; i <= endIdx; i++) {
+      const t = (i - startIdx) / (endIdx - startIdx);
+
+      // Catmull-Rom basis functions
+      const t2 = t * t;
+      const t3 = t2 * t;
+
+      smoothed[i] = {
+        x: 0.5 * (
+          (2 * p1.x) +
+          (-p0.x + p2.x) * t +
+          (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 +
+          (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3
+        ),
+        y: 0.5 * (
+          (2 * p1.y) +
+          (-p0.y + p2.y) * t +
+          (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
+          (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3
+        ),
+        z: 0.5 * (
+          (2 * p1.z) +
+          (-p0.z + p2.z) * t +
+          (2 * p0.z - 5 * p1.z + 4 * p2.z - p3.z) * t2 +
+          (-p0.z + 3 * p1.z - 3 * p2.z + p3.z) * t3
+        ),
+        isAnnulusPlane: centerline[i].isAnnulusPlane,
+        distanceFromStart: centerline[i].distanceFromStart
+      };
+    }
+
+    console.log('✅ Centerline junction smoothed');
+
+    // CRITICAL: Recalculate cumulative arc length after smoothing
+    // because the 3D positions have changed
+    smoothed[0].distanceFromStart = 0;
+    for (let i = 1; i < smoothed.length; i++) {
+      const dist = this.calculateDistance(smoothed[i - 1], smoothed[i]);
+      smoothed[i].distanceFromStart = smoothed[i - 1].distanceFromStart! + dist;
+    }
+
+    console.log('✅ Recalculated arc lengths after smoothing');
+    return smoothed;
+  }
+
+  /**
    * Calculate distance between two 3D points
    */
   private static calculateDistance(p1: { x: number; y: number; z: number }, p2: { x: number; y: number; z: number }): number {
     return Math.sqrt(
-      Math.pow(p2.x - p1.x, 2) + 
-      Math.pow(p2.y - p1.y, 2) + 
+      Math.pow(p2.x - p1.x, 2) +
+      Math.pow(p2.y - p1.y, 2) +
       Math.pow(p2.z - p1.z, 2)
     );
   }
