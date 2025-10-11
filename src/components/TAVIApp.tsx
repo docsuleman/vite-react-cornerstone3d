@@ -87,32 +87,32 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
   };
 
   const renderWorkflowHeader = () => (
-    <div className="bg-gradient-to-r from-slate-800 to-slate-900 text-white border-b border-slate-700">
+    <div className="bg-gradient-to-r from-slate-800 to-slate-900 text-white border-b border-slate-700 flex-shrink-0">
       {/* Main Header */}
-      <div className="px-6 py-4">
+      <div className="px-6 py-3">
         <div className="flex justify-between items-center">
-          <div className="flex items-center gap-4">
-            <div className="bg-blue-600 p-3 rounded-xl">
-              <FaStethoscope className="text-2xl text-white" />
+          <div className="flex items-center gap-3">
+            <div className="bg-blue-600 p-2 rounded-lg">
+              <FaStethoscope className="text-xl text-white" />
             </div>
             <div>
-              <h1 className="text-3xl font-bold text-white">TAVI Planning Workstation</h1>
-              <p className="text-slate-300 text-sm mt-1">Transcatheter Aortic Valve Implantation</p>
+              <h1 className="text-2xl font-bold text-white">TAVI Planning Workstation</h1>
+              <p className="text-slate-300 text-xs">Transcatheter Aortic Valve Implantation</p>
             </div>
           </div>
-          
+
           {state.patientInfo && (
-            <div className="bg-slate-700 rounded-lg px-4 py-3 text-right">
-              <div className="font-semibold text-lg">{state.patientInfo.patientName || 'Unknown Patient'}</div>
-              <div className="text-slate-300 text-sm">ID: {state.patientInfo.patientID || 'Unknown ID'}</div>
+            <div className="bg-slate-700 rounded-lg px-3 py-2 text-right">
+              <div className="font-semibold text-base">{state.patientInfo.patientName || 'Unknown Patient'}</div>
+              <div className="text-slate-300 text-xs">ID: {state.patientInfo.patientID || 'Unknown ID'}</div>
             </div>
           )}
         </div>
       </div>
 
-      {/* Workflow Progress */}
-      <div className="px-6 pb-4">
-        <div className="grid grid-cols-5 gap-3">
+      {/* Workflow Progress - FIXED HEIGHT to prevent viewport shifting */}
+      <div className="px-6 pb-3">
+        <div className="grid grid-cols-5 gap-2">
           {Object.values(WorkflowStage).map((stage, index) => {
             const status = getStageStatus(stage);
             const progress = state.currentStage === stage ? getCurrentStageProgress() : 0;
@@ -120,39 +120,39 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             return (
               <div key={stage} className="relative">
                 <div
-                  className={`p-4 rounded-lg border-2 transition-all duration-200 cursor-pointer ${getStageColor(status)}`}
+                  className={`p-2 rounded-lg border-2 transition-all duration-200 cursor-pointer ${getStageColor(status)} min-h-[70px] flex flex-col`}
                   onClick={() => handleStageChange(stage)}
                 >
                   {/* Stage Header */}
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      {getStageIcon(stage)}
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-1">
+                      <div className="text-sm">{getStageIcon(stage)}</div>
                       <span className="text-xs font-semibold">Step {index + 1}</span>
                     </div>
-                    {status === 'completed' && <FaCheck className="text-white" />}
-                    {status === 'locked' && <FaExclamationTriangle className="text-gray-400" />}
+                    {status === 'completed' && <FaCheck className="text-white text-xs" />}
+                    {status === 'locked' && <FaExclamationTriangle className="text-gray-400 text-xs" />}
                   </div>
-                  
-                  {/* Stage Title */}
-                  <div className="text-sm font-medium leading-tight">
+
+                  {/* Stage Title - SINGLE LINE with ellipsis */}
+                  <div className="text-xs font-medium leading-tight truncate" title={getStageTitle(stage)}>
                     {getStageTitle(stage)}
                   </div>
-                  
+
                   {/* Progress Bar */}
                   {status === 'current' && progress > 0 && (
-                    <div className="mt-2 w-full bg-blue-800 rounded-full h-1.5">
-                      <div 
-                        className="bg-white h-1.5 rounded-full transition-all duration-300"
+                    <div className="mt-auto pt-1 w-full bg-blue-800 rounded-full h-1">
+                      <div
+                        className="bg-white h-1 rounded-full transition-all duration-300"
                         style={{ width: `${progress}%` }}
                       />
                     </div>
                   )}
                 </div>
-                
+
                 {/* Arrow */}
                 {index < Object.values(WorkflowStage).length - 1 && (
-                  <div className="absolute top-1/2 -right-1.5 transform -translate-y-1/2 z-10">
-                    <FaChevronRight className="text-slate-600 text-sm" />
+                  <div className="absolute top-1/2 -right-1 transform -translate-y-1/2 z-10">
+                    <FaChevronRight className="text-slate-600 text-xs" />
                   </div>
                 )}
               </div>

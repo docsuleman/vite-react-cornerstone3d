@@ -20,6 +20,15 @@ class FixedCrosshairTool extends BaseTool {
   private isDragging: boolean = false;
   private dragStartAngle: number = 0;
 
+  // Center dot dragging state
+  private isCenterDragging: boolean = false;
+  private dragStartWorldPos: Types.Point3 | null = null;
+  private valveSphereUpdateCallback: ((newPosition: Types.Point3) => void) | null = null;
+  private annularPlaneDefined: boolean = false; // True after 3 cusp dots are placed
+  private centerDraggingDisabled: boolean = false; // Disable center dragging (e.g., during measurements)
+  private annulusReferencePosition: Types.Point3 | null = null; // Reference position for distance measurement (annulus plane)
+  private showDistanceFromAnnulus: boolean = false; // Show distance measurement during measurements stage
+
   // Color scheme per viewport
   private redColor = 'rgba(255, 50, 50, 0.7)'; // Red with 70% opacity - for coronal and axial horizontal
   private greenColor = 'rgba(50, 255, 50, 0.7)'; // Green with 70% opacity - for sagittal and axial vertical
@@ -58,6 +67,39 @@ class FixedCrosshairTool extends BaseTool {
    */
   getRotationAngle(): number {
     return this.rotationAngle;
+  }
+
+  /**
+   * Set callback for valve sphere position updates (called when center dot is dragged)
+   */
+  setValveSphereUpdateCallback(callback: (newPosition: Types.Point3) => void) {
+    this.valveSphereUpdateCallback = callback;
+  }
+
+  /**
+   * Set whether the annular plane is defined (3 cusp dots placed)
+   * When true, the center dot is locked and cannot be dragged
+   */
+  setAnnularPlaneDefined(isDefined: boolean) {
+    this.annularPlaneDefined = isDefined;
+    console.log(`🔒 Center dot ${isDefined ? 'LOCKED' : 'UNLOCKED'} (annular plane ${isDefined ? 'defined' : 'not defined'})`);
+  }
+
+  /**
+   * Disable/enable center dragging (for measurements stage - only scroll along centerline)
+   */
+  setCenterDraggingDisabled(disabled: boolean) {
+    this.centerDraggingDisabled = disabled;
+    console.log(`${disabled ? '🔒' : '🔓'} Center dragging ${disabled ? 'DISABLED' : 'ENABLED'} (measurements: ${disabled})`);
+  }
+
+  /**
+   * Set annulus reference position and enable distance display (for measurements stage)
+   */
+  setAnnulusReference(position: Types.Point3 | null) {
+    this.annulusReferencePosition = position ? [...position] as Types.Point3 : null;
+    this.showDistanceFromAnnulus = position !== null;
+    console.log(`📏 Distance measurement ${position ? 'ENABLED' : 'DISABLED'} at:`, position);
   }
 
   /**
@@ -277,8 +319,7 @@ class FixedCrosshairTool extends BaseTool {
           horizontalLineLeft.setAttribute('stroke', horizontalColor);
           horizontalLineLeft.setAttribute('stroke-width', lineWidth.toString());
           horizontalLineLeft.setAttribute('shape-rendering', 'geometricPrecision');
-          horizontalLineLeft.setAttribute('cursor', 'grab');
-          horizontalLineLeft.style.pointerEvents = 'stroke'; // Make line interactive
+          horizontalLineLeft.style.pointerEvents = 'none'; // Lines are NOT interactive
 
           // Draw horizontal line with gap (RIGHT side) - ALL VIEWS
           const horizontalLineRight = document.createElementNS(svgns, 'line');
@@ -290,8 +331,7 @@ class FixedCrosshairTool extends BaseTool {
           horizontalLineRight.setAttribute('stroke', horizontalColor);
           horizontalLineRight.setAttribute('stroke-width', lineWidth.toString());
           horizontalLineRight.setAttribute('shape-rendering', 'geometricPrecision');
-          horizontalLineRight.setAttribute('cursor', 'grab');
-          horizontalLineRight.style.pointerEvents = 'stroke'; // Make line interactive
+          horizontalLineRight.style.pointerEvents = 'none'; // Lines are NOT interactive
 
           // Draw end markers for horizontal line
           // Left end: filled circle at the START of left line
@@ -303,7 +343,11 @@ class FixedCrosshairTool extends BaseTool {
           horizontalLeftMarker.setAttribute('fill', horizontalColor);
           horizontalLeftMarker.setAttribute('stroke', 'rgba(255, 255, 255, 0.8)');
           horizontalLeftMarker.setAttribute('stroke-width', '1');
-          horizontalLeftMarker.style.pointerEvents = 'none';
+          horizontalLeftMarker.style.cursor = 'grab';
+          horizontalLeftMarker.style.pointerEvents = 'all'; // Markers ARE interactive for rotation
+
+          // Add direct mouse event listener for marker
+          this.addMarkerEventListeners(horizontalLeftMarker, viewport, viewportId);
 
           // Right end: hollow circle at the END of right line
           const horizontalRightMarker = document.createElementNS(svgns, 'circle');
@@ -314,7 +358,11 @@ class FixedCrosshairTool extends BaseTool {
           horizontalRightMarker.setAttribute('fill', 'none');
           horizontalRightMarker.setAttribute('stroke', horizontalColor);
           horizontalRightMarker.setAttribute('stroke-width', '2');
-          horizontalRightMarker.style.pointerEvents = 'none';
+          horizontalRightMarker.style.cursor = 'grab';
+          horizontalRightMarker.style.pointerEvents = 'all'; // Markers ARE interactive for rotation
+
+          // Add direct mouse event listener for marker
+          this.addMarkerEventListeners(horizontalRightMarker, viewport, viewportId);
 
           // Append horizontal lines and markers
           svgLayer.appendChild(horizontalLineLeft);
@@ -347,8 +395,7 @@ class FixedCrosshairTool extends BaseTool {
             verticalLineTop.setAttribute('stroke', verticalColor);
             verticalLineTop.setAttribute('stroke-width', lineWidth.toString());
             verticalLineTop.setAttribute('shape-rendering', 'geometricPrecision');
-            verticalLineTop.setAttribute('cursor', 'grab');
-            verticalLineTop.style.pointerEvents = 'stroke'; // Make line interactive
+            verticalLineTop.style.pointerEvents = 'none'; // Lines are NOT interactive
 
             // Draw vertical line with gap (BOTTOM side)
             const verticalLineBottom = document.createElementNS(svgns, 'line');
@@ -360,8 +407,7 @@ class FixedCrosshairTool extends BaseTool {
             verticalLineBottom.setAttribute('stroke', verticalColor);
             verticalLineBottom.setAttribute('stroke-width', lineWidth.toString());
             verticalLineBottom.setAttribute('shape-rendering', 'geometricPrecision');
-            verticalLineBottom.setAttribute('cursor', 'grab');
-            verticalLineBottom.style.pointerEvents = 'stroke'; // Make line interactive
+            verticalLineBottom.style.pointerEvents = 'none'; // Lines are NOT interactive
 
             // Draw end markers for vertical line
             // Top end: filled circle at the START of top line
@@ -373,7 +419,11 @@ class FixedCrosshairTool extends BaseTool {
             verticalTopMarker.setAttribute('fill', verticalColor);
             verticalTopMarker.setAttribute('stroke', 'rgba(255, 255, 255, 0.8)');
             verticalTopMarker.setAttribute('stroke-width', '1');
-            verticalTopMarker.style.pointerEvents = 'none';
+            verticalTopMarker.style.cursor = 'grab';
+            verticalTopMarker.style.pointerEvents = 'all'; // Markers ARE interactive for rotation
+
+            // Add direct mouse event listener for marker
+            this.addMarkerEventListeners(verticalTopMarker, viewport, viewportId);
 
             // Bottom end: hollow circle at the END of bottom line
             const verticalBottomMarker = document.createElementNS(svgns, 'circle');
@@ -384,7 +434,11 @@ class FixedCrosshairTool extends BaseTool {
             verticalBottomMarker.setAttribute('fill', 'none');
             verticalBottomMarker.setAttribute('stroke', verticalColor);
             verticalBottomMarker.setAttribute('stroke-width', '2');
-            verticalBottomMarker.style.pointerEvents = 'none';
+            verticalBottomMarker.style.cursor = 'grab';
+            verticalBottomMarker.style.pointerEvents = 'all'; // Markers ARE interactive for rotation
+
+            // Add direct mouse event listener for marker
+            this.addMarkerEventListeners(verticalBottomMarker, viewport, viewportId);
 
             // Append vertical lines and markers
             svgLayer.appendChild(verticalLineTop);
@@ -402,10 +456,68 @@ class FixedCrosshairTool extends BaseTool {
           centerSphere.setAttribute('fill', this.centerColor);
           centerSphere.setAttribute('stroke', 'rgba(255, 255, 255, 0.8)'); // Semi-transparent white border
           centerSphere.setAttribute('stroke-width', '1');
-          centerSphere.style.pointerEvents = 'none';
+          centerSphere.style.pointerEvents = 'all'; // Make center sphere interactive
+          centerSphere.style.cursor = this.centerDraggingDisabled ? 'default' : 'grab'; // Show draggable state
+
+          // Add direct event listeners for center sphere dragging
+          this.addCenterSphereEventListeners(centerSphere, viewport, viewportId);
 
           // Append center sphere
           svgLayer.appendChild(centerSphere);
+
+          // Draw distance measurement text if enabled (measurements stage)
+          if (this.showDistanceFromAnnulus && this.annulusReferencePosition) {
+            // Calculate signed distance along centerline (axial normal)
+            // IMPORTANT: Always use axial viewport's normal, not current viewport's normal
+            const axialViewport = renderingEngine.getViewport('axial');
+            const axialNormal = axialViewport.getCamera().viewPlaneNormal; // Direction along centerline
+
+            // Vector from annulus to current position
+            const displacement = [
+              this.fixedPosition[0] - this.annulusReferencePosition[0],
+              this.fixedPosition[1] - this.annulusReferencePosition[1],
+              this.fixedPosition[2] - this.annulusReferencePosition[2]
+            ];
+
+            // Project displacement onto axial normal to get signed distance
+            // Positive = above annulus, Negative = below annulus
+            const signedDistance =
+              displacement[0] * axialNormal[0] +
+              displacement[1] * axialNormal[1] +
+              displacement[2] * axialNormal[2];
+
+            // Format distance text
+            const distanceText = signedDistance >= 0
+              ? `+${signedDistance.toFixed(1)}mm`
+              : `${signedDistance.toFixed(1)}mm`;
+
+            // Create text element with background for better visibility
+            const distanceLabel = document.createElementNS(svgns, 'text');
+            distanceLabel.setAttribute('id', `${viewportId}-fixed-distance`);
+            distanceLabel.style.fill = 'yellow'; // Bright yellow color
+            distanceLabel.style.fontSize = '18px';
+            distanceLabel.style.fontWeight = 'bold';
+            distanceLabel.style.fontFamily = 'monospace';
+            distanceLabel.style.pointerEvents = 'none';
+            distanceLabel.style.userSelect = 'none';
+            distanceLabel.style.textShadow = '2px 2px 4px black, -1px -1px 2px black, 1px -1px 2px black, -1px 1px 2px black'; // Black outline for visibility
+
+            // Position based on viewport type
+            if (viewportId === 'axial') {
+              // Axial: bottom left corner
+              distanceLabel.setAttribute('x', '15');
+              distanceLabel.setAttribute('y', (height - 15).toString());
+              distanceLabel.setAttribute('text-anchor', 'start');
+            } else {
+              // Sagittal/Coronal: above crosshair on left side
+              distanceLabel.setAttribute('x', (clientPoint[0] - 60).toString());
+              distanceLabel.setAttribute('y', (clientPoint[1] - 30).toString());
+              distanceLabel.setAttribute('text-anchor', 'end');
+            }
+
+            distanceLabel.textContent = distanceText;
+            svgLayer.appendChild(distanceLabel);
+          }
 
           drawnCount++;
 
@@ -429,6 +541,203 @@ class FixedCrosshairTool extends BaseTool {
   }
 
   /**
+   * Add direct event listeners to center sphere for dragging
+   */
+  private addCenterSphereEventListeners(sphere: SVGCircleElement, viewport: any, viewportId: string) {
+    sphere.addEventListener('mousedown', (e: MouseEvent) => {
+      // Prevent dragging if disabled (measurements stage)
+      if (this.centerDraggingDisabled) {
+        console.log('⛔ Center dragging disabled (measurements mode)');
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      console.log('🎯 Starting center dot drag');
+      this.isCenterDragging = true;
+      this.dragStartWorldPos = [...this.fixedPosition!] as Types.Point3;
+
+      // Change cursor
+      sphere.style.cursor = 'grabbing';
+
+      const renderingEngine = getRenderingEngine(this.renderingEngineId!);
+      if (!renderingEngine) return;
+
+      // Get axial viewport to determine the axial normal (constraint axis)
+      const axialViewport = renderingEngine.getViewport('axial');
+      const axialNormal = axialViewport ? axialViewport.getCamera().viewPlaneNormal : null;
+
+      // Add global mousemove listener
+      const handleMouseMove = (moveEvent: MouseEvent) => {
+        if (!this.isCenterDragging || !this.renderingEngineId || !this.fixedPosition) {
+          return;
+        }
+
+        const renderingEngine = getRenderingEngine(this.renderingEngineId);
+        if (!renderingEngine) return;
+
+        // Get the viewport where the drag is happening
+        const dragViewport = renderingEngine.getViewport(viewportId);
+        if (!dragViewport) return;
+
+        // Get mouse position relative to viewport
+        const rect = dragViewport.element.getBoundingClientRect();
+        const canvasX = moveEvent.clientX - rect.left;
+        const canvasY = moveEvent.clientY - rect.top;
+
+        // Convert canvas to world coordinates
+        const newWorldPos = dragViewport.canvasToWorld([canvasX, canvasY]) as Types.Point3;
+
+        let finalPosition: Types.Point3;
+
+        if (this.annularPlaneDefined && axialNormal) {
+          // AFTER 3 cusp dots: Constrain movement to axial direction only
+          // Project the movement onto the axial normal
+          const movement = [
+            newWorldPos[0] - this.dragStartWorldPos![0],
+            newWorldPos[1] - this.dragStartWorldPos![1],
+            newWorldPos[2] - this.dragStartWorldPos![2]
+          ];
+
+          // Project movement onto axial normal
+          const projectionOnNormal =
+            movement[0] * axialNormal[0] +
+            movement[1] * axialNormal[1] +
+            movement[2] * axialNormal[2];
+
+          // Move only along the axial normal
+          finalPosition = [
+            this.dragStartWorldPos![0] + axialNormal[0] * projectionOnNormal,
+            this.dragStartWorldPos![1] + axialNormal[1] * projectionOnNormal,
+            this.dragStartWorldPos![2] + axialNormal[2] * projectionOnNormal
+          ] as Types.Point3;
+
+          console.log('🔒 Axial-only movement:', projectionOnNormal.toFixed(2), 'mm');
+        } else {
+          // BEFORE 3 cusp dots: Free movement in all directions
+          finalPosition = newWorldPos;
+          console.log('🆓 Free movement');
+        }
+
+        // Update the fixed position
+        this.fixedPosition = finalPosition;
+
+        // Call the callback if set (to update valve sphere)
+        if (this.valveSphereUpdateCallback) {
+          this.valveSphereUpdateCallback(finalPosition);
+        }
+      };
+
+      // Add global mouseup listener
+      const handleMouseUp = () => {
+        if (this.isCenterDragging) {
+          this.isCenterDragging = false;
+          console.log('✅ Center dot drag complete');
+
+          // Reset cursor
+          sphere.style.cursor = 'grab';
+        }
+
+        // Remove global listeners
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', handleMouseUp);
+      };
+
+      // Add global listeners
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+    });
+  }
+
+  /**
+   * Add direct event listeners to a marker element for rotation
+   */
+  private addMarkerEventListeners(marker: SVGCircleElement, viewport: any, viewportId: string) {
+    marker.addEventListener('mousedown', (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      console.log('🔄 Starting crosshair rotation from marker');
+      this.isDragging = true;
+
+      // Get center point in canvas coordinates
+      const centerCanvas = viewport.worldToCanvas(this.fixedPosition!);
+
+      // Get mouse position relative to viewport
+      const rect = viewport.element.getBoundingClientRect();
+      const canvasX = e.clientX - rect.left;
+      const canvasY = e.clientY - rect.top;
+
+      // Calculate initial angle
+      const angleToClick = Math.atan2(canvasY - centerCanvas[1], canvasX - centerCanvas[0]);
+      this.dragStartAngle = angleToClick - this.rotationAngle;
+
+      // Change cursor to grabbing
+      marker.style.cursor = 'grabbing';
+
+      // Add global mousemove listener
+      const handleMouseMove = (moveEvent: MouseEvent) => {
+        if (!this.isDragging || !this.renderingEngineId || !this.fixedPosition) {
+          return;
+        }
+
+        const renderingEngine = getRenderingEngine(this.renderingEngineId);
+        if (!renderingEngine) return;
+
+        const axialViewport = renderingEngine.getViewport('axial');
+        if (!axialViewport) return;
+
+        // Get center point in canvas coordinates
+        const centerCanvas = axialViewport.worldToCanvas(this.fixedPosition);
+
+        // Get mouse position relative to viewport
+        const rect = axialViewport.element.getBoundingClientRect();
+        const canvasX = moveEvent.clientX - rect.left;
+        const canvasY = moveEvent.clientY - rect.top;
+
+        // Calculate angle from center to current mouse position
+        const currentAngle = Math.atan2(canvasY - centerCanvas[1], canvasX - centerCanvas[0]);
+
+        // Calculate rotation delta
+        const oldRotation = this.rotationAngle;
+        this.rotationAngle = currentAngle - this.dragStartAngle;
+        const deltaAngle = this.rotationAngle - oldRotation;
+
+        // Only update if there's a meaningful change
+        if (Math.abs(deltaAngle) > 0.001) {
+          // Rotate the MPR viewing planes (negate deltaAngle to fix direction)
+          this.rotateMPRPlanes(renderingEngine, 'axial', -deltaAngle);
+        }
+      };
+
+      // Add global mouseup listener
+      const handleMouseUp = () => {
+        if (this.isDragging) {
+          this.isDragging = false;
+          console.log(`✅ Crosshair rotation complete: ${(this.rotationAngle * 180 / Math.PI).toFixed(1)}°`);
+
+          // Reset cursor on all markers
+          const allMarkers = document.querySelectorAll('[id*="-fixed-"][id*="-marker"]');
+          allMarkers.forEach((m) => {
+            (m as HTMLElement).style.cursor = 'grab';
+          });
+        }
+
+        // Remove global listeners
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', handleMouseUp);
+      };
+
+      // Add global listeners
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+    });
+  }
+
+  /**
    * Render the fixed crosshair lines on all viewports
    */
   onSetToolEnabled() {
@@ -446,6 +755,7 @@ class FixedCrosshairTool extends BaseTool {
 
   /**
    * Pre mouse down callback - check if we should handle this event
+   * Only trigger when clicking on a MARKER (circle), not on lines
    */
   preMouseDownCallback = (evt: any) => {
     const { element, currentPoints } = evt.detail;
@@ -464,32 +774,155 @@ class FixedCrosshairTool extends BaseTool {
 
     // Get center point in canvas coordinates
     const centerCanvas = viewport.worldToCanvas(this.fixedPosition);
+    const canvasElement = viewport.getCanvas();
+    const width = canvasElement.clientWidth;
+    const height = canvasElement.clientHeight;
 
-    // Check if click is near the crosshair center (within 150px)
-    const dx = canvas[0] - centerCanvas[0];
-    const dy = canvas[1] - centerCanvas[1];
-    const distance = Math.sqrt(dx * dx + dy * dy);
+    // Calculate marker positions based on current rotation
+    const isLongAxisView = viewportId === 'sagittal' || viewportId === 'coronal';
+    const gapSize = isLongAxisView ? this.gapSizeLongAxis : this.gapSizeShortAxis;
 
-    if (distance < 150) {
-      this.isDragging = true;
-      // Store the initial angle (matching the calculation in mouseDragCallback)
-      this.dragStartAngle = Math.atan2(dy, dx) - this.rotationAngle;
-      console.log('🔄 Starting crosshair rotation');
-      evt.preventDefault();
-      evt.stopPropagation();
+    // Calculate line endpoints
+    const leftLineStart = this.lineMargin + this.endMarkerBuffer;
+    const rightLineEnd = width - this.lineMargin - this.endMarkerBuffer;
+    const topLineStart = this.lineMargin + this.endMarkerBuffer;
+    const bottomLineEnd = height - this.lineMargin - this.endMarkerBuffer;
+
+    // Rotation helper
+    const rotatePoint = (x: number, y: number, cx: number, cy: number, angle: number) => {
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const dx = x - cx;
+      const dy = y - cy;
+      return {
+        x: cx + dx * cos - dy * sin,
+        y: cy + dx * sin + dy * cos
+      };
+    };
+
+    const rotationToApply = viewportId === 'axial' ? this.rotationAngle : 0;
+
+    // Calculate 4 marker positions (rotated if in axial view)
+    const hLineLeftStart = rotatePoint(leftLineStart, centerCanvas[1], centerCanvas[0], centerCanvas[1], rotationToApply);
+    const hLineRightEnd = rotatePoint(rightLineEnd, centerCanvas[1], centerCanvas[0], centerCanvas[1], rotationToApply);
+
+    const markerPositions = [
+      hLineLeftStart, // Left horizontal marker
+      hLineRightEnd,  // Right horizontal marker
+    ];
+
+    // Add vertical markers only for axial view
+    if (!isLongAxisView) {
+      const vLineTopStart = rotatePoint(centerCanvas[0], topLineStart, centerCanvas[0], centerCanvas[1], rotationToApply);
+      const vLineBottomEnd = rotatePoint(centerCanvas[0], bottomLineEnd, centerCanvas[0], centerCanvas[1], rotationToApply);
+      markerPositions.push(vLineTopStart);    // Top vertical marker
+      markerPositions.push(vLineBottomEnd);   // Bottom vertical marker
+    }
+
+    // First check if clicking on center sphere (highest priority)
+    const centerGrabRadius = 10; // Slightly larger than sphere radius (6px)
+    const dxCenter = canvas[0] - centerCanvas[0];
+    const dyCenter = canvas[1] - centerCanvas[1];
+    const distanceToCenter = Math.sqrt(dxCenter * dxCenter + dyCenter * dyCenter);
+
+    if (distanceToCenter <= centerGrabRadius) {
+      // Clicking on center sphere - check if dragging is disabled
+      if (this.centerDraggingDisabled) {
+        console.log('⛔ Center dragging disabled (measurements mode)');
+        return false; // Don't handle this event, let rotation work
+      }
+
+      // Start center drag
+      this.isCenterDragging = true;
+      this.dragStartWorldPos = [...this.fixedPosition] as Types.Point3;
+      console.log('🎯 Starting center dot drag from preMouseDown');
       return true; // We're handling this event
     }
 
-    return false;
+    // Check if click is near any marker (within 15px radius)
+    const markerGrabRadius = 15;
+    for (const markerPos of markerPositions) {
+      const dx = canvas[0] - markerPos.x;
+      const dy = canvas[1] - markerPos.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+
+      if (distance <= markerGrabRadius) {
+        // Clicking on a marker - start rotation
+        this.isDragging = true;
+        const angleToClick = Math.atan2(canvas[1] - centerCanvas[1], canvas[0] - centerCanvas[0]);
+        this.dragStartAngle = angleToClick - this.rotationAngle;
+        console.log('🔄 Starting crosshair rotation from marker');
+        return true; // We're handling this event
+      }
+    }
+
+    return false; // Not on a marker or center, let other tools handle it
   };
 
   /**
-   * Mouse drag callback - handle rotation during drag
+   * Mouse drag callback - handle rotation or center dot dragging
    */
   mouseDragCallback = (evt: any) => {
     const { element, currentPoints, deltaPoints } = evt.detail;
     const canvas = currentPoints.canvas;
 
+    // Handle center dot dragging
+    if (this.isCenterDragging && this.renderingEngineId && this.fixedPosition) {
+      const renderingEngine = getRenderingEngine(this.renderingEngineId);
+      if (!renderingEngine) return false;
+
+      const viewportId = element.getAttribute('data-viewport-uid');
+      const viewport = renderingEngine.getViewport(viewportId);
+      if (!viewport) return false;
+
+      // Convert canvas to world coordinates
+      const newWorldPos = viewport.canvasToWorld([canvas[0], canvas[1]]) as Types.Point3;
+
+      // Get axial viewport to determine the axial normal (constraint axis)
+      const axialViewport = renderingEngine.getViewport('axial');
+      const axialNormal = axialViewport ? axialViewport.getCamera().viewPlaneNormal : null;
+
+      let finalPosition: Types.Point3;
+
+      if (this.annularPlaneDefined && axialNormal) {
+        // AFTER 3 cusp dots: Constrain movement to axial direction only
+        const movement = [
+          newWorldPos[0] - this.dragStartWorldPos![0],
+          newWorldPos[1] - this.dragStartWorldPos![1],
+          newWorldPos[2] - this.dragStartWorldPos![2]
+        ];
+
+        // Project movement onto axial normal
+        const projectionOnNormal =
+          movement[0] * axialNormal[0] +
+          movement[1] * axialNormal[1] +
+          movement[2] * axialNormal[2];
+
+        // Move only along the axial normal
+        finalPosition = [
+          this.dragStartWorldPos![0] + axialNormal[0] * projectionOnNormal,
+          this.dragStartWorldPos![1] + axialNormal[1] * projectionOnNormal,
+          this.dragStartWorldPos![2] + axialNormal[2] * projectionOnNormal
+        ] as Types.Point3;
+      } else {
+        // BEFORE 3 cusp dots: Free movement in all directions
+        finalPosition = newWorldPos;
+      }
+
+      // Update the fixed position
+      this.fixedPosition = finalPosition;
+
+      // Call the callback if set (to update valve sphere)
+      if (this.valveSphereUpdateCallback) {
+        this.valveSphereUpdateCallback(finalPosition);
+      }
+
+      evt.preventDefault();
+      evt.stopPropagation();
+      return true;
+    }
+
+    // Handle rotation dragging
     if (!this.isDragging || !this.renderingEngineId || !this.fixedPosition) {
       return false;
     }
@@ -521,7 +954,6 @@ class FixedCrosshairTool extends BaseTool {
     if (Math.abs(deltaAngle) > 0.001) {
       // Rotate the MPR viewing planes (negate deltaAngle to fix direction)
       this.rotateMPRPlanes(renderingEngine, viewportId, -deltaAngle);
-      console.log(`🔄 Rotating MPR planes: ${(this.rotationAngle * 180 / Math.PI).toFixed(1)}°`);
     }
 
     evt.preventDefault();
@@ -629,9 +1061,14 @@ class FixedCrosshairTool extends BaseTool {
   }
 
   /**
-   * Mouse up callback - stop rotation
+   * Mouse up callback - stop rotation or center dragging
    */
   mouseUpCallback = (evt: any) => {
+    if (this.isCenterDragging) {
+      this.isCenterDragging = false;
+      console.log('✅ Center dot drag complete');
+      return true;
+    }
     if (this.isDragging) {
       this.isDragging = false;
       console.log(`✅ Crosshair rotation complete: ${(this.rotationAngle * 180 / Math.PI).toFixed(1)}°`);

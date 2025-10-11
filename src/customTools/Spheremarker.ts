@@ -30,6 +30,7 @@ class SphereMarkerTool extends BaseTool {
   positionUpdateCallback: ((spheres: { id: string; pos: Vector3; color: string }[]) => void) | null = null;
   lastLineUpdate: number = 0;
   isDraggable: boolean = true; // Can be disabled during certain workflow stages
+  forceVisible: boolean = false; // Force all spheres visible regardless of slice position (for measurements stage)
   cameraChangeListeners: Map<string, () => void> = new Map(); // Track camera change listeners
   globalCameraListener: ((evt: any) => void) | null = null; // Global camera listener
   visibilityUpdatesDisabled: boolean = false; // Flag to temporarily disable visibility updates
@@ -38,24 +39,42 @@ class SphereMarkerTool extends BaseTool {
   // Set draggable state (disable during certain workflow stages)
   setDraggable(draggable: boolean) {
     this.isDraggable = draggable;
-    
-    
+
+
     // Clear drag state if disabling dragging
     if (!draggable && this.activeSphereDrag) {
-      
+
       this.activeSphereDrag = null;
+    }
+  }
+
+  // Force all spheres visible regardless of slice position (for measurements stage)
+  setForceVisible(forceVisible: boolean) {
+    this.forceVisible = forceVisible;
+    console.log(`👁️ SphereMarkerTool force visible: ${forceVisible}`);
+
+    // If forcing visible, make all spheres visible immediately
+    if (forceVisible) {
+      const enabledElements = getEnabledElements();
+      this.spheres.forEach(sphere => {
+        sphere.actors.forEach((actor) => {
+          actor.setVisibility(true);
+          actor.modified();
+        });
+      });
+      enabledElements.forEach(({ viewport }) => viewport.render());
     }
   }
 
   // Explicitly clear drag state (useful for debugging or reset)
   clearDragState() {
-    
+
     this.activeSphereDrag = null;
   }
 
   // Find sphere at a given world position (for click detection)
   _findSphereAtPosition(worldPos: Vector3) {
-    const clickThreshold = this.configuration.sphereRadius * 4; // Even larger threshold for easier clicking
+    const clickThreshold = this.configuration.sphereRadius * 5; // Large threshold for easier clicking on small spheres
     let closestSphere = null;
     let closestDistance = Infinity;
     
@@ -280,7 +299,7 @@ class SphereMarkerTool extends BaseTool {
     defaultToolProps: Types.ToolProps = {
       supportedInteractionTypes: ['Mouse'],
       configuration: {
-        sphereRadius: 2, // Very small spheres, 2mm like 3mensio
+        sphereRadius: 1.5, // Very small precise spheres, 1.5mm
         positionUpdateCallback: null
       },
     }
@@ -425,12 +444,12 @@ class SphereMarkerTool extends BaseTool {
   }
 
   preMouseDownCallback = (evt: any) => {
-    
-    
-    
-    
+
+
+
+
     if (!this.isDraggable) {
-      
+
       return false; // Tool is locked - don't allow sphere dragging
     }
 
@@ -471,17 +490,17 @@ class SphereMarkerTool extends BaseTool {
       
       
       
-      // Check if click is within sphere radius (with some tolerance)
-      if (distance < this.configuration.sphereRadius * 2.0 && distance < minDistance) {
+      // Check if click is within sphere radius (with generous tolerance for small spheres)
+      if (distance < this.configuration.sphereRadius * 6.0 && distance < minDistance) {
         minDistance = distance;
         closestSphere = sphere;
-        
+
       }
     });
     
     if (closestSphere) {
-      
-      
+
+
       // Only set drag state if we're not already in drag mode
       if (!this.activeSphereDrag) {
         // Calculate distance from camera to sphere (used to maintain during drag)
@@ -490,18 +509,18 @@ class SphereMarkerTool extends BaseTool {
           Math.pow(closestSphere.pos[1] - cameraPos[1], 2) +
           Math.pow(closestSphere.pos[2] - cameraPos[2], 2)
         );
-        
+
         // Set active drag sphere
         this.activeSphereDrag = {
           id: closestSphere.id,
           distanceFromCamera
         };
-        
-        
+
+
         // Return true to indicate that this tool has captured the mouse
         return true;
       } else {
-        
+
         return false;
       }
     }
@@ -772,8 +791,8 @@ class SphereMarkerTool extends BaseTool {
     const middleIndex = Math.floor(this.spheres.length / 2);
     const isValveSphere = (this.spheres.indexOf(sphereData) === middleIndex) && this.spheres.length >= 3;
 
-    // Valve sphere is larger, centerline points are smaller
-    const radius = isValveSphere ? 3.5 : this.configuration.sphereRadius; // Valve: 3.5mm, Others: 2mm
+    // Valve sphere is larger for easy dragging, centerline points are smaller and precise
+    const radius = isValveSphere ? 3.0 : this.configuration.sphereRadius; // Valve: 3mm, Others: 1.5mm
     sphereSource.setRadius(radius);
     // High resolution for smooth, professional look
     sphereSource.setPhiResolution(32);
@@ -1063,7 +1082,7 @@ class SphereMarkerTool extends BaseTool {
     // Create smooth, thin tube like 3mensio
     const tubeFilter = vtkTubeFilter.newInstance();
     tubeFilter.setInputData(polyData);
-    tubeFilter.setRadius(0.5); // Thin line like 3mensio (0.5mm)
+    tubeFilter.setRadius(0.4); // Very thin precise line (0.4mm)
     tubeFilter.setNumberOfSides(16); // Good quality without being too heavy
     tubeFilter.setCapping(true);
     tubeFilter.setGenerateTCoords(false);
@@ -1479,6 +1498,19 @@ class SphereMarkerTool extends BaseTool {
   updateVisibilityForSingleViewport(viewport: any, viewportIndex: number) {
     if (!viewport || viewport.type !== 'orthographic') return;
 
+    // If forcing all spheres visible (measurements stage), skip slice-based visibility
+    if (this.forceVisible) {
+      this.spheres.forEach(sphere => {
+        const actor = sphere.actors.get(viewport.id);
+        if (actor) {
+          actor.setVisibility(true);
+          actor.modified();
+        }
+      });
+      viewport.render();
+      return;
+    }
+
     // Get the current slice plane information for this specific viewport
     const camera = viewport.getCamera();
     const { viewPlaneNormal, focalPoint } = camera;
@@ -1512,11 +1544,10 @@ class SphereMarkerTool extends BaseTool {
       console.warn('Could not get volume spacing, using default:', error);
     }
 
-    // Adaptive visibility threshold based on slice spacing
-    // Use 5x slice spacing to ensure spheres visible when crosshair intersects them
-    // This ensures visibility in all directions across all views
-    const sphereRadius = this.configuration.sphereRadius; // Usually 2mm
-    const commonVisibilityThreshold = Math.max(sphereRadius * 3, sliceSpacing * 5);
+    // STRICT visibility threshold - only show when crosshair is very close
+    // Spheres should only appear when slice plane intersects or is very near them
+    const sphereRadius = this.configuration.sphereRadius; // Usually 1.5mm
+    const commonVisibilityThreshold = Math.max(sphereRadius * 2, sliceSpacing * 2);
 
     const visibilityThreshold = commonVisibilityThreshold;
     
@@ -1666,31 +1697,100 @@ class SphereMarkerTool extends BaseTool {
 
   // Make all spheres visible (useful when entering a section)
   showAllSpheres() {
-    
-    
-    
+
+
+
     this.spheres.forEach((sphere, sphereIndex) => {
-      
+
       sphere.actors.forEach((actor, viewportId) => {
         const wasVisible = actor.getVisibility();
         actor.setVisibility(true);
         actor.modified();
-        
+
       });
     });
-    
+
     // Render all viewports
     const enabledElements = getEnabledElements();
-    
+
     enabledElements.forEach(({ viewport }, index) => {
       if (viewport) {
         viewport.render();
-        
+
       }
     });
-    
+
     // Don't disable visibility updates - we want normal slice-based behavior
-    
+
+  }
+
+  // Hide all spheres (useful to avoid visual confusion with cusp dots)
+  hideAllSpheres() {
+    console.log('👁️ Hiding all root definition spheres');
+
+    this.spheres.forEach((sphere, sphereIndex) => {
+      sphere.actors.forEach((actor, viewportId) => {
+        actor.setVisibility(false);
+        actor.modified();
+      });
+    });
+
+    // Render all viewports
+    const enabledElements = getEnabledElements();
+    enabledElements.forEach(({ viewport }, index) => {
+      if (viewport) {
+        viewport.render();
+      }
+    });
+
+    console.log('✅ All root definition spheres hidden');
+  }
+
+  // Move the valve sphere (middle sphere) to a new position (annulus center)
+  moveValveSphereToPosition(newPosition: Vector3) {
+    if (this.spheres.length < 3) {
+      console.warn('⚠️ Need at least 3 spheres to identify valve sphere');
+      return;
+    }
+
+    // The valve sphere is the middle one (index 1 when we have 3 spheres)
+    const middleIndex = Math.floor(this.spheres.length / 2);
+    const valveSphere = this.spheres[middleIndex];
+
+    console.log(`🔴 Moving valve sphere from:`, valveSphere.pos);
+    console.log(`   to annulus center:`, newPosition);
+
+    // Update sphere position
+    valveSphere.pos = [newPosition[0], newPosition[1], newPosition[2]];
+
+    // Update the sphere source
+    if (valveSphere.source) {
+      valveSphere.source.setCenter(newPosition[0], newPosition[1], newPosition[2]);
+      valveSphere.source.modified();
+    }
+
+    // Update all actors for this sphere
+    valveSphere.actors.forEach((actor, viewportId) => {
+      actor.modified();
+    });
+
+    // Update connection lines
+    if (this.spheres.length >= 2) {
+      this._updateConnectionLines();
+    }
+
+    // Render all viewports
+    const enabledElements = getEnabledElements();
+    enabledElements.forEach(({ viewport }) => {
+      if (viewport) {
+        viewport.render();
+      }
+    });
+
+    // Notify position update
+    this._notifyPositionUpdate();
+
+    console.log('✅ Valve sphere moved to annulus center');
   }
   
   // Debug method to check sphere status

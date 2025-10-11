@@ -94,6 +94,13 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const slabSynchronizerRef = useRef<any>(null);
   const cameraSynchronizerRef = useRef<any>(null);
   const lockedFocalPointRef = useRef<Types.Point3 | null>(null);
+  const centerlineDataRef = useRef<any>(null); // Store centerline for scrolling
+  const spherePositionsRef = useRef<Types.Point3[]>([]); // Store the 3 sphere positions
+  const currentSphereIndexRef = useRef<number>(1); // Current sphere (0=LV, 1=valve, 2=ascending)
+  const currentCenterlineIndexRef = useRef<number>(0); // Current position along centerline (for measurements stage)
+  const cuspDotsRef = useRef<{ id: string; pos: [number, number, number]; color: string; cuspType: string }[]>([]); // Store cusp dots
+  const savedCameraZoomRef = useRef<number>(60); // Store zoom level (parallelScale) for preservation between stages
+  const annulusLineActorsRef = useRef<{ sagittal: any; coronal: any } | null>(null); // Store annulus reference line actors
 
   // Preload all phases sequentially when play is first hit
   useEffect(() => {
@@ -437,7 +444,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       // Enable viewports and set volumes (check if already enabled first)
       // CRITICAL: Don't await setVolumes - let it stream in background like App.tsx
-      console.log('🔧 Setting up viewports...');
       viewports.forEach(({ id, orientation }) => {
         // Check if viewport already exists
         let viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
@@ -462,7 +468,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         // Don't await - let volumes load in background like App.tsx
         viewport.setVolumes([{ volumeId }]);
         viewport.render();
-        console.log(`  ✅ ${id}: setVolumes and render called`);
       });
 
       // Setup tools first WITHOUT any state updates
@@ -470,7 +475,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       // CRITICAL: Set imageInfo in ref (no re-render since it's a ref)
       // The layout shift from the info bar was the real issue, not this assignment
-      console.log('📊 Setting imageInfo in ref...');
       imageInfoRef.current = {
         width: 512,
         height: 512,
@@ -484,13 +488,11 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         onImageLoaded({ imageIds, volume });
       }
 
-      console.log('✅ MPR Viewport initialized successfully!');
       setIsLoading(false);
 
       // Apply initial window/level AFTER everything else to avoid interfering with CrosshairsTool
       // Small delay to let CrosshairsTool fully stabilize
       setTimeout(() => {
-        console.log('🎨 Applying initial window/level to viewports...');
         const viewportIds = ["axial", "sagittal", "coronal"];
         viewportIds.forEach((id) => {
           const viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
@@ -504,16 +506,10 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
             viewport.render();
           }
         });
-        console.log(`✅ Applied initial W/L: ${windowLevel.window}/${windowLevel.level}`);
       }, 200);
 
       // For ANNULUS_DEFINITION stage, position axial view perpendicular to centerline at valve
-      console.log('🔍 Checking annulus definition camera setup:', {
-        currentStage,
-        isAnnulusStage: currentStage === WorkflowStage.ANNULUS_DEFINITION,
-        hasExistingSpheres: !!existingSpheres,
-        sphereCount: existingSpheres?.length || 0
-      });
+   
 
       if (currentStage === WorkflowStage.ANNULUS_DEFINITION && existingSpheres && existingSpheres.length >= 3) {
         console.log('✅ Condition met! Setting up centerline camera in 500ms...');
@@ -530,24 +526,30 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
             }))
           );
 
+          // Store centerline data for scrolling
+          centerlineDataRef.current = centerlineData;
+
+          // Store the 3 sphere positions for discrete scrolling
+          spherePositionsRef.current = existingSpheres.map(sphere => sphere.pos as Types.Point3);
+          currentSphereIndexRef.current = 1; // Start at valve (middle sphere)
+
           const numPoints = centerlineData.position.length / 3;
 
-          // Find valve point (middle sphere, red one) on centerline
-          const valvePos = existingSpheres[1].pos;
+          // Use valve sphere position directly (middle sphere)
+          const valveCenterlinePos = existingSpheres[1].pos;
 
-          // Find closest centerline point to valve
+          // Find closest centerline point to valve to calculate tangent
           let closestIndex = 0;
           let minDist = Infinity;
-
           for (let i = 0; i < numPoints; i++) {
             const x = centerlineData.position[i * 3];
             const y = centerlineData.position[i * 3 + 1];
             const z = centerlineData.position[i * 3 + 2];
 
             const dist = Math.sqrt(
-              Math.pow(x - valvePos[0], 2) +
-              Math.pow(y - valvePos[1], 2) +
-              Math.pow(z - valvePos[2], 2)
+              Math.pow(x - valveCenterlinePos[0], 2) +
+              Math.pow(y - valveCenterlinePos[1], 2) +
+              Math.pow(z - valveCenterlinePos[2], 2)
             );
 
             if (dist < minDist) {
@@ -555,13 +557,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               closestIndex = i;
             }
           }
-
-          // Get valve point on centerline
-          const valveCenterlinePos = [
-            centerlineData.position[closestIndex * 3],
-            centerlineData.position[closestIndex * 3 + 1],
-            centerlineData.position[closestIndex * 3 + 2]
-          ];
 
           // Calculate centerline tangent at valve
           let tangent = [0, 0, 1];
@@ -635,7 +630,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               position: cameraPos,
               focalPoint: valveCenterlinePos as Types.Point3,
               viewUp: viewUp,
-              parallelScale: 100, // Increased to show more anatomy around valve
+              parallelScale: 60, // Zoomed in to focus on annulus area
             });
 
             // Store the locked focal point for annulus definition
@@ -729,7 +724,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 position: sagCameraPos,
                 focalPoint: valveCenterlinePos as Types.Point3,
                 viewUp: [-viewPlaneNormal[0], -viewPlaneNormal[1], -viewPlaneNormal[2]] as Types.Point3,
-                parallelScale: 100,
+                parallelScale: 60, // Zoomed in to focus on annulus area
               });
 
               sagittalViewport.render();
@@ -749,7 +744,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 position: corCameraPos,
                 focalPoint: valveCenterlinePos as Types.Point3,
                 viewUp: [-viewPlaneNormal[0], -viewPlaneNormal[1], -viewPlaneNormal[2]] as Types.Point3,
-                parallelScale: 100,
+                parallelScale: 60, // Zoomed in to focus on annulus area
               });
 
               coronalViewport.render();
@@ -770,6 +765,145 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                   const fixedCrosshairTool = toolGroup.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
                   if (fixedCrosshairTool) {
                     fixedCrosshairTool.setFixedPosition(valveCenterlinePos as Types.Point3, renderingEngineId);
+
+                    // Set up callback to update valve sphere and viewports when center dot is dragged
+                    // This enables viewport updates BEFORE cusp dots are placed (free dragging mode)
+                    fixedCrosshairTool.setValveSphereUpdateCallback((newPosition: Types.Point3) => {
+                      console.log('🔴 Center dot dragged (initial setup), updating valve sphere and viewports:', newPosition);
+
+                      // Update valve sphere position
+                      if (onSpherePositionsUpdate && existingSpheres) {
+                        const updatedSpheres = existingSpheres.map((sphere, index) => {
+                          if (index === 1) {
+                            return { ...sphere, pos: newPosition };
+                          }
+                          return sphere;
+                        });
+                        onSpherePositionsUpdate(updatedSpheres);
+
+                        // Update the visual sphere in the tool directly
+                        const sphereTool = toolGroup?.getToolInstance(SphereMarkerTool.toolName) as any;
+                        if (sphereTool && sphereTool.spheres && sphereTool.spheres.length >= 2) {
+                          sphereTool.spheres[1].pos = [newPosition[0], newPosition[1], newPosition[2]];
+                          if (sphereTool.spheres[1].source) {
+                            sphereTool.spheres[1].source.setCenter(newPosition[0], newPosition[1], newPosition[2]);
+                            sphereTool.spheres[1].source.modified();
+                          }
+                          sphereTool._updateConnectionLines();
+                        }
+                      }
+
+                      // Update locked focal point ref
+                      lockedFocalPointRef.current = newPosition;
+
+                      // CRITICAL: Update all viewport cameras ONLY BEFORE annular plane is defined
+                      // AFTER annular plane is defined, viewports stay locked to the annular plane orientation
+                      const isAnnularPlaneDefined = cuspDotsRef.current && cuspDotsRef.current.length === 3;
+
+                      if (!isAnnularPlaneDefined) {
+                        // BEFORE 3 cusp dots: Update viewports to follow the new center position (like crosshair)
+                        console.log('📐 Updating viewport cameras to follow center dot (before annular plane)');
+                        const renderingEngine = renderingEngineRef.current;
+                        if (renderingEngine) {
+                          const currentAxialVp = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
+                          if (currentAxialVp) {
+                            // Get current axial camera settings
+                            const currentAxialCamera = currentAxialVp.getCamera();
+                            const cameraDistance = 200;
+
+                            // Update axial viewport focal point
+                            const newAxialCameraPos = [
+                              newPosition[0] + currentAxialCamera.viewPlaneNormal[0] * cameraDistance,
+                              newPosition[1] + currentAxialCamera.viewPlaneNormal[1] * cameraDistance,
+                              newPosition[2] + currentAxialCamera.viewPlaneNormal[2] * cameraDistance
+                            ] as Types.Point3;
+
+                            currentAxialVp.setCamera({
+                              ...currentAxialCamera,
+                              position: newAxialCameraPos,
+                              focalPoint: newPosition
+                            });
+                            currentAxialVp.render();
+
+                            // Update sagittal and coronal viewports to show the new slice position
+                            // Get current rotation angle from fixed crosshair
+                            const currentRotationAngle = fixedCrosshairTool.getRotationAngle() || 0;
+                            const cos = Math.cos(currentRotationAngle);
+                            const sin = Math.sin(currentRotationAngle);
+
+                            // Calculate view directions based on current rotation
+                            const viewPlaneNormal = currentAxialCamera.viewPlaneNormal;
+                            const actualViewUp = currentAxialCamera.viewUp;
+
+                            const actualViewRight = [
+                              actualViewUp[1] * viewPlaneNormal[2] - actualViewUp[2] * viewPlaneNormal[1],
+                              actualViewUp[2] * viewPlaneNormal[0] - actualViewUp[0] * viewPlaneNormal[2],
+                              actualViewUp[0] * viewPlaneNormal[1] - actualViewUp[1] * viewPlaneNormal[0]
+                            ];
+
+                            const rightLen = Math.sqrt(actualViewRight[0] ** 2 + actualViewRight[1] ** 2 + actualViewRight[2] ** 2);
+                            if (rightLen > 0) {
+                              actualViewRight[0] /= rightLen;
+                              actualViewRight[1] /= rightLen;
+                              actualViewRight[2] /= rightLen;
+                            }
+
+                            const rotatedViewRight = [
+                              actualViewRight[0] * cos - actualViewUp[0] * sin,
+                              actualViewRight[1] * cos - actualViewUp[1] * sin,
+                              actualViewRight[2] * cos - actualViewUp[2] * sin
+                            ];
+
+                            const rotatedViewUp = [
+                              actualViewRight[0] * sin + actualViewUp[0] * cos,
+                              actualViewRight[1] * sin + actualViewUp[1] * cos,
+                              actualViewRight[2] * sin + actualViewUp[2] * cos
+                            ];
+
+                            // Update sagittal viewport
+                            const sagittalVp = renderingEngine.getViewport('sagittal') as Types.IVolumeViewport;
+                            if (sagittalVp) {
+                              const sagCameraPos = [
+                                newPosition[0] + rotatedViewRight[0] * cameraDistance,
+                                newPosition[1] + rotatedViewRight[1] * cameraDistance,
+                                newPosition[2] + rotatedViewRight[2] * cameraDistance
+                              ] as Types.Point3;
+
+                              sagittalVp.setCamera({
+                                position: sagCameraPos,
+                                focalPoint: newPosition,
+                                viewUp: [-viewPlaneNormal[0], -viewPlaneNormal[1], -viewPlaneNormal[2]] as Types.Point3,
+                                parallelScale: sagittalVp.getCamera().parallelScale
+                              });
+                              sagittalVp.render();
+                            }
+
+                            // Update coronal viewport
+                            const coronalVp = renderingEngine.getViewport('coronal') as Types.IVolumeViewport;
+                            if (coronalVp) {
+                              const corCameraPos = [
+                                newPosition[0] + rotatedViewUp[0] * cameraDistance,
+                                newPosition[1] + rotatedViewUp[1] * cameraDistance,
+                                newPosition[2] + rotatedViewUp[2] * cameraDistance
+                              ] as Types.Point3;
+
+                              coronalVp.setCamera({
+                                position: corCameraPos,
+                                focalPoint: newPosition,
+                                viewUp: [-viewPlaneNormal[0], -viewPlaneNormal[1], -viewPlaneNormal[2]] as Types.Point3,
+                                parallelScale: coronalVp.getCamera().parallelScale
+                              });
+                              coronalVp.render();
+                            }
+
+                            console.log('✅ All viewports updated to follow new center position');
+                          }
+                        }
+                      } else {
+                        // AFTER 3 cusp dots: Viewports stay locked to annular plane orientation
+                        console.log('🔒 Viewports locked to annular plane (after 3 cusp dots)');
+                      }
+                    });
 
                     // CRITICAL: Set tool to ACTIVE (not just enabled) so mouse callbacks work
                     toolGroup.setToolActive(FixedCrosshairTool.toolName, {
@@ -792,11 +926,702 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         }, 500); // Delay after tools are set up
       }
 
+      // For MEASUREMENTS stage, position cameras at annular plane
+      if (currentStage === WorkflowStage.MEASUREMENTS && lockedFocalPointRef.current && centerlineDataRef.current) {
+        console.log('✅ MEASUREMENTS stage - Positioning cameras at annular plane');
+        setTimeout(() => {
+          console.log('🎯 Setting up cameras at annular plane for measurements');
+
+          const annulusCenter = lockedFocalPointRef.current!;
+          const centerlineData = centerlineDataRef.current;
+
+          // Find nearest centerline index to annulus center
+          const nearestIndex = findNearestCenterlineIndex(annulusCenter);
+          const position = getCenterlinePositionAtIndex(nearestIndex);
+          const tangent = getCenterlineTangentAtIndex(nearestIndex);
+
+          if (!position || !tangent) {
+            console.warn('⚠️ Failed to get centerline position/tangent for measurements');
+            return;
+          }
+
+          console.log('📍 Annulus center:', annulusCenter);
+          console.log('📐 Centerline tangent:', tangent);
+
+          const renderingEngine = renderingEngineRef.current;
+          if (!renderingEngine) return;
+
+          // Position axial viewport perpendicular to centerline at annulus
+          const axialViewport = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
+          if (axialViewport) {
+            const cameraDistance = 200;
+
+            const cameraPos = [
+              position[0] + tangent[0] * cameraDistance,
+              position[1] + tangent[1] * cameraDistance,
+              position[2] + tangent[2] * cameraDistance
+            ] as Types.Point3;
+
+            // Calculate viewUp perpendicular to tangent
+            let viewUp: Types.Point3;
+            const reference = Math.abs(tangent[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+            const cross = [
+              tangent[1] * reference[2] - tangent[2] * reference[1],
+              tangent[2] * reference[0] - tangent[0] * reference[2],
+              tangent[0] * reference[1] - tangent[1] * reference[0]
+            ];
+
+            const crossLen = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
+            if (crossLen > 0) {
+              viewUp = [cross[0] / crossLen, cross[1] / crossLen, cross[2] / crossLen] as Types.Point3;
+            } else {
+              viewUp = [0, 0, 1] as Types.Point3;
+            }
+
+            axialViewport.setCamera({
+              position: cameraPos,
+              focalPoint: position,
+              viewUp: viewUp,
+              parallelScale: 60, // Zoomed in view
+            });
+
+            axialViewport.render();
+            console.log('✅ Axial viewport: positioned at annular plane');
+
+            // Position sagittal and coronal viewports
+            const newCamera = axialViewport.getCamera();
+            const viewPlaneNormal = newCamera.viewPlaneNormal;
+            const actualViewUp = newCamera.viewUp;
+
+            // Calculate actualViewRight
+            const actualViewRight = [
+              actualViewUp[1] * viewPlaneNormal[2] - actualViewUp[2] * viewPlaneNormal[1],
+              actualViewUp[2] * viewPlaneNormal[0] - actualViewUp[0] * viewPlaneNormal[2],
+              actualViewUp[0] * viewPlaneNormal[1] - actualViewUp[1] * viewPlaneNormal[0]
+            ];
+
+            const rightLen = Math.sqrt(actualViewRight[0] ** 2 + actualViewRight[1] ** 2 + actualViewRight[2] ** 2);
+            if (rightLen > 0) {
+              actualViewRight[0] /= rightLen;
+              actualViewRight[1] /= rightLen;
+              actualViewRight[2] /= rightLen;
+            }
+
+            // Position sagittal viewport
+            const sagittalViewport = renderingEngine.getViewport('sagittal') as Types.IVolumeViewport;
+            if (sagittalViewport) {
+              const sagCameraPos = [
+                position[0] + actualViewRight[0] * cameraDistance,
+                position[1] + actualViewRight[1] * cameraDistance,
+                position[2] + actualViewRight[2] * cameraDistance
+              ] as Types.Point3;
+
+              sagittalViewport.setCamera({
+                position: sagCameraPos,
+                focalPoint: position,
+                viewUp: [-viewPlaneNormal[0], -viewPlaneNormal[1], -viewPlaneNormal[2]] as Types.Point3,
+                parallelScale: 60, // Zoomed in view
+              });
+
+              sagittalViewport.render();
+              console.log('✅ Sagittal viewport: positioned at annular plane');
+            }
+
+            // Position coronal viewport
+            const coronalViewport = renderingEngine.getViewport('coronal') as Types.IVolumeViewport;
+            if (coronalViewport) {
+              const corCameraPos = [
+                position[0] + actualViewUp[0] * cameraDistance,
+                position[1] + actualViewUp[1] * cameraDistance,
+                position[2] + actualViewUp[2] * cameraDistance
+              ] as Types.Point3;
+
+              coronalViewport.setCamera({
+                position: corCameraPos,
+                focalPoint: position,
+                viewUp: [-viewPlaneNormal[0], -viewPlaneNormal[1], -viewPlaneNormal[2]] as Types.Point3,
+                parallelScale: 60, // Zoomed in view
+              });
+
+              coronalViewport.render();
+              console.log('✅ Coronal viewport: positioned at annular plane');
+            }
+
+            // Create annulus reference lines in sagittal and coronal views
+            import('@kitware/vtk.js/Filters/Sources/LineSource').then((module) => {
+              const vtkLineSource = module.default;
+              return import('@kitware/vtk.js/Filters/General/TubeFilter').then((tubeModule) => {
+                const vtkTubeFilter = tubeModule.default;
+                return import('@kitware/vtk.js/Rendering/Core/Mapper').then((mapperModule) => {
+                  const vtkMapper = mapperModule.default;
+                  return import('@kitware/vtk.js/Rendering/Core/Actor').then((actorModule) => {
+                    const vtkActor = actorModule.default;
+
+                  // Remove old annulus lines if they exist
+                  if (annulusLineActorsRef.current) {
+                    if (sagittalViewport && annulusLineActorsRef.current.sagittal) {
+                      try {
+                        sagittalViewport.removeActor({ uid: 'annulus-line-sagittal' });
+                      } catch (e) { /* ignore */ }
+                    }
+                    if (coronalViewport && annulusLineActorsRef.current.coronal) {
+                      try {
+                        coronalViewport.removeActor({ uid: 'annulus-line-coronal' });
+                      } catch (e) { /* ignore */ }
+                    }
+                  }
+
+                  // Create thin grayish-black line at annulus level
+                  const lineLength = 80; // Shorter line to stay within viewport
+
+                  // Sagittal view: line goes left-right (along actualViewUp direction)
+                  if (sagittalViewport) {
+                    const lineSource = vtkLineSource.newInstance();
+                    const lineStart = [
+                      position[0] - actualViewUp[0] * lineLength,
+                      position[1] - actualViewUp[1] * lineLength,
+                      position[2] - actualViewUp[2] * lineLength
+                    ];
+                    const lineEnd = [
+                      position[0] + actualViewUp[0] * lineLength,
+                      position[1] + actualViewUp[1] * lineLength,
+                      position[2] + actualViewUp[2] * lineLength
+                    ];
+                    lineSource.setPoint1(lineStart);
+                    lineSource.setPoint2(lineEnd);
+
+                    // Use tube filter for smooth, anti-aliased appearance
+                    const tubeFilter = vtkTubeFilter.newInstance();
+                    tubeFilter.setInputConnection(lineSource.getOutputPort());
+                    tubeFilter.setRadius(0.3); // Thin smooth tube (0.3mm)
+                    tubeFilter.setNumberOfSides(16); // Smooth circular profile
+                    tubeFilter.setCapping(true);
+
+                    const mapper = vtkMapper.newInstance();
+                    mapper.setInputConnection(tubeFilter.getOutputPort());
+
+                    const actor = vtkActor.newInstance();
+                    actor.setMapper(mapper);
+
+                    const property = actor.getProperty();
+                    property.setColor(0.55, 0.55, 0.55); // Medium gray
+                    property.setOpacity(0.7);
+                    property.setInterpolationToPhong(); // Smooth shading
+
+                    sagittalViewport.addActor({ uid: 'annulus-line-sagittal', actor });
+
+                    if (!annulusLineActorsRef.current) {
+                      annulusLineActorsRef.current = { sagittal: null, coronal: null };
+                    }
+                    annulusLineActorsRef.current.sagittal = actor;
+                  }
+
+                  // Coronal view: line goes left-right (along actualViewRight direction)
+                  if (coronalViewport) {
+                    const lineSource = vtkLineSource.newInstance();
+                    const lineStart = [
+                      position[0] - actualViewRight[0] * lineLength,
+                      position[1] - actualViewRight[1] * lineLength,
+                      position[2] - actualViewRight[2] * lineLength
+                    ];
+                    const lineEnd = [
+                      position[0] + actualViewRight[0] * lineLength,
+                      position[1] + actualViewRight[1] * lineLength,
+                      position[2] + actualViewRight[2] * lineLength
+                    ];
+                    lineSource.setPoint1(lineStart);
+                    lineSource.setPoint2(lineEnd);
+
+                    // Use tube filter for smooth, anti-aliased appearance
+                    const tubeFilter = vtkTubeFilter.newInstance();
+                    tubeFilter.setInputConnection(lineSource.getOutputPort());
+                    tubeFilter.setRadius(0.3); // Thin smooth tube (0.3mm)
+                    tubeFilter.setNumberOfSides(16); // Smooth circular profile
+                    tubeFilter.setCapping(true);
+
+                    const mapper = vtkMapper.newInstance();
+                    mapper.setInputConnection(tubeFilter.getOutputPort());
+
+                    const actor = vtkActor.newInstance();
+                    actor.setMapper(mapper);
+
+                    const property = actor.getProperty();
+                    property.setColor(0.55, 0.55, 0.55); // Medium gray
+                    property.setOpacity(0.7);
+                    property.setInterpolationToPhong(); // Smooth shading
+
+                    coronalViewport.addActor({ uid: 'annulus-line-coronal', actor });
+
+                    if (!annulusLineActorsRef.current) {
+                      annulusLineActorsRef.current = { sagittal: null, coronal: null };
+                    }
+                    annulusLineActorsRef.current.coronal = actor;
+                  }
+
+                    // Render viewports with new lines
+                    renderingEngine.renderViewports(['sagittal', 'coronal']);
+                    console.log('✅ Annulus reference lines added to sagittal and coronal views');
+                  });
+                });
+              });
+            });
+
+            // Force render all viewports
+            renderingEngine.renderViewports(['axial', 'sagittal', 'coronal']);
+            console.log('🔄 All viewports positioned at annular plane for measurements');
+          }
+        }, 500); // Delay after tools are set up
+      }
+
     } catch (err) {
       console.error('❌ Failed to initialize MPR Viewport:', err);
       setError(`Failed to load DICOM images: ${err}`);
       setIsLoading(false);
     }
+  };
+
+  const adjustToAnnularPlane = (dots: { id: string; pos: [number, number, number]; color: string; cuspType: string }[]) => {
+    if (dots.length !== 3 || !renderingEngineRef.current) {
+      console.warn('⚠️ Cannot adjust to annular plane: need exactly 3 dots and rendering engine');
+      return;
+    }
+
+    const renderingEngine = renderingEngineRef.current;
+
+    // Get the 3 cusp points
+    const p1 = dots[0].pos as Types.Point3;
+    const p2 = dots[1].pos as Types.Point3;
+    const p3 = dots[2].pos as Types.Point3;
+
+    console.log('📐 Calculating annular plane from 3 cusp points:');
+    console.log(`   P1 (${dots[0].cuspType}) - Color: ${dots[0].color}:`, p1);
+    console.log(`   P2 (${dots[1].cuspType}) - Color: ${dots[1].color}:`, p2);
+    console.log(`   P3 (${dots[2].cuspType}) - Color: ${dots[2].color}:`, p3);
+    console.log('   ⚠️ Colors should be: Red (#FF6B6B), Gold (#FFD700), Royal Blue (#4169E1)');
+    console.log('   ℹ️ These are the ONLY 3 points used for centroid calculation');
+
+    // Calculate two vectors in the plane
+    const v1 = [
+      p2[0] - p1[0],
+      p2[1] - p1[1],
+      p2[2] - p1[2]
+    ];
+
+    const v2 = [
+      p3[0] - p1[0],
+      p3[1] - p1[1],
+      p3[2] - p1[2]
+    ];
+
+    // Calculate plane normal: v1 × v2
+    let planeNormal = [
+      v1[1] * v2[2] - v1[2] * v2[1],
+      v1[2] * v2[0] - v1[0] * v2[2],
+      v1[0] * v2[1] - v1[1] * v2[0]
+    ];
+
+    // Normalize
+    const normalLen = Math.sqrt(planeNormal[0] ** 2 + planeNormal[1] ** 2 + planeNormal[2] ** 2);
+    if (normalLen > 0) {
+      planeNormal[0] /= normalLen;
+      planeNormal[1] /= normalLen;
+      planeNormal[2] /= normalLen;
+    }
+
+    // Calculate center of the 3 points (annulus center - centroid)
+    const annulusCenter: Types.Point3 = [
+      (p1[0] + p2[0] + p3[0]) / 3,
+      (p1[1] + p2[1] + p3[1]) / 3,
+      (p1[2] + p2[2] + p3[2]) / 3
+    ];
+
+    console.log('   Plane normal:', planeNormal);
+    console.log('   📍 Annulus center (centroid of 3 cusp dots):', annulusCenter);
+    console.log('   Distance from P1 to center:', Math.sqrt(
+      (p1[0] - annulusCenter[0])**2 +
+      (p1[1] - annulusCenter[1])**2 +
+      (p1[2] - annulusCenter[2])**2
+    ).toFixed(2), 'mm');
+    console.log('   Distance from P2 to center:', Math.sqrt(
+      (p2[0] - annulusCenter[0])**2 +
+      (p2[1] - annulusCenter[1])**2 +
+      (p2[2] - annulusCenter[2])**2
+    ).toFixed(2), 'mm');
+    console.log('   Distance from P3 to center:', Math.sqrt(
+      (p3[0] - annulusCenter[0])**2 +
+      (p3[1] - annulusCenter[1])**2 +
+      (p3[2] - annulusCenter[2])**2
+    ).toFixed(2), 'mm');
+
+    // CRITICAL: Move the red sphere (valve) to the annulus center (centroid)
+    // The valve position should be at the exact center of the triangle formed by the 3 cusp dots
+    const valveSphere = spherePositionsRef.current[1]; // Middle sphere (red, valve)
+
+    console.log('🔴 Moving RED valve sphere to annulus center (centroid):');
+    console.log('   Original valve position:', valveSphere);
+    console.log('   Target position (centroid):', annulusCenter);
+
+    const moveDistance = Math.sqrt(
+      (valveSphere[0] - annulusCenter[0])**2 +
+      (valveSphere[1] - annulusCenter[1])**2 +
+      (valveSphere[2] - annulusCenter[2])**2
+    );
+    console.log('   Distance to move:', moveDistance.toFixed(2), 'mm');
+
+    // Update the valve sphere position to the centroid
+    spherePositionsRef.current[1] = annulusCenter;
+
+    // Update the sphere in the parent component and tool
+    if (onSpherePositionsUpdate && existingSpheres) {
+      const updatedSpheres = existingSpheres.map((sphere, index) => {
+        if (index === 1) {
+          // Update the middle sphere (valve) with centroid position
+          return { ...sphere, pos: annulusCenter };
+        }
+        return sphere;
+      });
+      onSpherePositionsUpdate(updatedSpheres);
+
+      // Update the visual sphere in the tool directly
+      const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+      const sphereTool = toolGroup?.getToolInstance(SphereMarkerTool.toolName) as any;
+      if (sphereTool && sphereTool.spheres && sphereTool.spheres.length >= 2) {
+        // Update the middle sphere (valve) position to centroid
+        sphereTool.spheres[1].pos = [annulusCenter[0], annulusCenter[1], annulusCenter[2]];
+
+        // Update the sphere source center
+        if (sphereTool.spheres[1].source) {
+          sphereTool.spheres[1].source.setCenter(annulusCenter[0], annulusCenter[1], annulusCenter[2]);
+          sphereTool.spheres[1].source.modified();
+        }
+
+        // Update connection lines
+        sphereTool._updateConnectionLines();
+
+        // Render all viewports
+        const enabledElements = getEnabledElements();
+        enabledElements.forEach(({ viewport }: any) => viewport.render());
+
+        console.log('✅ RED valve sphere moved to exact centroid position');
+      }
+    }
+
+    // Regenerate centerline with the valve at centroid position
+    console.log('🔄 Regenerating centerline with projected valve position...');
+    const updatedCenterlineData = CenterlineGenerator.generateFromRootPoints(
+      spherePositionsRef.current.map((pos, index) => ({
+        id: `sphere-${index}`,
+        position: pos,
+        type: index === 0 ? 'lv_outflow' : index === 1 ? 'aortic_valve' : 'ascending_aorta',
+        timestamp: Date.now()
+      }))
+    );
+    centerlineDataRef.current = updatedCenterlineData;
+    console.log('✅ Centerline regenerated with projected valve');
+
+    // IMPORTANT: Use the annulus center (centroid of 3 cusp dots) as the focal point
+    // This ensures the red dot is at the center of the three cusp dots, on the annular plane
+    const newFocalPoint = annulusCenter;
+
+    console.log('🎯 Using annulus center as focal point (red dot position):', annulusCenter);
+
+    // Position axial camera perpendicular to the annular plane
+    const axialVp = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
+    if (!axialVp) return;
+
+    const cameraDistance = 200;
+
+    // Camera position along the plane normal (from annulus center)
+    const cameraPos: Types.Point3 = [
+      newFocalPoint[0] + planeNormal[0] * cameraDistance,
+      newFocalPoint[1] + planeNormal[1] * cameraDistance,
+      newFocalPoint[2] + planeNormal[2] * cameraDistance
+    ];
+
+    // Calculate viewUp perpendicular to plane normal
+    let viewUp: Types.Point3;
+    const reference = Math.abs(planeNormal[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+    const cross = [
+      planeNormal[1] * reference[2] - planeNormal[2] * reference[1],
+      planeNormal[2] * reference[0] - planeNormal[0] * reference[2],
+      planeNormal[0] * reference[1] - planeNormal[1] * reference[0]
+    ];
+
+    const crossLen = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
+    if (crossLen > 0) {
+      viewUp = [cross[0] / crossLen, cross[1] / crossLen, cross[2] / crossLen] as Types.Point3;
+    } else {
+      viewUp = [0, 0, 1] as Types.Point3;
+    }
+
+    console.log('🎥 Setting axial camera perpendicular to annular plane:');
+    console.log('   Camera position:', cameraPos);
+    console.log('   Focal point (annulus center - centroid of 3 cusp dots):', newFocalPoint);
+    console.log('   ViewUp:', viewUp);
+
+    axialVp.setCamera({
+      position: cameraPos,
+      focalPoint: newFocalPoint,
+      viewUp: viewUp,
+      parallelScale: 60, // Zoomed in to focus on annulus area
+    });
+
+    axialVp.render();
+
+    // Update fixed crosshair to annulus center (red dot at centroid of 3 cusp dots)
+    const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+    const fixedCrosshairTool = toolGroup?.getToolInstance(FixedCrosshairTool.toolName) as any;
+    if (fixedCrosshairTool) {
+      console.log('🎯 Setting fixed crosshair (red dot) position to annulus center:', newFocalPoint);
+      console.log('   Annulus center (centroid of 3 cusp dots):', annulusCenter);
+      console.log('   Are they the same?', newFocalPoint[0] === annulusCenter[0] && newFocalPoint[1] === annulusCenter[1] && newFocalPoint[2] === annulusCenter[2]);
+      fixedCrosshairTool.setFixedPosition(newFocalPoint, renderingEngineId);
+
+      // IMPORTANT: Lock the center dot to axial-only movement now that annular plane is defined
+      fixedCrosshairTool.setAnnularPlaneDefined(true);
+
+      // Set up callback to update valve sphere when center dot is dragged (axial-only after annular plane)
+      fixedCrosshairTool.setValveSphereUpdateCallback((newPosition: Types.Point3) => {
+        console.log('🔴 Center dot dragged, updating valve sphere and all viewport cameras:', newPosition);
+
+        // Update valve sphere position
+        if (onSpherePositionsUpdate && existingSpheres) {
+          const updatedSpheres = existingSpheres.map((sphere, index) => {
+            if (index === 1) {
+              return { ...sphere, pos: newPosition };
+            }
+            return sphere;
+          });
+          onSpherePositionsUpdate(updatedSpheres);
+
+          // Update the visual sphere in the tool directly
+          const sphereTool = toolGroup?.getToolInstance(SphereMarkerTool.toolName) as any;
+          if (sphereTool && sphereTool.spheres && sphereTool.spheres.length >= 2) {
+            sphereTool.spheres[1].pos = [newPosition[0], newPosition[1], newPosition[2]];
+            if (sphereTool.spheres[1].source) {
+              sphereTool.spheres[1].source.setCenter(newPosition[0], newPosition[1], newPosition[2]);
+              sphereTool.spheres[1].source.modified();
+            }
+            sphereTool._updateConnectionLines();
+          }
+        }
+
+        // Update locked focal point ref
+        lockedFocalPointRef.current = newPosition;
+
+        // CRITICAL: Update all viewport cameras ONLY BEFORE annular plane is defined
+        // AFTER annular plane is defined, viewports stay locked to the annular plane orientation
+        const isAnnularPlaneDefined = cuspDotsRef.current && cuspDotsRef.current.length === 3;
+
+        if (!isAnnularPlaneDefined) {
+          // BEFORE 3 cusp dots: Update viewports to follow the new center position (like crosshair)
+          console.log('📐 Updating viewport cameras to follow center dot (before annular plane)');
+          const renderingEngine = getRenderingEngine(renderingEngineId);
+          if (renderingEngine) {
+          const currentAxialVp = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
+          if (currentAxialVp) {
+            // Get current axial camera settings
+            const currentAxialCamera = currentAxialVp.getCamera();
+            const cameraDistance = 200;
+
+            // Update axial viewport focal point
+            const newAxialCameraPos = [
+              newPosition[0] + currentAxialCamera.viewPlaneNormal[0] * cameraDistance,
+              newPosition[1] + currentAxialCamera.viewPlaneNormal[1] * cameraDistance,
+              newPosition[2] + currentAxialCamera.viewPlaneNormal[2] * cameraDistance
+            ] as Types.Point3;
+
+            currentAxialVp.setCamera({
+              ...currentAxialCamera,
+              position: newAxialCameraPos,
+              focalPoint: newPosition
+            });
+            currentAxialVp.render();
+
+            // Update sagittal and coronal viewports to show the new slice position
+            // Get current rotation angle from fixed crosshair
+            const currentRotationAngle = fixedCrosshairTool.getRotationAngle() || 0;
+            const cos = Math.cos(currentRotationAngle);
+            const sin = Math.sin(currentRotationAngle);
+
+            // Calculate view directions based on current rotation
+            const viewPlaneNormal = currentAxialCamera.viewPlaneNormal;
+            const actualViewUp = currentAxialCamera.viewUp;
+
+            const actualViewRight = [
+              actualViewUp[1] * viewPlaneNormal[2] - actualViewUp[2] * viewPlaneNormal[1],
+              actualViewUp[2] * viewPlaneNormal[0] - actualViewUp[0] * viewPlaneNormal[2],
+              actualViewUp[0] * viewPlaneNormal[1] - actualViewUp[1] * viewPlaneNormal[0]
+            ];
+
+            const rightLen = Math.sqrt(actualViewRight[0] ** 2 + actualViewRight[1] ** 2 + actualViewRight[2] ** 2);
+            if (rightLen > 0) {
+              actualViewRight[0] /= rightLen;
+              actualViewRight[1] /= rightLen;
+              actualViewRight[2] /= rightLen;
+            }
+
+            const rotatedViewRight = [
+              actualViewRight[0] * cos - actualViewUp[0] * sin,
+              actualViewRight[1] * cos - actualViewUp[1] * sin,
+              actualViewRight[2] * cos - actualViewUp[2] * sin
+            ];
+
+            const rotatedViewUp = [
+              actualViewRight[0] * sin + actualViewUp[0] * cos,
+              actualViewRight[1] * sin + actualViewUp[1] * cos,
+              actualViewRight[2] * sin + actualViewUp[2] * cos
+            ];
+
+            // Update sagittal viewport
+            const sagittalVp = renderingEngine.getViewport('sagittal') as Types.IVolumeViewport;
+            if (sagittalVp) {
+              const sagCameraPos = [
+                newPosition[0] + rotatedViewRight[0] * cameraDistance,
+                newPosition[1] + rotatedViewRight[1] * cameraDistance,
+                newPosition[2] + rotatedViewRight[2] * cameraDistance
+              ] as Types.Point3;
+
+              sagittalVp.setCamera({
+                position: sagCameraPos,
+                focalPoint: newPosition,
+                viewUp: [-viewPlaneNormal[0], -viewPlaneNormal[1], -viewPlaneNormal[2]] as Types.Point3,
+                parallelScale: sagittalVp.getCamera().parallelScale
+              });
+              sagittalVp.render();
+            }
+
+            // Update coronal viewport
+            const coronalVp = renderingEngine.getViewport('coronal') as Types.IVolumeViewport;
+            if (coronalVp) {
+              const corCameraPos = [
+                newPosition[0] + rotatedViewUp[0] * cameraDistance,
+                newPosition[1] + rotatedViewUp[1] * cameraDistance,
+                newPosition[2] + rotatedViewUp[2] * cameraDistance
+              ] as Types.Point3;
+
+              coronalVp.setCamera({
+                position: corCameraPos,
+                focalPoint: newPosition,
+                viewUp: [-viewPlaneNormal[0], -viewPlaneNormal[1], -viewPlaneNormal[2]] as Types.Point3,
+                parallelScale: coronalVp.getCamera().parallelScale
+              });
+              coronalVp.render();
+            }
+
+            console.log('✅ All viewports updated to follow new center position');
+          }
+          }
+        } else {
+          // AFTER 3 cusp dots: Viewports stay locked to annular plane orientation
+          console.log('🔒 Viewports locked to annular plane (after 3 cusp dots)');
+        }
+      });
+
+      // Verify it was set correctly
+      const verifyPosition = fixedCrosshairTool.getFixedPosition();
+      console.log('🔍 Verified fixed crosshair position:', verifyPosition);
+      console.log('✅ Fixed crosshair (red dot) positioned at annulus center');
+      console.log('🔒 Center dot now locked to AXIAL-ONLY movement');
+    } else {
+      console.error('❌ FixedCrosshairTool not found!');
+    }
+
+    // Update sagittal and coronal viewports with new screen-space directions
+    const newCamera = axialVp.getCamera();
+    const viewPlaneNormal = newCamera.viewPlaneNormal;
+    const actualViewUp = newCamera.viewUp;
+
+    // Calculate actualViewRight
+    const actualViewRight = [
+      actualViewUp[1] * viewPlaneNormal[2] - actualViewUp[2] * viewPlaneNormal[1],
+      actualViewUp[2] * viewPlaneNormal[0] - actualViewUp[0] * viewPlaneNormal[2],
+      actualViewUp[0] * viewPlaneNormal[1] - actualViewUp[1] * viewPlaneNormal[0]
+    ];
+
+    const rightLen = Math.sqrt(actualViewRight[0] ** 2 + actualViewRight[1] ** 2 + actualViewRight[2] ** 2);
+    if (rightLen > 0) {
+      actualViewRight[0] /= rightLen;
+      actualViewRight[1] /= rightLen;
+      actualViewRight[2] /= rightLen;
+    }
+
+    // Apply rotation if any
+    const rotationAngle = fixedCrosshairTool?.getRotationAngle() || 0;
+    const cos = Math.cos(rotationAngle);
+    const sin = Math.sin(rotationAngle);
+
+    const rotatedViewRight = [
+      actualViewRight[0] * cos - actualViewUp[0] * sin,
+      actualViewRight[1] * cos - actualViewUp[1] * sin,
+      actualViewRight[2] * cos - actualViewUp[2] * sin
+    ];
+
+    const rotatedViewUp = [
+      actualViewRight[0] * sin + actualViewUp[0] * cos,
+      actualViewRight[1] * sin + actualViewUp[1] * cos,
+      actualViewRight[2] * sin + actualViewUp[2] * cos
+    ];
+
+    // Update sagittal
+    const sagittalVp = renderingEngine.getViewport('sagittal') as Types.IVolumeViewport;
+    if (sagittalVp) {
+      const sagCameraPos = [
+        newFocalPoint[0] + rotatedViewRight[0] * cameraDistance,
+        newFocalPoint[1] + rotatedViewRight[1] * cameraDistance,
+        newFocalPoint[2] + rotatedViewRight[2] * cameraDistance
+      ] as Types.Point3;
+
+      sagittalVp.setCamera({
+        position: sagCameraPos,
+        focalPoint: newFocalPoint,
+        viewUp: [-viewPlaneNormal[0], -viewPlaneNormal[1], -viewPlaneNormal[2]] as Types.Point3,
+        parallelScale: 60, // Zoomed in to focus on annulus area
+      });
+
+      sagittalVp.render();
+      console.log('✅ Updated sagittal viewport to annular plane');
+    }
+
+    // Update coronal
+    const coronalVp = renderingEngine.getViewport('coronal') as Types.IVolumeViewport;
+    if (coronalVp) {
+      const corCameraPos = [
+        newFocalPoint[0] + rotatedViewUp[0] * cameraDistance,
+        newFocalPoint[1] + rotatedViewUp[1] * cameraDistance,
+        newFocalPoint[2] + rotatedViewUp[2] * cameraDistance
+      ] as Types.Point3;
+
+      coronalVp.setCamera({
+        position: corCameraPos,
+        focalPoint: newFocalPoint,
+        viewUp: [-viewPlaneNormal[0], -viewPlaneNormal[1], -viewPlaneNormal[2]] as Types.Point3,
+        parallelScale: 60, // Zoomed in to focus on annulus area
+      });
+
+      coronalVp.render();
+      console.log('✅ Updated coronal viewport to annular plane');
+    }
+
+    // Update locked focal point ref to annulus center
+    lockedFocalPointRef.current = newFocalPoint;
+
+    // Force re-render cusp dots after camera adjustment to ensure proper positioning
+    const currentToolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+    if (currentToolGroup) {
+      const cuspTool = currentToolGroup.getToolInstance('CuspNadir');
+      if (cuspTool && typeof (cuspTool as any).forceReRenderDots === 'function') {
+        console.log('🔄 Force re-rendering cusp dots after camera adjustment to annular plane');
+        (cuspTool as any).forceReRenderDots();
+      }
+      // Note: Valve sphere already moved to centroid earlier in this function
+    }
+
+    console.log('✅ All viewports adjusted to be perpendicular to annular plane!');
+    console.log('   Green crosshair center positioned at annulus center (centroid of 3 cusp dots)');
+    console.log('   Red valve sphere MOVED to annulus center (should be at triangle center)');
+    console.log('   All 3 cusp dots should now be visible in the axial view');
+    console.log('   Centerline regenerated with valve at annulus center');
   };
 
   const setupTools = async () => {
@@ -899,6 +1724,27 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         if (sphereTool) {
           sphereTool.setPositionUpdateCallback((spheres) => {
             onSpherePositionsUpdate(spheres);
+
+            // If in annulus definition stage and we have 3 cusp dots,
+            // update crosshair when valve sphere (index 1) is dragged
+            if (currentStage === WorkflowStage.ANNULUS_DEFINITION &&
+                cuspDotsRef.current &&
+                cuspDotsRef.current.length === 3 &&
+                spheres.length >= 3) {
+
+              const valvePos = spheres[1].pos as Types.Point3;
+
+              // Update locked focal point to follow the valve sphere
+              lockedFocalPointRef.current = valvePos;
+
+              // Update crosshair center to valve sphere position
+              const fixedCrosshairTool = toolGroup.getToolInstance('FixedCrosshair');
+              if (fixedCrosshairTool && typeof (fixedCrosshairTool as any).setPosition === 'function') {
+                (fixedCrosshairTool as any).setPosition(valvePos);
+              }
+
+              console.log('🔴 Valve sphere dragged, crosshair center updated to:', valvePos);
+            }
           });
         }
       }
@@ -908,20 +1754,37 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         const cuspTool = toolGroup.getToolInstance(CuspNadirTool.toolName) as CuspNadirTool;
         if (cuspTool) {
           cuspTool.setPositionUpdateCallback((dots) => {
+            // Store cusp dots in ref
+            cuspDotsRef.current = dots;
+
+            // Call parent callback
             onCuspDotsUpdate(dots);
+
+            // If we have 3 cusp dots during annulus definition, adjust plane
+            if (dots.length === 3 && currentStage === WorkflowStage.ANNULUS_DEFINITION) {
+              console.log('🎯 3 cusp dots placed! Adjusting axial view to be perpendicular to annular plane...');
+              setTimeout(() => {
+                adjustToAnnularPlane(dots);
+              }, 100); // Small delay to let rendering settle
+            }
           });
         }
       }
 
       // CRITICAL: Activate CrosshairsTool BEFORE adding viewports (like App.tsx)
       // This is the correct order for proper synchronization
-      console.log('  🎯 Activating CrosshairsTool BEFORE adding viewports...');
-      toolGroup.setToolActive(CrosshairsTool.toolName, {
-        bindings: [{
-          mouseButton: MouseBindings.Primary,
-        }],
-      });
-      console.log('  ✅ CrosshairsTool activated');
+      // EXCEPT for MEASUREMENTS stage where we use FixedCrosshairTool instead
+      if (currentStage !== WorkflowStage.MEASUREMENTS) {
+        console.log('  🎯 Activating CrosshairsTool BEFORE adding viewports...');
+        toolGroup.setToolActive(CrosshairsTool.toolName, {
+          bindings: [{
+            mouseButton: MouseBindings.Primary,
+          }],
+        });
+        console.log('  ✅ CrosshairsTool activated');
+      } else {
+        console.log('  ⏭️ Skipping CrosshairsTool activation (MEASUREMENTS stage uses FixedCrosshairTool)');
+      }
 
       // Add viewports to the tool group AFTER activating CrosshairsTool
       const viewportIds = ["axial", "sagittal", "coronal"];
@@ -975,7 +1838,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       toolGroup.setToolPassive(SphereMarkerTool.toolName);
       toolGroup.setToolPassive(CuspNadirTool.toolName);
       toolGroup.setToolPassive(WindowLevelTool.toolName);
-      
+      toolGroup.setToolPassive(FixedCrosshairTool.toolName); // Also disable fixed crosshairs when switching tools
+
       // Always keep these tools active with their default bindings
       toolGroup.setToolActive(StackScrollTool.toolName, {
         bindings: [{ mouseButton: MouseBindings.Wheel }],
@@ -983,9 +1847,10 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       toolGroup.setToolActive(ZoomTool.toolName, {
         bindings: [{ mouseButton: MouseBindings.Secondary }],
       });
-      
+
       // Activate selected tool
       if (toolName === 'SphereMarker') {
+        console.log('🎯 Activating SphereMarker tool for dragging spheres');
         toolGroup.setToolActive(SphereMarkerTool.toolName, {
           bindings: [{ mouseButton: MouseBindings.Primary }],
         });
@@ -1065,36 +1930,65 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     const fixedCrosshairTool = toolGroup.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
 
     if (currentStage === WorkflowStage.ANNULUS_DEFINITION) {
-      // Lock sphere tool, unlock cusp tool
+      // Allow sphere editing when explicitly selected, otherwise lock
       if (sphereTool && typeof sphereTool.setDraggable === 'function') {
-        sphereTool.setDraggable(false);
+        sphereTool.setDraggable(true); // Allow dragging if tool is selected
       }
       if (cuspTool) {
         cuspTool.setDraggable(true);
       }
 
-      // Switch to fixed crosshairs if we have a locked position
-      if (lockedFocalPointRef.current && fixedCrosshairTool) {
-        console.log('🔄 Switching to fixed crosshairs...');
+      // Disable forceVisible - use normal slice-based visibility during annulus definition
+      if (sphereTool && typeof sphereTool.setForceVisible === 'function') {
+        sphereTool.setForceVisible(false);
+      }
+      if (cuspTool && typeof cuspTool.setForceVisible === 'function') {
+        cuspTool.setForceVisible(false);
+      }
 
-        // Disable regular crosshairs and other primary button tools
+      // During annulus definition, activate THREE tools: FixedCrosshairTool, CuspNadirTool, and SphereMarkerTool
+      // CuspNadirTool will capture events when hovering over cusp dots
+      // SphereMarkerTool will capture events when hovering over valve sphere
+      // FixedCrosshairTool will handle rotation when not over any interactive element
+      if (lockedFocalPointRef.current && fixedCrosshairTool) {
+        console.log('🔄 Annulus Definition mode - Rotation, cusp dragging, and valve sphere dragging active');
+
+        // Disable regular crosshairs
         toolGroup.setToolDisabled(CrosshairsTool.toolName);
-        toolGroup.setToolPassive(SphereMarkerTool.toolName);
+
+        // Make non-primary tools passive
         toolGroup.setToolPassive(WindowLevelTool.toolName);
+
+        // CRITICAL: Disable StackScrollTool during annulus definition
+        // We handle scrolling manually to follow centerline
+        toolGroup.setToolDisabled(StackScrollTool.toolName);
+        console.log('🔇 StackScrollTool disabled for discrete scrolling');
 
         fixedCrosshairTool.setFixedPosition(lockedFocalPointRef.current, renderingEngineId);
 
-        // CRITICAL: Set tool to ACTIVE (not just enabled) so mouse callbacks work
+        // NOTE: Center dragging re-enable and distance measurement disable
+        // are handled by the "Configure Tools for Measurements Stage" useEffect
+
+        // CRITICAL: Activate ALL THREE tools with same mouse button
+        // Priority order (based on preMouseDownCallback return values):
+        // 1. CuspNadirTool captures events when over a cusp dot
+        // 2. SphereMarkerTool captures events when over valve sphere
+        // 3. FixedCrosshairTool handles rotation when not over any interactive element
+        toolGroup.setToolActive(CuspNadirTool.toolName, {
+          bindings: [{ mouseButton: MouseBindings.Primary }],
+        });
+
+        toolGroup.setToolActive(SphereMarkerTool.toolName, {
+          bindings: [{ mouseButton: MouseBindings.Primary }],
+        });
+
         toolGroup.setToolActive(FixedCrosshairTool.toolName, {
           bindings: [{ mouseButton: MouseBindings.Primary }],
         });
 
-        // Keep zoom and scroll active on their own bindings
+        // Keep zoom active on right mouse button
         toolGroup.setToolActive(ZoomTool.toolName, {
           bindings: [{ mouseButton: MouseBindings.Secondary }],
-        });
-        toolGroup.setToolActive(StackScrollTool.toolName, {
-          bindings: [{ mouseButton: MouseBindings.Wheel }],
         });
 
         // Force render all viewports
@@ -1103,7 +1997,81 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         }
       }
 
-      console.log('🔒 Stage: Annulus Definition - Locked spheres, unlocked cusp dots, fixed crosshairs');
+      console.log('🔓 Stage: Annulus Definition - Both cusp dragging and rotation active');
+    } else if (currentStage === WorkflowStage.MEASUREMENTS) {
+      // Lock all spheres and cusp dots (no dragging during measurements)
+      if (sphereTool && typeof sphereTool.setDraggable === 'function') {
+        sphereTool.setDraggable(false);
+      }
+      if (cuspTool) {
+        cuspTool.setDraggable(false);
+      }
+
+      // Use normal slice-based visibility (same as annulus definition)
+      // Annotations will show only when on or near the current slice
+      if (sphereTool && typeof sphereTool.setForceVisible === 'function') {
+        sphereTool.setForceVisible(false);
+      }
+      if (cuspTool && typeof cuspTool.setForceVisible === 'function') {
+        cuspTool.setForceVisible(false);
+      }
+
+      // During measurements, only rotation is active
+      // Scrolling is handled manually along centerline
+      console.log('🔄 Measurements mode - Rotation active, scrolling along centerline');
+
+      // CRITICAL: Disable regular CrosshairsTool FIRST to prevent conflicts
+      toolGroup.setToolDisabled(CrosshairsTool.toolName);
+      console.log('🔇 CrosshairsTool disabled (using FixedCrosshairTool instead)');
+
+      // CRITICAL: Disable StackScrollTool during measurements
+      // We handle scrolling manually along centerline
+      toolGroup.setToolDisabled(StackScrollTool.toolName);
+      console.log('🔇 StackScrollTool disabled for continuous centerline scrolling');
+
+      // Make non-primary tools passive
+      toolGroup.setToolPassive(WindowLevelTool.toolName);
+
+      // Keep cusp dots and spheres visible (slice-based) but not draggable
+      // Setting tools to PASSIVE keeps them visible with slice-based visibility
+      toolGroup.setToolPassive(CuspNadirTool.toolName);
+      toolGroup.setToolPassive(SphereMarkerTool.toolName);
+      console.log('✅ CuspNadirTool and SphereMarkerTool set to passive (slice-based visibility, not interactive)');
+
+      // NOTE: FixedCrosshairTool configuration (drag disable, distance measurement)
+      // is handled by a dedicated useEffect that runs when entering MEASUREMENTS stage
+      // See "Configure Tools for Measurements Stage" useEffect below
+
+      // CRITICAL: Ensure correct zoom level (60) for measurements stage
+      // This preserves the zoom from annulus definition stage
+      if (renderingEngineRef.current) {
+        const renderingEngine = renderingEngineRef.current;
+        const viewportIds = ['axial', 'sagittal', 'coronal'];
+
+        viewportIds.forEach(viewportId => {
+          const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
+          if (viewport) {
+            const currentCamera = viewport.getCamera();
+            // Only update if zoom is different from desired value
+            if (Math.abs(currentCamera.parallelScale - savedCameraZoomRef.current) > 0.1) {
+              viewport.setCamera({
+                ...currentCamera,
+                parallelScale: savedCameraZoomRef.current
+              });
+              console.log(`  🔍 Set ${viewportId} zoom to ${savedCameraZoomRef.current}`);
+            }
+          }
+        });
+
+        renderingEngine.renderViewports(viewportIds);
+      }
+
+      // Keep zoom active on right mouse button
+      toolGroup.setToolActive(ZoomTool.toolName, {
+        bindings: [{ mouseButton: MouseBindings.Secondary }],
+      });
+
+      console.log('🔓 Stage: Measurements - Fixed crosshair active, cusp dots visible (locked)');
     } else {
       // Unlock sphere tool, lock cusp tool
       if (sphereTool && typeof sphereTool.setDraggable === 'function') {
@@ -1113,22 +2081,40 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         cuspTool.setDraggable(false);
       }
 
-      // Switch back to regular crosshairs
-      if (fixedCrosshairTool) {
-        console.log('🔄 Switching to interactive crosshairs...');
-        toolGroup.setToolDisabled(FixedCrosshairTool.toolName);
-        fixedCrosshairTool.clearFixedPosition();
-        toolGroup.setToolActive(CrosshairsTool.toolName, {
-          bindings: [{ mouseButton: MouseBindings.Primary }],
-        });
-
-        // Force render all viewports
-        if (renderingEngineRef.current) {
-          renderingEngineRef.current.renderViewports(['axial', 'sagittal', 'coronal']);
-        }
+      // Disable forceVisible - use normal slice-based visibility during root definition
+      if (sphereTool && typeof sphereTool.setForceVisible === 'function') {
+        sphereTool.setForceVisible(false);
+      }
+      if (cuspTool && typeof cuspTool.setForceVisible === 'function') {
+        cuspTool.setForceVisible(false);
       }
 
-      console.log('🔓 Stage changed - Unlocked spheres, interactive crosshairs');
+      // Switch back to interactive tools (sphere marker for placement/dragging)
+      console.log('🔄 Switching to interactive mode - SphereMarker tool active for dragging');
+
+      // CRITICAL: Disable ALL crosshair tools first
+      if (fixedCrosshairTool) {
+        toolGroup.setToolDisabled(FixedCrosshairTool.toolName);
+        fixedCrosshairTool.clearFixedPosition();
+      }
+      toolGroup.setToolDisabled(CrosshairsTool.toolName);
+
+      // Re-enable StackScrollTool for normal scrolling
+      toolGroup.setToolActive(StackScrollTool.toolName, {
+        bindings: [{ mouseButton: MouseBindings.Wheel }],
+      });
+
+      // CRITICAL: Activate SphereMarker tool for placing and dragging spheres
+      toolGroup.setToolActive(SphereMarkerTool.toolName, {
+        bindings: [{ mouseButton: MouseBindings.Primary }],
+      });
+
+      // Force render all viewports
+      if (renderingEngineRef.current) {
+        renderingEngineRef.current.renderViewports(['axial', 'sagittal', 'coronal']);
+      }
+
+      console.log('🔓 Stage: Root Definition - SphereMarker active, spheres draggable');
     }
   }, [currentStage]);
 
@@ -1209,7 +2195,647 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     };
   }, [renderingEngineRef.current]);
 
-  // Lock crosshair focal point during annulus definition by using a synchronizer
+  // ============================================================================
+  // Centerline Helper Functions for Measurements Stage Scrolling
+  // ============================================================================
+
+  /**
+   * Get 3D position at a specific centerline index
+   */
+  const getCenterlinePositionAtIndex = (index: number): Types.Point3 | null => {
+    if (!centerlineDataRef.current || !centerlineDataRef.current.position) {
+      return null;
+    }
+
+    const numPoints = centerlineDataRef.current.position.length / 3;
+    if (index < 0 || index >= numPoints) {
+      return null;
+    }
+
+    return [
+      centerlineDataRef.current.position[index * 3],
+      centerlineDataRef.current.position[index * 3 + 1],
+      centerlineDataRef.current.position[index * 3 + 2]
+    ] as Types.Point3;
+  };
+
+  /**
+   * Get tangent vector at a specific centerline index (direction along the path)
+   */
+  const getCenterlineTangentAtIndex = (index: number): Types.Point3 | null => {
+    if (!centerlineDataRef.current || !centerlineDataRef.current.position) {
+      return null;
+    }
+
+    const numPoints = centerlineDataRef.current.position.length / 3;
+    if (index < 0 || index >= numPoints) {
+      return null;
+    }
+
+    // Calculate tangent from adjacent points
+    let prevIndex = Math.max(0, index - 1);
+    let nextIndex = Math.min(numPoints - 1, index + 1);
+
+    const prevPos = [
+      centerlineDataRef.current.position[prevIndex * 3],
+      centerlineDataRef.current.position[prevIndex * 3 + 1],
+      centerlineDataRef.current.position[prevIndex * 3 + 2]
+    ];
+
+    const nextPos = [
+      centerlineDataRef.current.position[nextIndex * 3],
+      centerlineDataRef.current.position[nextIndex * 3 + 1],
+      centerlineDataRef.current.position[nextIndex * 3 + 2]
+    ];
+
+    // Tangent is direction from prev to next
+    const tangent = [
+      nextPos[0] - prevPos[0],
+      nextPos[1] - prevPos[1],
+      nextPos[2] - prevPos[2]
+    ];
+
+    // Normalize
+    const length = Math.sqrt(tangent[0] ** 2 + tangent[1] ** 2 + tangent[2] ** 2);
+    if (length === 0) {
+      return [0, 0, 1] as Types.Point3; // Default fallback
+    }
+
+    return [
+      tangent[0] / length,
+      tangent[1] / length,
+      tangent[2] / length
+    ] as Types.Point3;
+  };
+
+  /**
+   * Find the nearest centerline index to a given world position
+   */
+  const findNearestCenterlineIndex = (worldPos: Types.Point3): number => {
+    if (!centerlineDataRef.current || !centerlineDataRef.current.position) {
+      return 0;
+    }
+
+    const numPoints = centerlineDataRef.current.position.length / 3;
+    let minDistance = Infinity;
+    let nearestIndex = 0;
+
+    for (let i = 0; i < numPoints; i++) {
+      const pos = getCenterlinePositionAtIndex(i);
+      if (!pos) continue;
+
+      const distance = Math.sqrt(
+        (pos[0] - worldPos[0]) ** 2 +
+        (pos[1] - worldPos[1]) ** 2 +
+        (pos[2] - worldPos[2]) ** 2
+      );
+
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearestIndex = i;
+      }
+    }
+
+    return nearestIndex;
+  };
+
+  // ============================================================================
+  // Continuous Centerline Scrolling for Annulus Definition Stage
+  // ============================================================================
+
+  // Handle continuous centerline scrolling during annulus definition (same as measurements)
+  useEffect(() => {
+    if (currentStage !== WorkflowStage.ANNULUS_DEFINITION ||
+        !centerlineDataRef.current ||
+        !renderingEngineRef.current) {
+      return;
+    }
+
+    const renderingEngine = renderingEngineRef.current;
+    const numCenterlinePoints = centerlineDataRef.current.position.length / 3;
+
+    // Initialize centerline index if needed
+    if (currentCenterlineIndexRef.current === 0 && lockedFocalPointRef.current) {
+      const nearestIndex = findNearestCenterlineIndex(lockedFocalPointRef.current);
+      currentCenterlineIndexRef.current = nearestIndex;
+      console.log(`📍 Initialized centerline index to ${nearestIndex} for annulus definition`);
+    }
+
+    // Get axial viewport element
+    const axialViewport = renderingEngine.getViewport('axial');
+    if (!axialViewport || !axialViewport.element) {
+      return;
+    }
+
+    const axialElement = axialViewport.element;
+
+    const handleWheel = (evt: WheelEvent) => {
+      console.log('🎡 Annulus definition scroll handler triggered!', evt.deltaY);
+
+      evt.preventDefault();
+      evt.stopPropagation();
+      evt.stopImmediatePropagation();
+
+      // Calculate scroll step (1 index per scroll notch)
+      const scrollStep = evt.deltaY > 0 ? 1 : -1;
+      const newIndex = Math.max(0, Math.min(numCenterlinePoints - 1, currentCenterlineIndexRef.current + scrollStep));
+
+      console.log(`   Current index: ${currentCenterlineIndexRef.current}, New index: ${newIndex}`);
+
+      if (newIndex === currentCenterlineIndexRef.current) {
+        console.log('   ⚠️ Already at boundary');
+        return; // Already at boundary
+      }
+
+      currentCenterlineIndexRef.current = newIndex;
+
+      // Get position and tangent at new centerline index
+      const newPosition = getCenterlinePositionAtIndex(newIndex);
+      const tangent = getCenterlineTangentAtIndex(newIndex);
+
+      if (!newPosition || !tangent) {
+        console.warn('⚠️ Failed to get centerline position or tangent at index', newIndex);
+        return;
+      }
+
+      console.log(`📜 Scrolling to centerline index ${newIndex}/${numCenterlinePoints - 1}`);
+      console.log('   Position:', newPosition);
+      console.log('   Tangent:', tangent);
+
+      // Update axial viewport - position camera perpendicular to centerline
+      const axialVp = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
+      if (!axialVp) return;
+
+      const camera = axialVp.getCamera();
+      const cameraDistance = 200;
+
+      // Position camera along the tangent (perpendicular to axial slice)
+      const newCameraPos = [
+        newPosition[0] + tangent[0] * cameraDistance,
+        newPosition[1] + tangent[1] * cameraDistance,
+        newPosition[2] + tangent[2] * cameraDistance
+      ] as Types.Point3;
+
+      // Calculate viewUp perpendicular to tangent
+      let viewUp: Types.Point3;
+      const reference = Math.abs(tangent[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+      const cross = [
+        tangent[1] * reference[2] - tangent[2] * reference[1],
+        tangent[2] * reference[0] - tangent[0] * reference[2],
+        tangent[0] * reference[1] - tangent[1] * reference[0]
+      ];
+
+      const crossLen = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
+      if (crossLen > 0) {
+        viewUp = [cross[0] / crossLen, cross[1] / crossLen, cross[2] / crossLen] as Types.Point3;
+      } else {
+        viewUp = [0, 0, 1] as Types.Point3;
+      }
+
+      axialVp.setCamera({
+        position: newCameraPos,
+        focalPoint: newPosition,
+        viewUp: viewUp,
+        parallelScale: camera.parallelScale,
+      });
+
+      axialVp.render();
+
+      // Update fixed crosshair position
+      const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+      const fixedCrosshairTool = toolGroup?.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
+      if (fixedCrosshairTool) {
+        fixedCrosshairTool.setFixedPosition(newPosition, renderingEngineId);
+      }
+
+      // Update sagittal and coronal viewports with new screen-space directions
+      const newCamera = axialVp.getCamera();
+      const viewPlaneNormal = newCamera.viewPlaneNormal;
+      const actualViewUp = newCamera.viewUp;
+
+      // Calculate actualViewRight
+      const actualViewRight = [
+        actualViewUp[1] * viewPlaneNormal[2] - actualViewUp[2] * viewPlaneNormal[1],
+        actualViewUp[2] * viewPlaneNormal[0] - actualViewUp[0] * viewPlaneNormal[2],
+        actualViewUp[0] * viewPlaneNormal[1] - actualViewUp[1] * viewPlaneNormal[0]
+      ];
+
+      const rightLen = Math.sqrt(actualViewRight[0] ** 2 + actualViewRight[1] ** 2 + actualViewRight[2] ** 2);
+      if (rightLen > 0) {
+        actualViewRight[0] /= rightLen;
+        actualViewRight[1] /= rightLen;
+        actualViewRight[2] /= rightLen;
+      }
+
+      // Apply rotation if any
+      const rotationAngle = fixedCrosshairTool?.getRotationAngle() || 0;
+      const cos = Math.cos(rotationAngle);
+      const sin = Math.sin(rotationAngle);
+
+      const rotatedViewRight = [
+        actualViewRight[0] * cos - actualViewUp[0] * sin,
+        actualViewRight[1] * cos - actualViewUp[1] * sin,
+        actualViewRight[2] * cos - actualViewUp[2] * sin
+      ];
+
+      const rotatedViewUp = [
+        actualViewRight[0] * sin + actualViewUp[0] * cos,
+        actualViewRight[1] * sin + actualViewUp[1] * cos,
+        actualViewRight[2] * sin + actualViewUp[2] * cos
+      ];
+
+      // Update sagittal
+      const sagittalVp = renderingEngine.getViewport('sagittal') as Types.IVolumeViewport;
+      if (sagittalVp) {
+        const sagCameraPos = [
+          newPosition[0] + rotatedViewRight[0] * cameraDistance,
+          newPosition[1] + rotatedViewRight[1] * cameraDistance,
+          newPosition[2] + rotatedViewRight[2] * cameraDistance
+        ] as Types.Point3;
+
+        sagittalVp.setCamera({
+          position: sagCameraPos,
+          focalPoint: newPosition,
+          viewUp: [-viewPlaneNormal[0], -viewPlaneNormal[1], -viewPlaneNormal[2]] as Types.Point3,
+          parallelScale: sagittalVp.getCamera().parallelScale
+        });
+
+        sagittalVp.render();
+      }
+
+      // Update coronal
+      const coronalVp = renderingEngine.getViewport('coronal') as Types.IVolumeViewport;
+      if (coronalVp) {
+        const corCameraPos = [
+          newPosition[0] + rotatedViewUp[0] * cameraDistance,
+          newPosition[1] + rotatedViewUp[1] * cameraDistance,
+          newPosition[2] + rotatedViewUp[2] * cameraDistance
+        ] as Types.Point3;
+
+        coronalVp.setCamera({
+          position: corCameraPos,
+          focalPoint: newPosition,
+          viewUp: [-viewPlaneNormal[0], -viewPlaneNormal[1], -viewPlaneNormal[2]] as Types.Point3,
+          parallelScale: coronalVp.getCamera().parallelScale
+        });
+
+        coronalVp.render();
+      }
+
+      // CRITICAL: Manually trigger visibility updates for sphere and cusp tools
+      // Since we're capturing the wheel event, the tools' visibility listeners don't run
+      const tGroup = ToolGroupManager.getToolGroup(toolGroupId);
+      const sphereToolInstance = tGroup?.getToolInstance(SphereMarkerTool.toolName) as SphereMarkerTool;
+      const cuspToolInstance = tGroup?.getToolInstance(CuspNadirTool.toolName) as CuspNadirTool;
+
+      if (sphereToolInstance && typeof sphereToolInstance.updateVisibilityForSingleViewport === 'function') {
+        if (axialVp) sphereToolInstance.updateVisibilityForSingleViewport(axialVp, 0);
+        if (sagittalVp) sphereToolInstance.updateVisibilityForSingleViewport(sagittalVp, 1);
+        if (coronalVp) sphereToolInstance.updateVisibilityForSingleViewport(coronalVp, 2);
+      }
+
+      if (cuspToolInstance && typeof cuspToolInstance.updateVisibilityForSingleViewport === 'function') {
+        if (axialVp) cuspToolInstance.updateVisibilityForSingleViewport(axialVp, 0);
+        if (sagittalVp) cuspToolInstance.updateVisibilityForSingleViewport(sagittalVp, 1);
+        if (coronalVp) cuspToolInstance.updateVisibilityForSingleViewport(coronalVp, 2);
+      }
+
+      console.log('✅ All viewports updated to centerline position', newIndex);
+    };
+
+    // Add event listener with capture=true to intercept BEFORE Cornerstone's handlers
+    console.log('🔧 Setting up continuous centerline scroll handler on axial viewport (annulus definition)');
+    console.log('   Number of centerline points:', numCenterlinePoints);
+    console.log('   Starting at centerline index:', currentCenterlineIndexRef.current);
+
+    axialElement.addEventListener('wheel', handleWheel, { passive: false, capture: true });
+
+    return () => {
+      console.log('🧹 Removing continuous centerline scroll handler (annulus definition)');
+      axialElement.removeEventListener('wheel', handleWheel, { capture: true });
+    };
+  }, [currentStage, renderingEngineRef.current, centerlineDataRef.current]);
+
+  // ============================================================================
+  // Continuous Centerline Scrolling for Measurements Stage
+  // ============================================================================
+
+  // Handle continuous scrolling along centerline during measurements stage
+  useEffect(() => {
+    if (currentStage !== WorkflowStage.MEASUREMENTS ||
+        !centerlineDataRef.current ||
+        !renderingEngineRef.current ||
+        !lockedFocalPointRef.current) {
+      return;
+    }
+
+    const renderingEngine = renderingEngineRef.current;
+    const axialViewport = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
+
+    if (!axialViewport || !axialViewport.element) {
+      return;
+    }
+
+    const axialElement = axialViewport.element;
+    const numCenterlinePoints = centerlineDataRef.current.position.length / 3;
+
+    // Initialize centerline index to annulus center position (if not already set)
+    if (currentCenterlineIndexRef.current === 0 && lockedFocalPointRef.current) {
+      const nearestIndex = findNearestCenterlineIndex(lockedFocalPointRef.current);
+      currentCenterlineIndexRef.current = nearestIndex;
+      console.log(`📍 Initialized centerline index to ${nearestIndex} (nearest to annulus center)`);
+    }
+
+    const handleWheel = (evt: WheelEvent) => {
+      console.log('🎡 Measurements stage scroll handler triggered!', evt.deltaY);
+
+      evt.preventDefault();
+      evt.stopPropagation();
+      evt.stopImmediatePropagation();
+
+      // Calculate scroll step (1 index per scroll notch, can be adjusted)
+      const scrollStep = evt.deltaY > 0 ? 1 : -1;
+      const newIndex = Math.max(0, Math.min(numCenterlinePoints - 1, currentCenterlineIndexRef.current + scrollStep));
+
+      console.log(`   Current index: ${currentCenterlineIndexRef.current}, New index: ${newIndex}`);
+
+      if (newIndex === currentCenterlineIndexRef.current) {
+        console.log('   ⚠️ Already at boundary');
+        return; // Already at boundary
+      }
+
+      currentCenterlineIndexRef.current = newIndex;
+
+      // Get position and tangent at new centerline index
+      const newPosition = getCenterlinePositionAtIndex(newIndex);
+      const tangent = getCenterlineTangentAtIndex(newIndex);
+
+      if (!newPosition || !tangent) {
+        console.warn('⚠️ Failed to get centerline position or tangent at index', newIndex);
+        return;
+      }
+
+      console.log(`📜 Scrolling to centerline index ${newIndex}/${numCenterlinePoints - 1}`);
+      console.log('   Position:', newPosition);
+      console.log('   Tangent:', tangent);
+
+      // Update axial viewport - position camera perpendicular to centerline
+      const axialVp = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
+      if (!axialVp) return;
+
+      const camera = axialVp.getCamera();
+      const cameraDistance = 200;
+
+      // Position camera along the tangent (perpendicular to axial slice)
+      const newCameraPos = [
+        newPosition[0] + tangent[0] * cameraDistance,
+        newPosition[1] + tangent[1] * cameraDistance,
+        newPosition[2] + tangent[2] * cameraDistance
+      ] as Types.Point3;
+
+      // Calculate viewUp perpendicular to tangent
+      let viewUp: Types.Point3;
+      const reference = Math.abs(tangent[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+      const cross = [
+        tangent[1] * reference[2] - tangent[2] * reference[1],
+        tangent[2] * reference[0] - tangent[0] * reference[2],
+        tangent[0] * reference[1] - tangent[1] * reference[0]
+      ];
+
+      const crossLen = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
+      if (crossLen > 0) {
+        viewUp = [cross[0] / crossLen, cross[1] / crossLen, cross[2] / crossLen] as Types.Point3;
+      } else {
+        viewUp = [0, 0, 1] as Types.Point3;
+      }
+
+      axialVp.setCamera({
+        position: newCameraPos,
+        focalPoint: newPosition,
+        viewUp: viewUp,
+        parallelScale: camera.parallelScale,
+      });
+
+      axialVp.render();
+
+      // Update fixed crosshair position
+      const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+      const fixedCrosshairTool = toolGroup?.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
+      if (fixedCrosshairTool) {
+        fixedCrosshairTool.setFixedPosition(newPosition, renderingEngineId);
+      }
+
+      // Update sagittal and coronal viewports with new screen-space directions
+      const newCamera = axialVp.getCamera();
+      const viewPlaneNormal = newCamera.viewPlaneNormal;
+      const actualViewUp = newCamera.viewUp;
+
+      // Calculate actualViewRight
+      const actualViewRight = [
+        actualViewUp[1] * viewPlaneNormal[2] - actualViewUp[2] * viewPlaneNormal[1],
+        actualViewUp[2] * viewPlaneNormal[0] - actualViewUp[0] * viewPlaneNormal[2],
+        actualViewUp[0] * viewPlaneNormal[1] - actualViewUp[1] * viewPlaneNormal[0]
+      ];
+
+      const rightLen = Math.sqrt(actualViewRight[0] ** 2 + actualViewRight[1] ** 2 + actualViewRight[2] ** 2);
+      if (rightLen > 0) {
+        actualViewRight[0] /= rightLen;
+        actualViewRight[1] /= rightLen;
+        actualViewRight[2] /= rightLen;
+      }
+
+      // Apply rotation if any (preserve user's rotation angle)
+      const rotationAngle = fixedCrosshairTool?.getRotationAngle() || 0;
+      const cos = Math.cos(rotationAngle);
+      const sin = Math.sin(rotationAngle);
+
+      const rotatedViewRight = [
+        actualViewRight[0] * cos - actualViewUp[0] * sin,
+        actualViewRight[1] * cos - actualViewUp[1] * sin,
+        actualViewRight[2] * cos - actualViewUp[2] * sin
+      ];
+
+      const rotatedViewUp = [
+        actualViewRight[0] * sin + actualViewUp[0] * cos,
+        actualViewRight[1] * sin + actualViewUp[1] * cos,
+        actualViewRight[2] * sin + actualViewUp[2] * cos
+      ];
+
+      // Update sagittal viewport
+      const sagittalVp = renderingEngine.getViewport('sagittal') as Types.IVolumeViewport;
+      if (sagittalVp) {
+        const sagCameraPos = [
+          newPosition[0] + rotatedViewRight[0] * cameraDistance,
+          newPosition[1] + rotatedViewRight[1] * cameraDistance,
+          newPosition[2] + rotatedViewRight[2] * cameraDistance
+        ] as Types.Point3;
+
+        sagittalVp.setCamera({
+          position: sagCameraPos,
+          focalPoint: newPosition,
+          viewUp: [-viewPlaneNormal[0], -viewPlaneNormal[1], -viewPlaneNormal[2]] as Types.Point3,
+          parallelScale: sagittalVp.getCamera().parallelScale
+        });
+
+        sagittalVp.render();
+      }
+
+      // Update coronal viewport
+      const coronalVp = renderingEngine.getViewport('coronal') as Types.IVolumeViewport;
+      if (coronalVp) {
+        const corCameraPos = [
+          newPosition[0] + rotatedViewUp[0] * cameraDistance,
+          newPosition[1] + rotatedViewUp[1] * cameraDistance,
+          newPosition[2] + rotatedViewUp[2] * cameraDistance
+        ] as Types.Point3;
+
+        coronalVp.setCamera({
+          position: corCameraPos,
+          focalPoint: newPosition,
+          viewUp: [-viewPlaneNormal[0], -viewPlaneNormal[1], -viewPlaneNormal[2]] as Types.Point3,
+          parallelScale: coronalVp.getCamera().parallelScale
+        });
+
+        coronalVp.render();
+      }
+
+      // CRITICAL: Manually trigger visibility updates for sphere and cusp tools
+      // Since we're capturing the wheel event, the tools' visibility listeners don't run
+      const tGroup = ToolGroupManager.getToolGroup(toolGroupId);
+      const sphereToolInstance = tGroup?.getToolInstance(SphereMarkerTool.toolName) as SphereMarkerTool;
+      const cuspToolInstance = tGroup?.getToolInstance(CuspNadirTool.toolName) as CuspNadirTool;
+
+      if (sphereToolInstance && typeof sphereToolInstance.updateVisibilityForSingleViewport === 'function') {
+        if (axialVp) sphereToolInstance.updateVisibilityForSingleViewport(axialVp, 0);
+        if (sagittalVp) sphereToolInstance.updateVisibilityForSingleViewport(sagittalVp, 1);
+        if (coronalVp) sphereToolInstance.updateVisibilityForSingleViewport(coronalVp, 2);
+      }
+
+      if (cuspToolInstance && typeof cuspToolInstance.updateVisibilityForSingleViewport === 'function') {
+        if (axialVp) cuspToolInstance.updateVisibilityForSingleViewport(axialVp, 0);
+        if (sagittalVp) cuspToolInstance.updateVisibilityForSingleViewport(sagittalVp, 1);
+        if (coronalVp) cuspToolInstance.updateVisibilityForSingleViewport(coronalVp, 2);
+      }
+
+      console.log('✅ All viewports updated to centerline position', newIndex);
+    };
+
+    // Add event listener with capture=true to intercept BEFORE Cornerstone's handlers
+    console.log('🔧 Setting up continuous centerline scroll handler on axial viewport');
+    console.log('   Number of centerline points:', numCenterlinePoints);
+    console.log('   Starting at centerline index:', currentCenterlineIndexRef.current);
+
+    axialElement.addEventListener('wheel', handleWheel, { passive: false, capture: true });
+
+    return () => {
+      console.log('🧹 Removing continuous centerline scroll handler');
+      axialElement.removeEventListener('wheel', handleWheel, { capture: true });
+    };
+  }, [currentStage, renderingEngineRef.current, centerlineDataRef.current, lockedFocalPointRef.current]);
+
+  // ============================================================================
+  // Cleanup Annulus Reference Lines when leaving Measurements Stage
+  // ============================================================================
+
+  useEffect(() => {
+    // Remove annulus lines when leaving measurements stage
+    if (currentStage !== WorkflowStage.MEASUREMENTS && annulusLineActorsRef.current && renderingEngineRef.current) {
+      console.log('🧹 Removing annulus reference lines (left measurements stage)');
+
+      const renderingEngine = renderingEngineRef.current;
+      const sagittalVp = renderingEngine.getViewport('sagittal');
+      const coronalVp = renderingEngine.getViewport('coronal');
+
+      if (sagittalVp && annulusLineActorsRef.current.sagittal) {
+        try {
+          sagittalVp.removeActor({ uid: 'annulus-line-sagittal' });
+          sagittalVp.render();
+        } catch (e) {
+          console.warn('Failed to remove sagittal annulus line:', e);
+        }
+      }
+
+      if (coronalVp && annulusLineActorsRef.current.coronal) {
+        try {
+          coronalVp.removeActor({ uid: 'annulus-line-coronal' });
+          coronalVp.render();
+        } catch (e) {
+          console.warn('Failed to remove coronal annulus line:', e);
+        }
+      }
+
+      annulusLineActorsRef.current = null;
+      console.log('✅ Annulus reference lines removed');
+    }
+  }, [currentStage]);
+
+  // ============================================================================
+  // Configure Tools for Measurements Stage
+  // ============================================================================
+  useEffect(() => {
+    // Configure FixedCrosshairTool when entering measurements stage
+    if (currentStage === WorkflowStage.MEASUREMENTS) {
+      console.log('🔍 ENTERING MEASUREMENTS STAGE - Configuring distance measurement');
+
+      const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+      if (!toolGroup) {
+        // Tools not initialized yet - will run again when rendering engine is ready
+        return;
+      }
+
+      const fixedCrosshairTool = toolGroup.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
+
+      console.log('🔍 DEBUG: Checking for FixedCrosshairTool setup:', {
+        hasLockedFocalPoint: !!lockedFocalPointRef.current,
+        lockedFocalPoint: lockedFocalPointRef.current,
+        hasFixedCrosshairTool: !!fixedCrosshairTool,
+      });
+
+      if (lockedFocalPointRef.current && fixedCrosshairTool) {
+        // CRITICAL: Disable center dragging during measurements
+        if (typeof fixedCrosshairTool.setCenterDraggingDisabled === 'function') {
+          fixedCrosshairTool.setCenterDraggingDisabled(true);
+          console.log('🔒 Center dragging disabled - crosshair moves only via centerline scrolling');
+        }
+
+        // Enable distance measurement from annulus reference position
+        if (typeof fixedCrosshairTool.setAnnulusReference === 'function') {
+          fixedCrosshairTool.setAnnulusReference(lockedFocalPointRef.current);
+          console.log('📏 Distance measurement enabled - reference point at annulus');
+        }
+      } else {
+        console.warn('⚠️ Cannot configure distance measurement:', {
+          lockedFocalPoint: lockedFocalPointRef.current,
+          fixedCrosshairTool
+        });
+      }
+    } else {
+      // Disable distance measurement when leaving measurements stage
+      const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+      if (toolGroup) {
+        const fixedCrosshairTool = toolGroup.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
+        if (fixedCrosshairTool && typeof fixedCrosshairTool.setAnnulusReference === 'function') {
+          fixedCrosshairTool.setAnnulusReference(null);
+          console.log('📏 Distance measurement disabled (left measurements stage)');
+        }
+
+        // Re-enable center dragging
+        if (fixedCrosshairTool && typeof fixedCrosshairTool.setCenterDraggingDisabled === 'function') {
+          fixedCrosshairTool.setCenterDraggingDisabled(false);
+          console.log('🔓 Center dragging re-enabled');
+        }
+      }
+    }
+  }, [currentStage, renderingEngineRef.current]); // Re-run when stage changes or engine is initialized
+
+  // ============================================================================
+  // Crosshair Focal Point Synchronization
+  // ============================================================================
+
+  // DISABLED: Focal point locking is no longer needed with continuous centerline scrolling
+  // The continuous scrolling in ANNULUS_DEFINITION properly updates the focal point along the centerline
+  // This enforcement mechanism was causing drift warnings and jerky scrolling
+  /*
   useEffect(() => {
     if (!renderingEngineRef.current || !lockedFocalPointRef.current || currentStage !== WorkflowStage.ANNULUS_DEFINITION) {
       return;
@@ -1265,6 +2891,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       console.log('🔓 Focal point locking deactivated');
     };
   }, [currentStage, lockedFocalPointRef.current, renderingEngineRef.current]);
+  */
 
   // Preload adjacent phases for smooth cine playback
   const preloadAdjacentPhases = async () => {
@@ -1314,111 +2941,96 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
   return (
     <div className="flex flex-col w-full h-full">
-      {/* Header */}
-      <div className="flex items-center justify-between p-3 bg-slate-800 border-b border-slate-700">
-        <div className="flex items-center gap-4">
+      {/* Header - FIXED HEIGHT to prevent viewport shift */}
+      <div className="flex items-center justify-between p-2 bg-slate-800 border-b border-slate-700 flex-shrink-0 h-14">
+        <div className="flex items-center gap-4 min-w-0">
           {patientInfo && (
-            <div className="text-sm">
+            <div className="text-xs truncate">
               <span className="text-slate-300">Patient: </span>
               <span className="text-white font-medium">{patientInfo.patientName || 'Unknown'}</span>
               <span className="text-slate-400 ml-2">({patientInfo.patientID || 'Unknown ID'})</span>
             </div>
           )}
         </div>
-        
-        <div className="flex items-center gap-4">
-          {/* Tool Selection */}
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-slate-300">Tools:</span>
+
+        <div className="flex items-center gap-3 flex-shrink-0">
+          {/* Tool Selection - NO WRAPPING */}
+          <div className="flex items-center gap-1">
+            <span className="text-xs text-slate-300">Tools:</span>
             <button
               onClick={() => handleToolChange('Crosshairs')}
-              className={`p-2 rounded text-sm flex items-center gap-1 ${activeTool === 'Crosshairs' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+              className={`p-1.5 rounded text-xs flex items-center gap-1 whitespace-nowrap ${activeTool === 'Crosshairs' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
             >
               <FaCrosshairs />
-              Crosshairs
+              <span className="hidden sm:inline">Cross</span>
             </button>
             <button
               onClick={() => handleToolChange('WindowLevel')}
-              className={`p-2 rounded text-sm flex items-center gap-1 ${activeTool === 'WindowLevel' ? 'bg-orange-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+              className={`p-1.5 rounded text-xs flex items-center gap-1 whitespace-nowrap ${activeTool === 'WindowLevel' ? 'bg-orange-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
             >
               <FaAdjust />
-              W/L
+              <span>W/L</span>
             </button>
             <button
               onClick={() => handleToolChange('SphereMarker')}
-              className={`p-2 rounded text-sm flex items-center gap-1 ${activeTool === 'SphereMarker' ? 'bg-green-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+              className={`p-1.5 rounded text-xs flex items-center gap-1 whitespace-nowrap ${activeTool === 'SphereMarker' ? 'bg-green-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
             >
               <FaCircle />
-              Sphere
+              <span className="hidden sm:inline">Sphere</span>
             </button>
             {/* Show CuspNadir tool only during annulus definition stage */}
             {currentStage === WorkflowStage.ANNULUS_DEFINITION && (
               <button
                 onClick={() => handleToolChange('CuspNadir')}
-                className={`p-2 rounded text-sm flex items-center gap-1 ${activeTool === 'CuspNadir' ? 'bg-teal-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                className={`p-1.5 rounded text-xs flex items-center gap-1 whitespace-nowrap ${activeTool === 'CuspNadir' ? 'bg-teal-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
               >
                 <FaDotCircle />
-                Cusp Dots
+                <span>Cusp</span>
               </button>
             )}
             <button
               onClick={() => handleToolChange('Zoom')}
-              className={`p-2 rounded text-sm flex items-center gap-1 ${activeTool === 'Zoom' ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+              className={`p-1.5 rounded text-xs flex items-center gap-1 whitespace-nowrap ${activeTool === 'Zoom' ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
             >
               <FaSearchPlus />
-              Zoom
+              <span className="hidden sm:inline">Zoom</span>
             </button>
             <button
               onClick={() => handleToolChange('Pan')}
-              className={`p-2 rounded text-sm flex items-center gap-1 ${activeTool === 'Pan' ? 'bg-yellow-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+              className={`p-1.5 rounded text-xs flex items-center gap-1 whitespace-nowrap ${activeTool === 'Pan' ? 'bg-yellow-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
             >
               <FaArrowsAlt />
-              Pan
+              <span className="hidden sm:inline">Pan</span>
             </button>
           </div>
           
-          {/* Always Active Tools Info */}
-          <div className="flex items-center gap-3 text-xs text-slate-400">
-            <span className="flex items-center gap-1">
-              <FaScroll />
-              Scroll: Mouse Wheel
-            </span>
-            <span className="flex items-center gap-1">
-              <FaMousePointer />
-              Zoom: Right Click
-            </span>
-          </div>
-
-          {/* Window/Level Presets */}
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-slate-300">W/L:</span>
+          {/* Window/Level Presets - Compact */}
+          <div className="flex items-center gap-1">
+            <span className="text-xs text-slate-300">W/L:</span>
             <button
               onClick={() => handleWindowLevelChange(400, 40)}
-              className="bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded text-white text-sm"
+              className="bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded text-white text-xs whitespace-nowrap"
             >
-              Soft Tissue
+              Soft
             </button>
             <button
               onClick={() => handleWindowLevelChange(900, 350)}
-              className="bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded text-white text-sm"
+              className="bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded text-white text-xs whitespace-nowrap"
             >
               Angio
             </button>
             <button
               onClick={() => handleWindowLevelChange(1500, 300)}
-              className="bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded text-white text-sm"
+              className="bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded text-white text-xs whitespace-nowrap"
             >
               Bone
             </button>
             <button
               onClick={() => handleWindowLevelChange(2000, 0)}
-              className="bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded text-white text-sm"
+              className="bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded text-white text-xs whitespace-nowrap"
             >
               Lung
             </button>
-            <span className="text-xs text-slate-400">
-              W:{windowLevel.window} L:{windowLevel.level}
-            </span>
           </div>
         </div>
       </div>
