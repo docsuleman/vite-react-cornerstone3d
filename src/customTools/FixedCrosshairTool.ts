@@ -11,6 +11,8 @@ class FixedCrosshairTool extends BaseTool {
   static toolName = 'FixedCrosshair';
   // Static callback shared across all instances - ensures it persists even if instance changes
   private static globalCPRRotationCallback: ((deltaAngle: number) => void) | null = null;
+  // Static rotation angle shared across all instances - ensures it persists even if instance changes
+  private static globalRotationAngle: number = 0;
 
   private fixedPosition: Types.Point3 | null = null;
   private renderingEngineId: string | null = null;
@@ -19,7 +21,6 @@ class FixedCrosshairTool extends BaseTool {
   private skipDrawUntil: { [key: string]: number } = {}; // Timestamp to skip drawing until
 
   // Rotation state
-  private rotationAngle: number = 0; // Rotation angle in radians
   private isDragging: boolean = false;
   private dragStartAngle: number = 0;
 
@@ -67,9 +68,10 @@ class FixedCrosshairTool extends BaseTool {
 
   /**
    * Get the current rotation angle
+   * Returns the static rotation angle shared across all instances
    */
   getRotationAngle(): number {
-    return this.rotationAngle;
+    return FixedCrosshairTool.globalRotationAngle;
   }
 
   /**
@@ -112,6 +114,14 @@ class FixedCrosshairTool extends BaseTool {
    */
   setCPRRotationCallback(callback: ((deltaAngle: number) => void) | null) {
     FixedCrosshairTool.globalCPRRotationCallback = callback;
+  }
+
+  /**
+   * Get the current CPR rotation callback
+   * Returns the static callback shared across all instances
+   */
+  getCPRRotationCallback(): ((deltaAngle: number) => void) | null {
+    return FixedCrosshairTool.globalCPRRotationCallback;
   }
 
   /**
@@ -308,7 +318,7 @@ class FixedCrosshairTool extends BaseTool {
 
           // CRITICAL: Only apply rotation in axial view
           // Long axis views (sagittal/coronal) should NOT rotate - they stay aligned with image axes
-          const rotationToApply = viewportId === 'axial' ? this.rotationAngle : 0;
+          const rotationToApply = viewportId === 'axial' ? FixedCrosshairTool.globalRotationAngle : 0;
 
           // Apply rotation to horizontal line endpoints
           const hLineLeftStart = rotatePoint(leftLineStart, clientPoint[1], clientPoint[0], clientPoint[1], rotationToApply);
@@ -688,7 +698,7 @@ class FixedCrosshairTool extends BaseTool {
 
       // Calculate initial angle
       const angleToClick = Math.atan2(canvasY - centerCanvas[1], canvasX - centerCanvas[0]);
-      this.dragStartAngle = angleToClick - this.rotationAngle;
+      this.dragStartAngle = angleToClick - FixedCrosshairTool.globalRotationAngle;
 
       // Change cursor to grabbing
       marker.style.cursor = 'grabbing';
@@ -717,9 +727,9 @@ class FixedCrosshairTool extends BaseTool {
         const currentAngle = Math.atan2(canvasY - centerCanvas[1], canvasX - centerCanvas[0]);
 
         // Calculate rotation delta
-        const oldRotation = this.rotationAngle;
-        this.rotationAngle = currentAngle - this.dragStartAngle;
-        const deltaAngle = this.rotationAngle - oldRotation;
+        const oldRotation = FixedCrosshairTool.globalRotationAngle;
+        FixedCrosshairTool.globalRotationAngle = currentAngle - this.dragStartAngle;
+        const deltaAngle = FixedCrosshairTool.globalRotationAngle - oldRotation;
 
         // Only update if there's a meaningful change
         if (Math.abs(deltaAngle) > 0.001) {
@@ -732,7 +742,7 @@ class FixedCrosshairTool extends BaseTool {
       const handleMouseUp = () => {
         if (this.isDragging) {
           this.isDragging = false;
-          console.log(`✅ Crosshair rotation complete: ${(this.rotationAngle * 180 / Math.PI).toFixed(1)}°`);
+          console.log(`✅ Crosshair rotation complete: ${(FixedCrosshairTool.globalRotationAngle * 180 / Math.PI).toFixed(1)}°`);
 
           // Reset cursor on all markers
           const allMarkers = document.querySelectorAll('[id*="-fixed-"][id*="-marker"]');
@@ -815,7 +825,7 @@ class FixedCrosshairTool extends BaseTool {
       };
     };
 
-    const rotationToApply = viewportId === 'axial' ? this.rotationAngle : 0;
+    const rotationToApply = viewportId === 'axial' ? FixedCrosshairTool.globalRotationAngle : 0;
 
     // Calculate 4 marker positions (rotated if in axial view)
     const hLineLeftStart = rotatePoint(leftLineStart, centerCanvas[1], centerCanvas[0], centerCanvas[1], rotationToApply);
@@ -865,7 +875,7 @@ class FixedCrosshairTool extends BaseTool {
         // Clicking on a marker - start rotation
         this.isDragging = true;
         const angleToClick = Math.atan2(canvas[1] - centerCanvas[1], canvas[0] - centerCanvas[0]);
-        this.dragStartAngle = angleToClick - this.rotationAngle;
+        this.dragStartAngle = angleToClick - FixedCrosshairTool.globalRotationAngle;
         console.log('🔄 Starting crosshair rotation from marker');
         return true; // We're handling this event
       }
@@ -961,9 +971,9 @@ class FixedCrosshairTool extends BaseTool {
     const currentAngle = Math.atan2(dy, dx);
 
     // Calculate rotation delta
-    const oldRotation = this.rotationAngle;
-    this.rotationAngle = currentAngle - this.dragStartAngle;
-    const deltaAngle = this.rotationAngle - oldRotation;
+    const oldRotation = FixedCrosshairTool.globalRotationAngle;
+    FixedCrosshairTool.globalRotationAngle = currentAngle - this.dragStartAngle;
+    const deltaAngle = FixedCrosshairTool.globalRotationAngle - oldRotation;
 
     // Only update if there's a meaningful change (lower threshold for smoother rotation)
     if (Math.abs(deltaAngle) > 0.001) {
@@ -1091,7 +1101,7 @@ class FixedCrosshairTool extends BaseTool {
     }
     if (this.isDragging) {
       this.isDragging = false;
-      console.log(`✅ Crosshair rotation complete: ${(this.rotationAngle * 180 / Math.PI).toFixed(1)}°`);
+      console.log(`✅ Crosshair rotation complete: ${(FixedCrosshairTool.globalRotationAngle * 180 / Math.PI).toFixed(1)}°`);
       return true;
     }
     return false;

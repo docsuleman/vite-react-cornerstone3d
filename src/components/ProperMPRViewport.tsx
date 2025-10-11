@@ -112,6 +112,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const cuspDotsRef = useRef<{ id: string; pos: [number, number, number]; color: string; cuspType: string }[]>([]); // Store cusp dots
   const savedCameraZoomRef = useRef<number>(60); // Store zoom level (parallelScale) for preservation between stages
   const annulusLineActorsRef = useRef<{ sagittal: any; coronal: any } | null>(null); // Store annulus reference line actors
+  const cprPositionLineActorsRef = useRef<{ sagittal: any; coronal: any } | null>(null); // Store CPR position indicator line actors
+  const cprPositionRatioRef = useRef<number>(0); // Store current position ratio for redrawing after render
   const cprActorsRef = useRef<{ actor: any; mapper: any; viewportId: string; config: any }[]>([]); // Store CPR actors and mappers when in CPR mode
   const currentVolumeRef = useRef<any>(null); // Store current volume for CPR conversion
   const centerlinePolyDataRef = useRef<any>(null); // Store VTK centerline polydata for CPR rotation
@@ -363,15 +365,42 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         });
       }
 
-      // Reset CPR rotation angle and mark actors as not ready
-      cprRotationAngleRef.current = 0;
+      // Mark actors as not ready (rotation angle will be captured after CPR setup)
       setCprActorsReady(false);
       // Wait a bit for viewports to be ready, then setup actors
       // Callback will be set automatically by the useEffect once actors are ready
       setTimeout(async () => {
+        // CRITICAL: Capture rotation angle BEFORE setupCPRActors
+        // setupCPRActors uses cprRotationAngleRef.current to set initial rotation on mappers
+        const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+        if (toolGroup) {
+          const fixedCrosshairTool = toolGroup.getToolInstance(FixedCrosshairTool.toolName) as any;
+          if (fixedCrosshairTool && typeof fixedCrosshairTool.getRotationAngle === 'function') {
+            const currentRotation = fixedCrosshairTool.getRotationAngle();
+            console.log(`📐 Capturing current crosshair rotation BEFORE CPR setup: ${(currentRotation * 180 / Math.PI).toFixed(1)}° (${currentRotation.toFixed(4)} rad)`);
+
+            // Store rotation angle BEFORE setupCPRActors so it can use it
+            cprRotationAngleRef.current = currentRotation;
+          } else {
+            console.warn('⚠️ Could not get crosshair rotation angle, using 0°');
+            cprRotationAngleRef.current = 0;
+          }
+        } else {
+          console.warn('⚠️ Tool group not found, using rotation 0°');
+          cprRotationAngleRef.current = 0;
+        }
+
+        // Now setup CPR actors - they will use the rotation angle we just captured
         await setupCPRActors();
-        console.log('✅ CPR actors setup complete, marking as ready');
-        setCprActorsReady(true); // This will trigger the callback setup useEffect
+        console.log('✅ CPR actors setup complete with initial rotation');
+
+        setCprActorsReady(true); // Mark actors as ready
+
+        // Initialize CPR position indicator lines at current centerline index
+        requestAnimationFrame(() => {
+          updateCPRPositionLines(currentCenterlineIndexRef.current);
+          console.log('✅ CPR position indicator lines initialized');
+        });
       }, 500);
     } else if (renderMode === 'mpr') {
       console.log('🔄 Render mode changed to MPR, removing CPR actors...');
@@ -388,6 +417,10 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         }
       });
       cprActorsRef.current = [];
+
+      // Clear CPR position indicator lines reference (canvas drawings will be cleared on viewport render)
+      cprPositionLineActorsRef.current = null;
+      console.log('🧹 Cleared CPR position indicator lines');
 
       // Show volume actors again and restore camera states
       const viewportIds = ['axial', 'sagittal', 'coronal'];
@@ -670,7 +703,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     const callback = (deltaAngle: number) => {
       console.log(`🔄 CPR Rotation callback called! renderMode=${renderModeRef.current}, deltaAngle=${deltaAngle.toFixed(4)}`);
 
-      cprRotationAngleRef.current += deltaAngle;
+      // NEGATE deltaAngle to fix rotation direction (clockwise crosshair = clockwise CPR)
+      cprRotationAngleRef.current += -deltaAngle;
       const totalAngle = cprRotationAngleRef.current;
 
       // Update direction matrices for all CPR actors (no need to recreate!)
@@ -726,11 +760,30 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       return;
     }
 
-    ensureCPRRotationCallbackSet();
+    console.log('🔧 Setting up CPR rotation callback...');
+    const success = ensureCPRRotationCallbackSet();
+    if (success) {
+      console.log('✅ CPR rotation callback successfully set on FixedCrosshairTool');
+    } else {
+      console.warn('⚠️ Failed to set CPR rotation callback');
+    }
 
     // Re-check periodically to ensure callback stays set
+    // Only re-set if callback is actually null/undefined (truly lost), not if reference changed
     const intervalId = setInterval(() => {
-      ensureCPRRotationCallbackSet();
+      const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+      if (toolGroup) {
+        const fixedCrosshairTool = toolGroup.getToolInstance(FixedCrosshairTool.toolName) as any;
+        if (fixedCrosshairTool && typeof fixedCrosshairTool.getCPRRotationCallback === 'function') {
+          const currentCallback = fixedCrosshairTool.getCPRRotationCallback();
+          // Only re-set if callback is null/undefined (truly missing)
+          // Don't care about reference equality - different reference is okay after mode switch
+          if (!currentCallback) {
+            console.log('🔄 Re-setting CPR rotation callback (was lost)');
+            ensureCPRRotationCallbackSet();
+          }
+        }
+      }
     }, 1000);
 
     return () => {
@@ -1054,9 +1107,10 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       // Create CPR actors ONLY for sagittal and coronal (axial stays as cross-section)
       // Use straightened mode with orientation tensors for rotation support
+      // Swapped sagittal and coronal viewports
       const viewportConfigs = [
-        { id: 'sagittal', mode: 'straightened', cprWidth: 50, rotationOffset: 0 },  // 50mm width - zoomed to aorta only
-        { id: 'coronal', mode: 'straightened', cprWidth: 50, rotationOffset: Math.PI / 2 }
+        { id: 'coronal', mode: 'straightened', cprWidth: 50, rotationOffset: 0 },  // 0° offset
+        { id: 'sagittal', mode: 'straightened', cprWidth: 50, rotationOffset: Math.PI / 2 }  // 90° offset - orthogonal to coronal
       ];
 
       // First pass: Create all mappers and actors
@@ -1250,6 +1304,101 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           viewport.render();
         }
       }
+    });
+  };
+
+  // Draw CPR position line on a viewport canvas
+  const drawCPRPositionLineOnCanvas = (viewportId: string, positionRatio: number) => {
+    if (!renderingEngineRef.current) {
+      console.warn(`   ⚠️ No rendering engine for ${viewportId}`);
+      return;
+    }
+
+    const renderingEngine = renderingEngineRef.current;
+    const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
+    if (!viewport) {
+      console.warn(`   ⚠️ No viewport found for ${viewportId}`);
+      return;
+    }
+
+    const canvas = viewport.getCanvas() as HTMLCanvasElement;
+    if (!canvas) {
+      console.warn(`   ⚠️ No canvas found for ${viewportId}`);
+      return;
+    }
+
+    // Get canvas dimensions
+    const { width, height } = canvas;
+
+    // Calculate Y position in screen space (pixels)
+    // Position ratio 0 = top of CPR (Y=0), ratio 1 = bottom (Y=height)
+    const yPixel = positionRatio * height;
+
+    // Get 2D context for overlay
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      return;
+    }
+
+    // Draw bright yellow horizontal line
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 255, 0, 0.95)'; // Bright yellow
+    ctx.lineWidth = 3;
+    ctx.setLineDash([]);
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+    ctx.shadowBlur = 2;
+
+    ctx.beginPath();
+    ctx.moveTo(0, yPixel);
+    ctx.lineTo(width, yPixel);
+    ctx.stroke();
+
+    ctx.restore();
+  };
+
+  // Update CPR position indicator lines showing current scroll position
+  const updateCPRPositionLines = (centerlineIndex: number) => {
+    if (!renderingEngineRef.current || !centerlineDataRef.current || !cprActorsRef.current.length) {
+      return;
+    }
+
+    // Calculate arc length DIRECTLY from the interpolated centerline positions
+    // This is the exact same data the CPR mapper uses
+    const positions = centerlineDataRef.current.position; // Float32Array of [x,y,z, x,y,z, ...]
+    const numCenterlinePoints = positions.length / 3;
+
+    // Calculate cumulative arc length up to current index
+    let cumulativeDistance = 0;
+    for (let i = 1; i <= centerlineIndex && i < numCenterlinePoints; i++) {
+      const dx = positions[i * 3] - positions[(i - 1) * 3];
+      const dy = positions[i * 3 + 1] - positions[(i - 1) * 3 + 1];
+      const dz = positions[i * 3 + 2] - positions[(i - 1) * 3 + 2];
+      const segmentLength = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      cumulativeDistance += segmentLength;
+    }
+
+    // Calculate total arc length
+    let totalDistance = 0;
+    for (let i = 1; i < numCenterlinePoints; i++) {
+      const dx = positions[i * 3] - positions[(i - 1) * 3];
+      const dy = positions[i * 3 + 1] - positions[(i - 1) * 3 + 1];
+      const dz = positions[i * 3 + 2] - positions[(i - 1) * 3 + 2];
+      const segmentLength = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      totalDistance += segmentLength;
+    }
+
+    // Calculate position ratio (same method as CPR mapper)
+    const positionRatio = totalDistance > 0 ? cumulativeDistance / totalDistance : 0;
+
+    console.log(`📍 CPR position sync: index ${centerlineIndex}/${numCenterlinePoints - 1}, arc ${cumulativeDistance.toFixed(2)}/${totalDistance.toFixed(2)}mm = ${positionRatio.toFixed(3)}`);
+
+    // Store position ratio for redrawing after renders
+    cprPositionRatioRef.current = positionRatio;
+
+    // Draw lines immediately
+    requestAnimationFrame(() => {
+      drawCPRPositionLineOnCanvas('sagittal', positionRatio);
+      drawCPRPositionLineOnCanvas('coronal', positionRatio);
     });
   };
 
@@ -3703,6 +3852,185 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       axialElement.removeEventListener('wheel', handleWheel, { capture: true });
     };
   }, [currentStage, renderingEngineRef.current, centerlineDataRef.current, lockedFocalPointRef.current, renderMode]);
+
+  // ============================================================================
+  // CPR Mode Scroll Handler - Updates only axial cross-section
+  // ============================================================================
+
+  useEffect(() => {
+    // Only enable in CPR mode with centerline data
+    if (renderMode !== 'cpr' ||
+        !centerlineDataRef.current ||
+        !renderingEngineRef.current) {
+      return;
+    }
+
+    const renderingEngine = renderingEngineRef.current;
+    const numCenterlinePoints = centerlineDataRef.current.position.length / 3;
+
+    let axialElement: HTMLElement | null = null;
+
+    const handleWheel = (evt: WheelEvent) => {
+      console.log('🎡 CPR mode scroll handler triggered!', evt.deltaY);
+
+      evt.preventDefault();
+      evt.stopPropagation();
+      evt.stopImmediatePropagation();
+
+      // Calculate scroll step
+      const scrollStep = evt.deltaY > 0 ? 1 : -1;
+      const newIndex = Math.max(0, Math.min(numCenterlinePoints - 1, currentCenterlineIndexRef.current + scrollStep));
+
+      if (newIndex === currentCenterlineIndexRef.current) {
+        return; // Already at boundary
+      }
+
+      currentCenterlineIndexRef.current = newIndex;
+
+      // Get position and tangent at new centerline index
+      const newPosition = getCenterlinePositionAtIndex(newIndex);
+      const tangent = getCenterlineTangentAtIndex(newIndex);
+
+      if (!newPosition || !tangent) {
+        console.warn('⚠️ Failed to get centerline position or tangent at index', newIndex);
+        return;
+      }
+
+      console.log(`📜 CPR scroll to centerline index ${newIndex}/${numCenterlinePoints - 1}`);
+
+      // Update ONLY the axial viewport (cross-section)
+      // Sagittal and coronal CPR views stay STATIC showing the full straightened vessel
+      const axialVp = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
+      if (!axialVp) return;
+
+      const cameraDistance = 200;
+
+      // Position camera along the tangent (perpendicular to axial slice)
+      const newCameraPos = [
+        newPosition[0] + tangent[0] * cameraDistance,
+        newPosition[1] + tangent[1] * cameraDistance,
+        newPosition[2] + tangent[2] * cameraDistance
+      ] as Types.Point3;
+
+      // Calculate viewUp perpendicular to tangent
+      let viewUp: Types.Point3;
+      const reference = Math.abs(tangent[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+      const cross = [
+        tangent[1] * reference[2] - tangent[2] * reference[1],
+        tangent[2] * reference[0] - tangent[0] * reference[2],
+        tangent[0] * reference[1] - tangent[1] * reference[0]
+      ];
+
+      const crossLen = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
+      if (crossLen > 0) {
+        viewUp = [cross[0] / crossLen, cross[1] / crossLen, cross[2] / crossLen] as Types.Point3;
+      } else {
+        viewUp = [0, 0, 1] as Types.Point3;
+      }
+
+      axialVp.setCamera({
+        position: newCameraPos,
+        focalPoint: newPosition,
+        viewUp: viewUp,
+        parallelScale: axialVp.getCamera().parallelScale,
+      });
+
+      axialVp.render();
+
+      // Update fixed crosshair position
+      const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+      const fixedCrosshairTool = toolGroup?.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
+      if (fixedCrosshairTool) {
+        fixedCrosshairTool.setFixedPosition(newPosition, renderingEngineId);
+      }
+
+      // Manually trigger visibility updates for sphere and cusp tools
+      const tGroup = ToolGroupManager.getToolGroup(toolGroupId);
+      const sphereToolInstance = tGroup?.getToolInstance(SphereMarkerTool.toolName) as SphereMarkerTool;
+      const cuspToolInstance = tGroup?.getToolInstance(CuspNadirTool.toolName) as CuspNadirTool;
+
+      if (sphereToolInstance && typeof sphereToolInstance.updateVisibilityForSingleViewport === 'function') {
+        sphereToolInstance.updateVisibilityForSingleViewport(axialVp, 0);
+      }
+
+      if (cuspToolInstance && typeof cuspToolInstance.updateVisibilityForSingleViewport === 'function') {
+        cuspToolInstance.updateVisibilityForSingleViewport(axialVp, 0);
+      }
+
+      // Update CPR position indicator lines on sagittal/coronal views
+      updateCPRPositionLines(newIndex);
+
+      console.log('✅ Axial cross-section updated to centerline position', newIndex);
+      console.log('   (Sagittal/Coronal CPR views remain static)');
+    };
+
+    // Access axial viewport element directly from ref
+    const setupTimeout = setTimeout(() => {
+      axialElement = elementRefs.axial.current;
+
+      if (!axialElement) {
+        console.warn('⚠️ Axial viewport element ref is null');
+        return;
+      }
+
+      console.log('🔧 Setting up CPR mode scroll handler (axial cross-section only)');
+      console.log('   Number of centerline points:', numCenterlinePoints);
+      console.log('   Starting at centerline index:', currentCenterlineIndexRef.current);
+
+      // Add event listener with capture=true to intercept BEFORE Cornerstone's handlers
+      axialElement.addEventListener('wheel', handleWheel, { passive: false, capture: true });
+    }, 600); // 600ms delay to ensure viewports are initialized
+
+    return () => {
+      clearTimeout(setupTimeout);
+      if (axialElement) {
+        console.log('🧹 Removing CPR mode scroll handler');
+        axialElement.removeEventListener('wheel', handleWheel, { capture: true });
+      }
+    };
+  }, [renderMode, renderingEngineRef.current, centerlineDataRef.current]);
+
+  // ============================================================================
+  // Continuous Redraw CPR Position Lines
+  // ============================================================================
+
+  useEffect(() => {
+    // Only enable in CPR mode
+    if (renderMode !== 'cpr' || !renderingEngineRef.current || !centerlineDataRef.current) {
+      return;
+    }
+
+    console.log('🔧 Starting continuous CPR position line redraw loop');
+
+    let animationFrameId: number;
+    let isRunning = true;
+
+    // Continuous redraw function
+    const redrawLoop = () => {
+      if (!isRunning) return;
+
+      const positionRatio = cprPositionRatioRef.current;
+      if (positionRatio !== null && positionRatio !== undefined) {
+        // Redraw lines on both CPR viewports
+        drawCPRPositionLineOnCanvas('sagittal', positionRatio);
+        drawCPRPositionLineOnCanvas('coronal', positionRatio);
+      }
+
+      // Continue loop
+      animationFrameId = requestAnimationFrame(redrawLoop);
+    };
+
+    // Start the loop
+    redrawLoop();
+
+    return () => {
+      console.log('🧹 Stopping CPR position line redraw loop');
+      isRunning = false;
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+      }
+    };
+  }, [renderMode, renderingEngineRef.current, centerlineDataRef.current]);
 
   // ============================================================================
   // Cleanup Annulus Reference Lines when leaving Measurements Stage
