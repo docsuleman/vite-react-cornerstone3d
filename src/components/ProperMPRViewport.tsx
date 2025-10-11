@@ -97,7 +97,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const centerlineDataRef = useRef<any>(null); // Store centerline for scrolling
   const spherePositionsRef = useRef<Types.Point3[]>([]); // Store the 3 sphere positions
   const currentSphereIndexRef = useRef<number>(1); // Current sphere (0=LV, 1=valve, 2=ascending)
-  const currentCenterlineIndexRef = useRef<number>(0); // Current position along centerline (for measurements stage)
+  const currentCenterlineIndexRef = useRef<number>(0); // Current position along centerline - now supports fractional values for smooth scrolling
   const cuspDotsRef = useRef<{ id: string; pos: [number, number, number]; color: string; cuspType: string }[]>([]); // Store cusp dots
   const savedCameraZoomRef = useRef<number>(60); // Store zoom level (parallelScale) for preservation between stages
   const annulusLineActorsRef = useRef<{ sagittal: any; coronal: any } | null>(null); // Store annulus reference line actors
@@ -1815,6 +1815,33 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         console.log('  ✅ Created and enabled slab synchronizer');
       }
 
+      // CRITICAL: Configure distance measurement for MEASUREMENTS stage
+      // This must happen AFTER tools are created and added to the tool group
+      if (currentStage === WorkflowStage.MEASUREMENTS) {
+        console.log('📏 Configuring distance measurement for MEASUREMENTS stage...');
+
+        const fixedCrosshairTool = toolGroup.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
+
+        if (lockedFocalPointRef.current && fixedCrosshairTool) {
+          // Disable center dragging during measurements
+          if (typeof fixedCrosshairTool.setCenterDraggingDisabled === 'function') {
+            fixedCrosshairTool.setCenterDraggingDisabled(true);
+            console.log('  🔒 Center dragging disabled');
+          }
+
+          // Enable distance measurement from annulus reference position
+          if (typeof fixedCrosshairTool.setAnnulusReference === 'function') {
+            fixedCrosshairTool.setAnnulusReference(lockedFocalPointRef.current);
+            console.log('  📏 Distance measurement enabled at:', lockedFocalPointRef.current);
+          }
+        } else {
+          console.warn('  ⚠️ Cannot configure distance measurement:', {
+            hasLockedFocalPoint: !!lockedFocalPointRef.current,
+            hasFixedCrosshairTool: !!fixedCrosshairTool
+          });
+        }
+      }
+
       console.log('✅✅✅ SETUP TOOLS COMPLETE');
     } catch (error) {
       console.error('❌ Failed to setup tools:', error);
@@ -2212,10 +2239,28 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       return null;
     }
 
+    // Support fractional indices with linear interpolation
+    const lowerIndex = Math.floor(index);
+    const upperIndex = Math.min(lowerIndex + 1, numPoints - 1);
+    const fraction = index - lowerIndex;
+
+    const lowerPos = [
+      centerlineDataRef.current.position[lowerIndex * 3],
+      centerlineDataRef.current.position[lowerIndex * 3 + 1],
+      centerlineDataRef.current.position[lowerIndex * 3 + 2]
+    ];
+
+    const upperPos = [
+      centerlineDataRef.current.position[upperIndex * 3],
+      centerlineDataRef.current.position[upperIndex * 3 + 1],
+      centerlineDataRef.current.position[upperIndex * 3 + 2]
+    ];
+
+    // Linear interpolation
     return [
-      centerlineDataRef.current.position[index * 3],
-      centerlineDataRef.current.position[index * 3 + 1],
-      centerlineDataRef.current.position[index * 3 + 2]
+      lowerPos[0] + (upperPos[0] - lowerPos[0]) * fraction,
+      lowerPos[1] + (upperPos[1] - lowerPos[1]) * fraction,
+      lowerPos[2] + (upperPos[2] - lowerPos[2]) * fraction
     ] as Types.Point3;
   };
 
@@ -2232,9 +2277,10 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       return null;
     }
 
-    // Calculate tangent from adjacent points
-    let prevIndex = Math.max(0, index - 1);
-    let nextIndex = Math.min(numPoints - 1, index + 1);
+    // Calculate tangent from adjacent points (works for fractional indices too)
+    const baseIndex = Math.floor(index);
+    let prevIndex = Math.max(0, baseIndex - 1);
+    let nextIndex = Math.min(numPoints - 1, baseIndex + 1);
 
     const prevPos = [
       centerlineDataRef.current.position[prevIndex * 3],
@@ -2553,11 +2599,14 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       evt.stopPropagation();
       evt.stopImmediatePropagation();
 
-      // Calculate scroll step (1 index per scroll notch, can be adjusted)
-      const scrollStep = evt.deltaY > 0 ? 1 : -1;
+      // Smooth scrolling with small steps (0.25 index per scroll notch)
+      // This gives approximately 4 scroll notches per centerline point for smooth movement
+      const stepSize = 0.25; // Adjust this for finer/coarser control
+      const scrollStep = evt.deltaY > 0 ? stepSize : -stepSize;
+
       const newIndex = Math.max(0, Math.min(numCenterlinePoints - 1, currentCenterlineIndexRef.current + scrollStep));
 
-      console.log(`   Current index: ${currentCenterlineIndexRef.current}, New index: ${newIndex}`);
+      console.log(`   Current index: ${currentCenterlineIndexRef.current.toFixed(2)}, New index: ${newIndex.toFixed(2)}`);
 
       if (newIndex === currentCenterlineIndexRef.current) {
         console.log('   ⚠️ Already at boundary');
@@ -2770,63 +2819,31 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   }, [currentStage]);
 
   // ============================================================================
-  // Configure Tools for Measurements Stage
+  // Cleanup: Disable Distance Measurement when leaving Measurements Stage
   // ============================================================================
   useEffect(() => {
-    // Configure FixedCrosshairTool when entering measurements stage
-    if (currentStage === WorkflowStage.MEASUREMENTS) {
-      console.log('🔍 ENTERING MEASUREMENTS STAGE - Configuring distance measurement');
-
-      const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
-      if (!toolGroup) {
-        // Tools not initialized yet - will run again when rendering engine is ready
-        return;
-      }
-
-      const fixedCrosshairTool = toolGroup.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
-
-      console.log('🔍 DEBUG: Checking for FixedCrosshairTool setup:', {
-        hasLockedFocalPoint: !!lockedFocalPointRef.current,
-        lockedFocalPoint: lockedFocalPointRef.current,
-        hasFixedCrosshairTool: !!fixedCrosshairTool,
-      });
-
-      if (lockedFocalPointRef.current && fixedCrosshairTool) {
-        // CRITICAL: Disable center dragging during measurements
-        if (typeof fixedCrosshairTool.setCenterDraggingDisabled === 'function') {
-          fixedCrosshairTool.setCenterDraggingDisabled(true);
-          console.log('🔒 Center dragging disabled - crosshair moves only via centerline scrolling');
-        }
-
-        // Enable distance measurement from annulus reference position
-        if (typeof fixedCrosshairTool.setAnnulusReference === 'function') {
-          fixedCrosshairTool.setAnnulusReference(lockedFocalPointRef.current);
-          console.log('📏 Distance measurement enabled - reference point at annulus');
-        }
-      } else {
-        console.warn('⚠️ Cannot configure distance measurement:', {
-          lockedFocalPoint: lockedFocalPointRef.current,
-          fixedCrosshairTool
-        });
-      }
-    } else {
-      // Disable distance measurement when leaving measurements stage
+    // Cleanup when leaving measurements stage
+    if (currentStage !== WorkflowStage.MEASUREMENTS) {
       const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
       if (toolGroup) {
         const fixedCrosshairTool = toolGroup.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
-        if (fixedCrosshairTool && typeof fixedCrosshairTool.setAnnulusReference === 'function') {
-          fixedCrosshairTool.setAnnulusReference(null);
-          console.log('📏 Distance measurement disabled (left measurements stage)');
-        }
 
-        // Re-enable center dragging
-        if (fixedCrosshairTool && typeof fixedCrosshairTool.setCenterDraggingDisabled === 'function') {
-          fixedCrosshairTool.setCenterDraggingDisabled(false);
-          console.log('🔓 Center dragging re-enabled');
+        if (fixedCrosshairTool) {
+          // Disable distance measurement
+          if (typeof fixedCrosshairTool.setAnnulusReference === 'function') {
+            fixedCrosshairTool.setAnnulusReference(null);
+            console.log('📏 Distance measurement disabled (left measurements stage)');
+          }
+
+          // Re-enable center dragging
+          if (typeof fixedCrosshairTool.setCenterDraggingDisabled === 'function') {
+            fixedCrosshairTool.setCenterDraggingDisabled(false);
+            console.log('🔓 Center dragging re-enabled');
+          }
         }
       }
     }
-  }, [currentStage, renderingEngineRef.current]); // Re-run when stage changes or engine is initialized
+  }, [currentStage]); // Run when stage changes
 
   // ============================================================================
   // Crosshair Focal Point Synchronization

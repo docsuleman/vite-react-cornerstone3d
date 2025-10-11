@@ -480,11 +480,14 @@ class FixedCrosshairTool extends BaseTool {
             ];
 
             // Project displacement onto axial normal to get signed distance
-            // Positive = above annulus, Negative = below annulus
-            const signedDistance =
+            // INVERTED: Positive = below annulus, Negative = above annulus
+            const rawDistance =
               displacement[0] * axialNormal[0] +
               displacement[1] * axialNormal[1] +
               displacement[2] * axialNormal[2];
+
+            // Invert the sign
+            const signedDistance = -rawDistance;
 
             // Format distance text
             const distanceText = signedDistance >= 0
@@ -495,7 +498,7 @@ class FixedCrosshairTool extends BaseTool {
             const distanceLabel = document.createElementNS(svgns, 'text');
             distanceLabel.setAttribute('id', `${viewportId}-fixed-distance`);
             distanceLabel.style.fill = 'yellow'; // Bright yellow color
-            distanceLabel.style.fontSize = '18px';
+            distanceLabel.style.fontSize = '13px';
             distanceLabel.style.fontWeight = 'bold';
             distanceLabel.style.fontFamily = 'monospace';
             distanceLabel.style.pointerEvents = 'none';
