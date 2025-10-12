@@ -1,14 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { FaUser, FaStethoscope, FaEye, FaRuler, FaCog, FaChevronRight, FaCheck, FaExclamationTriangle, FaCircle } from 'react-icons/fa';
+import { FaUser, FaStethoscope, FaEye, FaRuler, FaCog, FaChevronRight, FaCheck, FaExclamationTriangle, FaCircle, FaTrash, FaFileAlt } from 'react-icons/fa';
+import appIcon from '../assets/app-icon.png';
 import PatientSearch from './PatientSearch';
 // import HybridCPRViewport from './HybridCPRViewport'; // Disabled - ImageCPRMapper not suitable for data extraction
 import CornerstoneCPRViewport from './CornerstoneCPRViewport';
 import TriViewCPRViewport from './TriViewCPRViewport'; // Pure VTK.js CPR with working rotation
 import TrueCPRViewport from './TrueCPRViewport'; // Fixed volume loading with voxelManager approach
 import ProperMPRViewport from './ProperMPRViewport';
+import MeasurementWorkflowPanel from './MeasurementWorkflowPanel';
+import MeasurementReportPage from './MeasurementReportPage';
 import { useWorkflowState } from '../hooks/useWorkflowState';
 import { WorkflowStage, RootPointType } from '../types/WorkflowTypes';
 import { Study, Series } from '../services/DicomWebService';
+import { getWorkflowManager } from '../utils/MeasurementWorkflowManager';
+import { MeasurementStep } from '../types/MeasurementWorkflowTypes';
 
 interface TAVIAppProps {
   // Props for integrating with existing Cornerstone3D setup
@@ -16,8 +21,18 @@ interface TAVIAppProps {
 
 const TAVIApp: React.FC<TAVIAppProps> = () => {
   const [showPatientSearch, setShowPatientSearch] = useState(false);
+  const [showReport, setShowReport] = useState(false);
   const [viewType, setViewType] = useState<'mpr' | 'cpr'>('mpr'); // Toggle between MPR and CPR views
+  const [deleteWarningModal, setDeleteWarningModal] = useState<{
+    visible: boolean;
+    targetStage: WorkflowStage;
+  } | null>(null);
   const { state, actions, canAdvanceToStage, getCurrentStageProgress, getStageTitle } = useWorkflowState();
+
+  // Measurement workflow manager
+  const [workflowManager] = useState(() => getWorkflowManager());
+  const [workflowSteps, setWorkflowSteps] = useState<MeasurementStep[]>([]);
+  const [currentWorkflowStep, setCurrentWorkflowStep] = useState<MeasurementStep | null>(null);
 
 
   useEffect(() => {
@@ -27,6 +42,20 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
     }
   }, [state.currentStage, state.patientInfo]);
 
+  // Initialize measurement workflow when entering MEASUREMENTS stage
+  useEffect(() => {
+    if (state.currentStage === WorkflowStage.MEASUREMENTS && !state.measurementWorkflowActive) {
+      console.log('🎯 Initializing measurement workflow');
+      const workflow = workflowManager.loadWorkflow();
+      setWorkflowSteps(workflow.measurements);
+
+      const firstStep = workflowManager.getCurrentStep();
+      setCurrentWorkflowStep(firstStep);
+
+      actions.startMeasurementWorkflow();
+    }
+  }, [state.currentStage, state.measurementWorkflowActive, workflowManager, actions]);
+
   const handlePatientSelected = (study: Study, series: Series) => {
     actions.setPatientInfo({
       patientID: study.PatientID,
@@ -34,14 +63,62 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
       studyInstanceUID: study.StudyInstanceUID,
       seriesInstanceUID: series.SeriesInstanceUID,
     });
-    
+
     setShowPatientSearch(false);
     actions.setStage(WorkflowStage.ROOT_DEFINITION);
   };
 
   const handleStageChange = (stage: WorkflowStage) => {
     if (canAdvanceToStage(stage)) {
-      actions.setStage(stage);
+      // Check if transitioning to ANNULUS_DEFINITION with existing measurement annotations
+      if (stage === WorkflowStage.ANNULUS_DEFINITION && state.currentStage === WorkflowStage.MEASUREMENTS) {
+        // Show warning modal
+        setDeleteWarningModal({
+          visible: true,
+          targetStage: stage
+        });
+      } else {
+        actions.setStage(stage);
+      }
+    }
+  };
+
+  const confirmStageChange = () => {
+    if (deleteWarningModal) {
+      actions.setStage(deleteWarningModal.targetStage);
+      setDeleteWarningModal(null);
+    }
+  };
+
+  // Handle activating a measurement step
+  const handleActivateMeasurementStep = (step: MeasurementStep) => {
+    setCurrentWorkflowStep(step);
+
+    // Update the workflow state's current step index
+    const stepIndex = workflowSteps.findIndex(s => s.id === step.id);
+    if (stepIndex !== -1) {
+      actions.setMeasurementStepIndex(stepIndex);
+      workflowManager.setCurrentStepIndex(stepIndex); // Also update workflow manager for consistency
+    }
+
+    // The ProperMPRViewport will receive this step and auto-activate the tool
+  };
+
+  // Handle completing a measurement step
+  const handleCompleteMeasurementStep = () => {
+    const currentStep = workflowManager.getCurrentStep();
+    if (!currentStep) return;
+
+    // Mark step complete (for now without annotation UID - will be added by viewport)
+    workflowManager.completeCurrentStep('temp-uid'); // Placeholder
+    actions.completeMeasurementStep(currentStep.id, 'temp-uid');
+
+    // Move to next step
+    const nextStep = workflowManager.getCurrentStep();
+    setCurrentWorkflowStep(nextStep);
+
+    if (!nextStep) {
+      actions.markStageComplete(WorkflowStage.MEASUREMENTS);
     }
   };
 
@@ -93,12 +170,12 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
       <div className="px-6 py-3">
         <div className="flex justify-between items-center">
           <div className="flex items-center gap-3">
-            <div className="bg-blue-600 p-2 rounded-lg">
-              <FaStethoscope className="text-xl text-white" />
+            <div className="bg-white p-2 rounded-lg">
+              <img src={appIcon} alt="QuanTAVI" className="w-8 h-8" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-white">TAVI Planning Workstation</h1>
-              <p className="text-slate-300 text-xs">Transcatheter Aortic Valve Implantation</p>
+              <h1 className="text-2xl font-bold text-white">QuanTAVI</h1>
+              <p className="text-slate-300 text-xs">Quantitative TAVI Planning · by Dr. Suleman</p>
             </div>
           </div>
 
@@ -218,8 +295,8 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
         )}
       </div>
 
-      {/* View Type Selector - Only show when patient is loaded and not in PATIENT_SELECTION stage */}
-      {state.patientInfo && state.currentStage !== WorkflowStage.PATIENT_SELECTION && state.rootPoints.length >= 3 && (
+      {/* View Type Selector - Only show during MEASUREMENTS stage */}
+      {state.patientInfo && state.currentStage === WorkflowStage.MEASUREMENTS && state.rootPoints.length >= 3 && (
         <div className="px-6 py-4 border-b border-slate-700">
           <h4 className="text-sm font-semibold mb-2 text-slate-300">Viewport Mode</h4>
           <div className="flex gap-2">
@@ -249,66 +326,44 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
         </div>
       )}
 
-      {/* Tools Section */}
-      <div className="flex-1 p-6 overflow-y-auto">
-        <h4 className="text-lg font-semibold mb-4 text-slate-200">Available Tools</h4>
-
-        <div className="space-y-3">
-          {state.currentStage === WorkflowStage.ROOT_DEFINITION && (
-            <button className="w-full p-4 bg-blue-600 hover:bg-blue-700 rounded-lg flex items-center gap-3 transition-colors text-left">
-              <FaCircle className="text-white text-sm" />
-              <div>
-                <div className="font-medium">Sphere Marker Tool</div>
-                <div className="text-xs text-blue-200">Mark anatomical landmarks</div>
+      {/* Tools Section - Replace with Measurement Workflow Panel for MEASUREMENTS stage */}
+      {state.currentStage === WorkflowStage.MEASUREMENTS ? (
+        <MeasurementWorkflowPanel
+          steps={workflowSteps}
+          currentStepIndex={state.currentMeasurementStepIndex}
+          completedStepIds={state.completedMeasurementSteps}
+          annulusArea={state.measurements.annulus?.area}
+          onActivateStep={handleActivateMeasurementStep}
+          onCompleteStep={handleCompleteMeasurementStep}
+        />
+      ) : (
+        <div className="flex-1 p-6 overflow-y-auto">
+          <div className="space-y-3">
+            {state.currentStage === WorkflowStage.ROOT_DEFINITION && (
+              <div className="text-slate-300 text-sm">
+                <p className="mb-2">Click on the viewport to place centerline points.</p>
               </div>
-            </button>
-          )}
-          
-          {state.currentStage === WorkflowStage.ANNULUS_DEFINITION && (
-            <>
-              <button className="w-full p-4 bg-blue-600 hover:bg-blue-700 rounded-lg flex items-center gap-3 transition-colors text-left">
-                <FaCircle className="text-white text-sm" />
-                <div>
-                  <div className="font-medium">Annulus Sphere Tool</div>
-                  <div className="text-xs text-blue-200">Mark cusp nadir points</div>
-                </div>
-              </button>
-              <button className="w-full p-4 bg-purple-600 hover:bg-purple-700 rounded-lg flex items-center gap-3 transition-colors text-left">
-                <FaRuler className="text-white" />
-                <div>
-                  <div className="font-medium">Polygon Measurement</div>
-                  <div className="text-xs text-purple-200">Trace annulus outline</div>
-                </div>
-              </button>
-            </>
-          )}
-          
-          {state.currentStage === WorkflowStage.MEASUREMENTS && (
-            <>
-              <button className="w-full p-4 bg-green-600 hover:bg-green-700 rounded-lg flex items-center gap-3 transition-colors text-left">
-                <FaRuler className="text-white" />
-                <div>
-                  <div className="font-medium">Length Tool</div>
-                  <div className="text-xs text-green-200">Measure distances</div>
-                </div>
-              </button>
-              <button className="w-full p-4 bg-yellow-600 hover:bg-yellow-700 rounded-lg flex items-center gap-3 transition-colors text-left">
-                <FaRuler className="text-white" />
-                <div>
-                  <div className="font-medium">Angle Tool</div>
-                  <div className="text-xs text-yellow-200">Measure angles</div>
-                </div>
-              </button>
-            </>
-          )}
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Measurements Panel */}
       {Object.keys(state.measurements).length > 0 && (
         <div className="border-t border-slate-700 p-6">
-          <h4 className="text-lg font-semibold mb-4 text-slate-200">Measurements</h4>
-          
+          <div className="flex justify-between items-center mb-4">
+            <h4 className="text-lg font-semibold text-slate-200">Measurements</h4>
+            {state.completedMeasurementSteps.length > 0 && (
+              <button
+                onClick={() => setShowReport(true)}
+                className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded text-sm flex items-center gap-2 transition-colors"
+              >
+                <FaFileAlt />
+                View Report
+              </button>
+            )}
+          </div>
+
           {state.measurements.annulus && (
             <div className="bg-slate-800 rounded-lg p-4">
               <h5 className="font-semibold text-blue-400 mb-3">Annulus Measurements</h5>
@@ -394,6 +449,31 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
               pos: point.position as [number, number, number],
               color: index === 0 ? 'yellow' : index === 1 ? 'red' : 'green'
             }))}
+            currentWorkflowStep={currentWorkflowStep}
+            workflowControlled={state.currentStage === WorkflowStage.MEASUREMENTS && state.measurementWorkflowActive}
+            annularPlane={state.annularPlane ? {
+              center: state.annularPlane.center as [number, number, number],
+              normal: state.annularPlane.normal as [number, number, number]
+            } : undefined}
+            annulusArea={state.measurements.annulus?.area}
+            centerlineData={state.centerline}
+            onMeasurementComplete={(stepId, annotationUID, measuredValue) => {
+              // Complete the step in workflow manager and state
+              workflowManager.completeCurrentStep(annotationUID, measuredValue);
+              actions.completeMeasurementStep(stepId, annotationUID, measuredValue);
+
+              // Move to next step
+              const nextStep = workflowManager.getCurrentStep();
+              setCurrentWorkflowStep(nextStep);
+
+              if (!nextStep) {
+                actions.markStageComplete(WorkflowStage.MEASUREMENTS);
+              }
+            }}
+            onConfirmMeasurement={() => {
+              // This is called when user clicks tick button on viewport
+              // The onMeasurementComplete callback above has already been called
+            }}
             onImageLoaded={(imageData) => {
               console.log('DICOM images loaded for stage:', state.currentStage);
             }}
@@ -533,6 +613,71 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
           onSeriesSelected={handlePatientSelected}
           onClose={() => setShowPatientSearch(false)}
         />
+      )}
+
+      {/* Measurement Report */}
+      {showReport && state.patientInfo && (
+        <MeasurementReportPage
+          patientInfo={state.patientInfo}
+          measurements={state.measurements}
+          completedSteps={workflowSteps.filter(step => state.completedMeasurementSteps.includes(step.id))}
+          onClose={() => setShowReport(false)}
+        />
+      )}
+
+      {/* Warning Modal for Annotation Deletion */}
+      {deleteWarningModal && deleteWarningModal.visible && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70"
+             onClick={() => setDeleteWarningModal(null)}>
+          <div className="bg-slate-800 border-2 border-red-500 rounded-lg shadow-2xl p-8 max-w-md"
+               onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-4 mb-6">
+              <div className="bg-red-500 p-3 rounded-full">
+                <FaTrash className="text-white text-2xl" />
+              </div>
+              <div>
+                <h2 className="text-white text-2xl font-bold">Warning</h2>
+                <p className="text-red-300 text-sm">This action cannot be undone</p>
+              </div>
+            </div>
+
+            <div className="mb-6">
+              <p className="text-white text-lg mb-3">
+                Proceeding to <span className="font-bold text-blue-400">Annulus Definition</span> will permanently delete all measurement annotations including:
+              </p>
+              <ul className="text-slate-300 text-sm space-y-2 ml-4">
+                <li className="flex items-start gap-2">
+                  <span className="text-red-400 mt-1">•</span>
+                  <span>All polygon measurements with labels</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-red-400 mt-1">•</span>
+                  <span>All line measurements with labels</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="text-red-400 mt-1">•</span>
+                  <span>All measurement overlays and statistics</span>
+                </li>
+              </ul>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setDeleteWarningModal(null)}
+                className="flex-1 px-4 py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmStageChange}
+                className="flex-1 px-4 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors font-medium flex items-center justify-center gap-2"
+              >
+                <FaTrash />
+                Delete & Continue
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

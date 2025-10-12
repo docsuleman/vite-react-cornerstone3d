@@ -6,20 +6,25 @@ import {
   Types,
   volumeLoader,
   cornerstoneStreamingImageVolumeLoader,
+  eventTarget,
 } from "@cornerstonejs/core";
 import { init as csRenderInit } from "@cornerstonejs/core";
 import { init as csToolsInit } from "@cornerstonejs/tools";
 import { init as dicomImageLoaderInit } from "@cornerstonejs/dicom-image-loader";
 import * as cornerstoneTools from "@cornerstonejs/tools";
 import { initializeCornerstone, isCornerStoneInitialized } from '../utils/cornerstoneInit';
-import { FaCrosshairs, FaSearchPlus, FaArrowsAlt, FaAdjust, FaCircle, FaMousePointer, FaScroll, FaTrash, FaDotCircle, FaPlay, FaPause, FaDrawPolygon, FaRuler } from "react-icons/fa";
+import { FaCrosshairs, FaSearchPlus, FaArrowsAlt, FaAdjust, FaCircle, FaMousePointer, FaScroll, FaTrash, FaDotCircle, FaPlay, FaPause, FaDrawPolygon, FaRuler, FaTag, FaPen, FaCheck } from "react-icons/fa";
 import SphereMarkerTool from '../customTools/Spheremarker';
 import CuspNadirTool from '../customTools/CuspNadirTool';
 import FixedCrosshairTool from '../customTools/FixedCrosshairTool';
 import VerticalDistanceTool from '../customTools/VerticalDistanceTool';
+import VerticalLineTool from '../customTools/VerticalLineTool';
+import CurvedLeafletTool from '../customTools/CurvedLeafletTool';
 import ContextMenu from './ContextMenu';
 import { WorkflowStage } from '../types/WorkflowTypes';
 import { CenterlineGenerator } from '../utils/CenterlineGenerator';
+import { MeasurementStep } from '../types/MeasurementWorkflowTypes';
+import { getWorkflowManager } from '../utils/MeasurementWorkflowManager';
 import { calculateSplineAxes, formatAxisMeasurement } from '../utils/SplineStatistics';
 import vtkImageData from '@kitware/vtk.js/Common/DataModel/ImageData';
 import vtkImageCPRMapper from '@kitware/vtk.js/Rendering/Core/ImageCPRMapper';
@@ -62,6 +67,23 @@ interface ProperMPRViewportProps {
   currentStage?: WorkflowStage;
   existingSpheres?: { id: string; pos: [number, number, number]; color: string }[];
   renderMode?: 'mpr' | 'cpr'; // Toggle between standard MPR and straightened CPR
+  // Workflow-related props
+  currentWorkflowStep?: MeasurementStep | null;
+  workflowControlled?: boolean;
+  onMeasurementComplete?: (stepId: string, annotationUID: string, measuredValue: any) => void;
+  onConfirmMeasurement?: () => void; // Callback when user clicks tick button to confirm
+  // Annulus data for automatic scrolling
+  annularPlane?: {
+    center: [number, number, number];
+    normal: [number, number, number];
+  };
+  annulusArea?: number; // For dynamic offset calculations
+  // Centerline data from workflow state (modified to be perpendicular to annular plane)
+  centerlineData?: {
+    position: Float32Array;
+    orientation: Float32Array;
+    length: number;
+  };
 }
 
 const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
@@ -71,7 +93,14 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   onCuspDotsUpdate,
   currentStage,
   existingSpheres,
-  renderMode = 'mpr' // Default to standard MPR
+  renderMode = 'mpr', // Default to standard MPR
+  currentWorkflowStep = null,
+  workflowControlled = false,
+  onMeasurementComplete,
+  onConfirmMeasurement,
+  annularPlane,
+  annulusArea = 400,
+  centerlineData: centerlineDataProp
 }) => {
   const elementRefs = {
     axial: useRef(null),
@@ -82,7 +111,20 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTool, setActiveTool] = useState<string>('Zoom');
-  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; annotationUID: string } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    annotationUID: string;
+    cprLineData?: {
+      arcLength: number;
+      totalLength: number;
+      positionRatio: number;
+      distanceFromAnnulus: number;
+      viewportId: string;
+      annulusYPixel: number;
+      clickedYPixel: number;
+    }
+  } | null>(null);
   const [annotationOverlays, setAnnotationOverlays] = useState<Array<{
     uid: string;
     x: number;
@@ -94,9 +136,49 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const [draggingOverlay, setDraggingOverlay] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [axisLinesKey, setAxisLinesKey] = useState(0); // Force re-render of axis lines
+  const [cprHeightIndicators, setCprHeightIndicators] = useState<Array<{
+    id: string;
+    viewportId: string;
+    y1: number; // annulus Y position
+    y2: number; // clicked position Y
+    height: number; // distance in mm
+  }>>([]);
+
+  // Annotation labeling
+  const [annotationLabels, setAnnotationLabels] = useState<{
+    [annotationUID: string]: { text: string; color: string }
+  }>({});
+  const [labelModal, setLabelModal] = useState<{
+    visible: boolean;
+    annotationUID: string;
+    currentLabel: string;
+    currentColor: string;
+  } | null>(null);
+  const [deleteWarningModal, setDeleteWarningModal] = useState<{
+    visible: boolean;
+    targetStage: WorkflowStage;
+  } | null>(null);
 
   // Use refs for imageInfo to avoid re-renders that break CrosshairsTool
   const imageInfoRef = useRef<any>(null);
+
+  // Use refs for workflow props to avoid closure issues in event handlers
+  const workflowControlledRef = useRef<boolean>(workflowControlled);
+  const currentWorkflowStepRef = useRef<MeasurementStep | null>(currentWorkflowStep);
+  const onMeasurementCompleteRef = useRef(onMeasurementComplete);
+
+  // Track if we should skip auto-scroll (when user is manually scrolling)
+  const skipAutoScrollRef = useRef<boolean>(false);
+  const autoScrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastAutoScrolledStepRef = useRef<string | null>(null); // Track which step we last auto-scrolled to
+
+  // Track if current measurement step has been completed but not confirmed
+  const [measurementReadyForConfirm, setMeasurementReadyForConfirm] = useState(false);
+  const [currentMeasurementData, setCurrentMeasurementData] = useState<{
+    annotationUID: string;
+    measuredValue: any;
+  } | null>(null);
+
   const [windowLevel, setWindowLevel] = useState({ window: 900, level: 350 }); // Cardiac CTA default
   const [phaseInfo, setPhaseInfo] = useState<any>(null); // Cardiac phase information
   const [selectedPhase, setSelectedPhase] = useState<number | null>(null); // Currently selected phase
@@ -143,6 +225,26 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const isSettingUpCPRRef = useRef<boolean>(false); // Prevent concurrent setupCPRActors calls
   const axialReferenceFrameRef = useRef<{ viewUp: Types.Point3; viewRight: Types.Point3; viewPlaneNormal: Types.Point3 } | null>(null); // Store axial camera reference frame for rotation
   const overlayUpdateIntervalRef = useRef<number | null>(null); // Store overlay update interval ID
+
+  // Keep workflow refs up to date to avoid closure issues in event handlers
+  useEffect(() => {
+    workflowControlledRef.current = workflowControlled;
+    currentWorkflowStepRef.current = currentWorkflowStep;
+    onMeasurementCompleteRef.current = onMeasurementComplete;
+  }, [workflowControlled, currentWorkflowStep, onMeasurementComplete]);
+
+  // Reset confirmation state when workflow step changes
+  useEffect(() => {
+    setMeasurementReadyForConfirm(false);
+    setCurrentMeasurementData(null);
+  }, [currentWorkflowStep]);
+
+  // Use centerline from props when available (during measurements stage)
+  useEffect(() => {
+    if (centerlineDataProp && currentStage === WorkflowStage.MEASUREMENTS) {
+      centerlineDataRef.current = centerlineDataProp;
+    }
+  }, [centerlineDataProp, currentStage]);
 
   // Preload all phases sequentially when play is first hit
   useEffect(() => {
@@ -524,6 +626,30 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           updateCPRPositionLines(currentCenterlineIndexRef.current);
           console.log('✅ CPR position indicator lines initialized');
         });
+
+        // Add event listeners to redraw CPR lines on zoom/pan (camera changes)
+        const sagittalElement = elementRefs.sagittal.current;
+        const coronalElement = elementRefs.coronal.current;
+
+        const redrawCPRLines = () => {
+          if (cprPositionRatioRef.current !== undefined && cprActorsReady) {
+            requestAnimationFrame(() => {
+              drawCPRPositionLineOnCanvas('sagittal', cprPositionRatioRef.current!, cprAnnulusRatioRef.current);
+              drawCPRPositionLineOnCanvas('coronal', cprPositionRatioRef.current!, cprAnnulusRatioRef.current);
+            });
+          }
+        };
+
+        if (sagittalElement) {
+          sagittalElement.addEventListener(Enums.Events.CAMERA_MODIFIED, redrawCPRLines);
+          sagittalElement.addEventListener(Enums.Events.IMAGE_RENDERED, redrawCPRLines);
+        }
+        if (coronalElement) {
+          coronalElement.addEventListener(Enums.Events.CAMERA_MODIFIED, redrawCPRLines);
+          coronalElement.addEventListener(Enums.Events.IMAGE_RENDERED, redrawCPRLines);
+        }
+
+        console.log('✅ CPR line redraw listeners added for zoom/pan');
       }, 500);
     } else if (renderMode === 'mpr') {
       console.log('🔄 Render mode changed to MPR, removing CPR actors...');
@@ -1459,8 +1585,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     // Get canvas dimensions
     const { width, height } = canvas;
 
-    // Calculate Y position in screen space (pixels)
-    // Position ratio 0 = top of CPR (Y=0), ratio 1 = bottom (Y=height)
+    // Simple ratio-based positioning (works correctly when zoom is disabled)
+    // positionRatio 0 = top of canvas, positionRatio 1 = bottom of canvas
     const yPixel = positionRatio * height;
     const annulusYPixel = annulusRatio !== undefined ? annulusRatio * height : null;
 
@@ -2233,7 +2359,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                               coronalVp.render();
                             }
 
-                            console.log('✅ All viewports updated to follow new center position');
                           }
                         }
                       } else {
@@ -2994,6 +3119,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       cornerstoneTools.addTool(SplineROITool);
       cornerstoneTools.addTool(LengthTool);
       cornerstoneTools.addTool(VerticalDistanceTool);
+      cornerstoneTools.addTool(VerticalLineTool);
+      cornerstoneTools.addTool(CurvedLeafletTool);
 
       // Destroy existing tool group if it exists
       try {
@@ -3038,6 +3165,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         preventZoomOutsideImage: true,
       });
 
+      // Zoom tool - disable on sagittal/coronal in CPR mode to prevent line misalignment
       toolGroup.setToolActive(ZoomTool.toolName, {
         bindings: [
          {
@@ -3045,6 +3173,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           },
         ],
       });
+
+      // Disable zoom on CPR viewports (sagittal/coronal) when in CPR mode
+      if (renderMode === 'cpr') {
+        toolGroup.setToolDisabled(ZoomTool.toolName, ['sagittal', 'coronal']);
+        console.log('  🔒 Zoom disabled for sagittal/coronal in CPR mode');
+      }
 
       toolGroup.addTool(PanTool.toolName);
 
@@ -3203,10 +3337,13 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       console.log('📐 Configuring measurement tools...');
 
       // 1. Smooth Polygon Tool (SplineROI with CatmullRom) - Axial only
-      // Simplified configuration - test if basic tool works
       toolGroup.addToolInstance('SmoothPolygon', SplineROITool.toolName, {
         configuration: {
           calculateStats: true,
+        },
+        // Viewport filter function: only enable on axial viewport
+        getViewportsForAnnotation: (annotation: any, viewportIds: string[]) => {
+          return viewportIds.filter(id => id === 'axial');
         }
       });
 
@@ -3219,28 +3356,59 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         // Store the original _getTextLines method if it exists
         const original_getTextLines = ToolClass.prototype._getTextLines || ToolClass.prototype.getTextLines;
 
-        // Override with custom implementation to hide built-in text
-        // We show all measurements in the custom draggable overlay instead
+        // Override with custom implementation to show workflow label
         ToolClass.prototype._getTextLines = function(data: any, targetId: string) {
-          // Return empty array to hide the built-in text on the polygon
-          return [];
+          const textLines: string[] = [];
+
+          // Show workflow label if it exists
+          if (data.label) {
+            textLines.push(data.label);
+          }
+
+          // Return the label (or empty if no label)
+          return textLines;
         };
 
         // Also try overriding getTextLines (some versions use this)
         ToolClass.prototype.getTextLines = ToolClass.prototype._getTextLines;
       }
 
-      // 2. Axial Line Tool - Axial only
+      // 2. Axial Line Tool - Axial only, renderMode-aware
       toolGroup.addToolInstance('AxialLine', LengthTool.toolName, {
-        // Viewport filter function: only enable on axial viewport
+        // Viewport filter function: only enable on axial viewport AND only show in matching renderMode
         getViewportsForAnnotation: (annotation: any, viewportIds: string[]) => {
+          // Check if annotation has renderMode metadata
+          const annotationRenderMode = annotation?.metadata?.renderMode;
+
+          // If annotation has renderMode, only show in matching mode
+          if (annotationRenderMode && annotationRenderMode !== renderMode) {
+            return []; // Hide in different render mode
+          }
+
           return viewportIds.filter(id => id === 'axial');
         }
       });
 
-      // 3. MPR Long Axis Line Tool - Sagittal/Coronal only
-      toolGroup.addToolInstance('MPRLongAxisLine', LengthTool.toolName, {
-        // Viewport filter function: only enable on sagittal and coronal viewports
+      // 3. MPR Long Axis Line Tool - Sagittal/Coronal only, renderMode-aware
+      // In CPR mode, use VerticalLineTool to constrain to vertical lines only
+      const longAxisToolName = renderMode === 'cpr' ? VerticalLineTool.toolName : LengthTool.toolName;
+      toolGroup.addToolInstance('MPRLongAxisLine', longAxisToolName, {
+        // Viewport filter function: only enable on sagittal and coronal viewports AND only show in matching renderMode
+        getViewportsForAnnotation: (annotation: any, viewportIds: string[]) => {
+          // Check if annotation has renderMode metadata
+          const annotationRenderMode = annotation?.metadata?.renderMode;
+
+          // If annotation has renderMode, only show in matching mode
+          if (annotationRenderMode && annotationRenderMode !== renderMode) {
+            return []; // Hide in different render mode
+          }
+
+          return viewportIds.filter(id => id === 'sagittal' || id === 'coronal');
+        }
+      });
+
+      // 4. CurvedLeafletTool - For workflow leaflet measurements (Sagittal/Coronal only)
+      toolGroup.addTool(CurvedLeafletTool.toolName, {
         getViewportsForAnnotation: (annotation: any, viewportIds: string[]) => {
           return viewportIds.filter(id => id === 'sagittal' || id === 'coronal');
         }
@@ -3489,6 +3657,141 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         }
       };
 
+      // Track workflow-processed annotations separately (existing processedAnnotations is for stats)
+      const workflowProcessedAnnotations = new Set<string>();
+
+      // Add event listener to tag annotations with renderMode when they're completed
+      const annotationCompletedHandler = (evt: any) => {
+        // Use refs to get latest values and avoid closure issues
+        const currentWorkflowControlled = workflowControlledRef.current;
+        const currentStep = currentWorkflowStepRef.current;
+        const measurementCompleteCallback = onMeasurementCompleteRef.current;
+
+        const { annotation } = evt.detail;
+
+        // Prevent duplicate processing of the same annotation
+        if (annotation?.annotationUID && workflowProcessedAnnotations.has(annotation.annotationUID)) {
+          console.log('⚠️ Skipping duplicate event for annotation:', annotation.annotationUID);
+          return;
+        }
+
+        console.log('🎯 ANNOTATION_COMPLETED event fired!', evt.detail);
+        console.log('   workflowControlled:', currentWorkflowControlled);
+        console.log('   currentWorkflowStep:', currentStep);
+        console.log('   annotation:', annotation);
+        console.log('   toolName:', annotation?.metadata?.toolName);
+
+        // Tag line annotations with current renderMode
+        if (annotation?.metadata?.toolName === 'AxialLine' ||
+            annotation?.metadata?.toolName === 'MPRLongAxisLine') {
+          if (!annotation.metadata) {
+            annotation.metadata = {};
+          }
+          annotation.metadata.renderMode = renderMode;
+        }
+
+        // Workflow auto-labeling: apply label from workflow step
+        if (currentWorkflowControlled && currentStep && annotation) {
+          console.log('✅ Entering workflow auto-labeling logic');
+          console.log('   Current step ID:', currentStep.id);
+          console.log('   Current step name:', currentStep.name);
+          console.log('   Current step autoLabel:', currentStep.autoLabel);
+
+          const workflowManager = getWorkflowManager();
+          const labelData = workflowManager.getLabelForStep(currentStep);
+
+          console.log(`🏷️ Auto-labeling annotation for step: ${currentStep.name}`);
+          console.log(`   Label from manager: "${labelData.text}", Color: ${labelData.color}`);
+
+          // Apply label using the SAME system as "Add Label" (customLabel in metadata)
+          if (!annotation.metadata) {
+            annotation.metadata = {};
+          }
+          annotation.metadata.customLabel = {
+            text: labelData.text,
+            color: labelData.color
+          };
+
+          // Also save to state for UI to recognize it
+          setAnnotationLabels(prev => ({
+            ...prev,
+            [annotation.annotationUID]: {
+              text: labelData.text,
+              color: labelData.color
+            }
+          }));
+
+          // Invalidate annotation to trigger re-render with new label
+          annotation.invalidated = true;
+
+          // Trigger viewport render to display the label immediately
+          if (renderingEngineRef.current) {
+            renderingEngineRef.current.render();
+          }
+
+          // Store workflow metadata in annotation for later confirmation
+          if (!annotation.metadata) {
+            annotation.metadata = {};
+          }
+          annotation.metadata.workflowStepId = currentStep.id;
+          annotation.metadata.workflowStepName = currentStep.name;
+
+          // Extract measured value based on tool type
+          let measuredValue = null;
+          const toolName = annotation?.metadata?.toolName;
+
+          if (toolName === 'SplineROITool' || toolName === 'SmoothPolygon') {
+            // Polygon tool - extract area
+            const stats = annotation?.data?.cachedStats;
+            if (stats) {
+              const volumeId = Object.keys(stats)[0];
+              measuredValue = {
+                area: stats[volumeId]?.area,
+                perimeter: stats[volumeId]?.perimeter,
+                areaDerivedDiameter: stats[volumeId]?.areaDerivedDiameter,
+                perimeterDerivedDiameter: stats[volumeId]?.perimeterDerivedDiameter
+              };
+            }
+          } else if (toolName === 'AxialLine' || toolName === 'MPRLongAxisLine') {
+            // Line tool - extract length
+            const handles = annotation?.data?.handles;
+            if (handles?.points) {
+              const length = annotation?.data?.cachedStats?.length;
+              measuredValue = { length };
+            }
+          } else if (toolName === CurvedLeafletTool.toolName) {
+            // Spline tool - extract curve length
+            const splinePoints = annotation?.data?.spline?.points;
+            if (splinePoints && splinePoints.length >= 2) {
+              const length = CurvedLeafletTool.calculateCurveLength(splinePoints);
+              measuredValue = { length };
+            }
+          }
+
+          // Store measurement data and show tick button
+          setCurrentMeasurementData({
+            annotationUID: annotation.annotationUID,
+            measuredValue
+          });
+          setMeasurementReadyForConfirm(true);
+
+          // Mark as processed to prevent duplicate handling
+          if (annotation.annotationUID) {
+            workflowProcessedAnnotations.add(annotation.annotationUID);
+          }
+
+          console.log(`✅ Annotation auto-labeled for step: ${currentStep.name}`);
+          console.log(`   Measured value:`, measuredValue);
+          console.log(`   User must click tick button to confirm and advance`)
+        } else {
+          console.log('❌ Skipping auto-labeling:', {
+            workflowControlled: currentWorkflowControlled,
+            hasStep: !!currentStep,
+            hasAnnotation: !!annotation
+          });
+        }
+      };
+
       // Delay attaching event listeners until DOM elements are ready
       setTimeout(() => {
         const axialElementFromRef = elementRefs.axial.current;
@@ -3496,6 +3799,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         if (axialElementFromRef) {
           axialElementFromRef.addEventListener(csToolsEnums.Events.ANNOTATION_RENDERED, handleAnnotationRendered);
         }
+
+        // Listen to global event target for annotation completion (not DOM elements)
+        eventTarget.addEventListener(csToolsEnums.Events.ANNOTATION_COMPLETED, annotationCompletedHandler);
       }, 500);
 
       // Customize annotation rendering to show extended statistics
@@ -3517,54 +3823,237 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       // Handle right-click on annotations to show context menu
       const handleAnnotationContextMenu = (evt: MouseEvent) => {
-        if (currentStage !== WorkflowStage.MEASUREMENTS) return;
+        if (currentStage !== WorkflowStage.MEASUREMENTS) {
+          return;
+        }
 
         evt.preventDefault();
 
         // Get the viewport element that was clicked
         const target = evt.target as HTMLElement;
-        const viewportElement = target.closest('.viewport-element');
-        if (!viewportElement) return;
 
-        const viewportId = viewportElement.id;
-        if (!viewportId) return;
+        // Determine which viewport was clicked by checking which ref contains the target
+        let viewportId: string | null = null;
+        let viewportElement: HTMLElement | null = null;
+
+        if (elementRefs.axial.current?.contains(target)) {
+          viewportId = 'axial';
+          viewportElement = elementRefs.axial.current;
+        } else if (elementRefs.sagittal.current?.contains(target)) {
+          viewportId = 'sagittal';
+          viewportElement = elementRefs.sagittal.current;
+        } else if (elementRefs.coronal.current?.contains(target)) {
+          viewportId = 'coronal';
+          viewportElement = elementRefs.coronal.current;
+        }
+
+        if (!viewportId || !viewportElement) {
+          return;
+        }
 
         const viewport = renderingEngineRef.current?.getViewport(viewportId);
-        if (!viewport) return;
+        if (!viewport) {
+          return;
+        }
 
-        // Get canvas coordinates
+        // Get canvas and display coordinates
         const rect = (viewportElement as HTMLElement).getBoundingClientRect();
-        const canvasX = evt.clientX - rect.left;
-        const canvasY = evt.clientY - rect.top;
+        const canvas = viewport.getCanvas() as HTMLCanvasElement;
+
+        // Calculate click position in canvas pixel space (not display space)
+        const canvasX = ((evt.clientX - rect.left) / rect.width) * canvas.width;
+        const canvasY = ((evt.clientY - rect.top) / rect.height) * canvas.height;
+
+        // Check for CPR position indicator line (only in sagittal/coronal when centerline data exists)
+
+        // Check if we have CPR position line data (indicates CPR mode is active)
+        if ((viewportId === 'sagittal' || viewportId === 'coronal') &&
+            centerlineDataRef.current &&
+            cprPositionRatioRef.current !== undefined) {
+          console.log(`  📍 CPR position line data detected in ${viewportId}`);
+          if (canvas) {
+            const { height: canvasHeight } = canvas;
+
+            console.log(`  📏 Canvas height: ${canvasHeight}, Display height: ${rect.height}`);
+
+            // The line is drawn at positionRatio of the CANVAS height (not display height)
+            // because drawCPRPositionLineOnCanvas uses canvas.height
+            const positionRatio = cprPositionRatioRef.current;
+            const lineYPixel = positionRatio * canvasHeight;
+
+            console.log(`  📏 positionRatio=${positionRatio}, lineYPixel=${lineYPixel}, clickY=${canvasY}`);
+
+            const tolerance = 15; // pixels - increased tolerance
+            const distance = Math.abs(canvasY - lineYPixel);
+            console.log(`  📐 Distance from line: ${distance}px (tolerance=${tolerance}px)`);
+
+            // Check if click is near the horizontal CPR position line
+            if (distance <= tolerance) {
+              console.log(`  ✅ Click detected on CPR position line!`);
+              // Calculate the arc length at this position
+              const positions = centerlineDataRef.current.position;
+              const numCenterlinePoints = positions.length / 3;
+
+              // Calculate total arc length
+              let totalDistance = 0;
+              for (let i = 1; i < numCenterlinePoints; i++) {
+                const dx = positions[i * 3] - positions[(i - 1) * 3];
+                const dy = positions[i * 3 + 1] - positions[(i - 1) * 3 + 1];
+                const dz = positions[i * 3 + 2] - positions[(i - 1) * 3 + 2];
+                const segmentLength = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                totalDistance += segmentLength;
+              }
+
+              // Calculate arc length at current position
+              const currentDistance = positionRatio * totalDistance;
+
+              // Calculate distance from annulus (same logic as yellow label on CPR)
+              let distanceFromAnnulus = 0;
+              let annulusYPixel = 0;
+              if (cprAnnulusRatioRef.current !== undefined) {
+                const annulusDistance = cprAnnulusRatioRef.current * totalDistance;
+                // Negative = below annulus (towards LV), Positive = above annulus (towards ascending aorta)
+                distanceFromAnnulus = currentDistance - annulusDistance;
+                // Calculate annulus Y position in CANVAS coordinates (not display)
+                annulusYPixel = cprAnnulusRatioRef.current * canvasHeight;
+              }
+
+              console.log(`  📊 Distance from annulus: ${distanceFromAnnulus.toFixed(2)}mm`);
+
+              // Show context menu with special type for CPR line
+              setContextMenu({
+                x: evt.clientX,
+                y: evt.clientY,
+                annotationUID: 'cpr-position-line',
+                cprLineData: {
+                  arcLength: currentDistance,
+                  totalLength: totalDistance,
+                  positionRatio: positionRatio,
+                  distanceFromAnnulus: distanceFromAnnulus,
+                  viewportId: viewportId,
+                  annulusYPixel: annulusYPixel,
+                  clickedYPixel: canvasY
+                }
+              });
+              console.log(`  ✅ Context menu set!`);
+              return;
+            } else {
+              console.log(`  ❌ Click too far from line (${distance}px > ${tolerance}px)`);
+            }
+          }
+        }
 
         // Convert to world coordinates
         const worldPoint = viewport.canvasToWorld([canvasX, canvasY]);
 
         // Check if click is near any annotation
         const allAnnotations = cornerstoneTools.annotation.state.getAllAnnotations();
-        const tolerance = 10; // pixels
+        const tolerance = 150; // pixels - very large tolerance for easier clicking
+
+
+        console.log(`Checking ${allAnnotations.length} annotations`);
 
         for (const annotation of allAnnotations) {
-          if (annotation.metadata?.toolName === 'SmoothPolygon' && annotation.data?.handles?.points) {
-            // Check if click is near any of the polygon points
-            for (const point of annotation.data.handles.points) {
-              const canvasPoint = viewport.worldToCanvas(point);
-              const distance = Math.sqrt(
-                Math.pow(canvasPoint[0] - canvasX, 2) +
-                Math.pow(canvasPoint[1] - canvasY, 2)
+          // Note: Polygon context menu is handled by right-clicking on the text overlay
+          // (see onContextMenu handler in the text overlay div above)
+
+          // Check for line annotations (AxialLine, MPRLongAxisLine)
+          if ((annotation.metadata?.toolName === 'AxialLine' || annotation.metadata?.toolName === 'MPRLongAxisLine')
+              && annotation.data?.handles?.points?.length === 2) {
+            console.log(`Found line: ${annotation.metadata?.toolName}, uid: ${annotation.annotationUID.substring(0, 8)}`);
+            const p1 = annotation.data.handles.points[0];
+            const p2 = annotation.data.handles.points[1];
+
+            // For AxialLine, check if line is in current slice
+            if (annotation.metadata?.toolName === 'AxialLine') {
+              const camera = viewport.getCamera();
+              const { viewPlaneNormal, focalPoint } = camera;
+
+              const p1Vector = [p1[0] - focalPoint[0], p1[1] - focalPoint[1], p1[2] - focalPoint[2]];
+              const p2Vector = [p2[0] - focalPoint[0], p2[1] - focalPoint[1], p2[2] - focalPoint[2]];
+
+              const p1Distance = Math.abs(
+                p1Vector[0] * viewPlaneNormal[0] +
+                p1Vector[1] * viewPlaneNormal[1] +
+                p1Vector[2] * viewPlaneNormal[2]
               );
 
-              if (distance <= tolerance) {
-                // Show context menu
-                setContextMenu({
-                  x: evt.clientX,
-                  y: evt.clientY,
-                  annotationUID: annotation.annotationUID
-                });
-                return;
+              const p2Distance = Math.abs(
+                p2Vector[0] * viewPlaneNormal[0] +
+                p2Vector[1] * viewPlaneNormal[1] +
+                p2Vector[2] * viewPlaneNormal[2]
+              );
+
+              const slabThickness = (viewport as any).getSlabThickness?.() || 0.1;
+              const visibilityThreshold = slabThickness / 2;
+
+              if (p1Distance > visibilityThreshold && p2Distance > visibilityThreshold) {
+                continue;
               }
             }
+
+            const p1Canvas = viewport.worldToCanvas(p1);
+            const p2Canvas = viewport.worldToCanvas(p2);
+
+            const distToLine = distanceToLineSegment(
+              [canvasX, canvasY],
+              p1Canvas,
+              p2Canvas
+            );
+
+            console.log(`  Distance to line: ${distToLine.toFixed(2)}px (tolerance: ${tolerance}px)`);
+
+            if (distToLine <= tolerance) {
+              console.log(`  ✅ Showing context menu for line`);
+              setContextMenu({
+                x: evt.clientX,
+                y: evt.clientY,
+                annotationUID: annotation.annotationUID
+              });
+              return;
+            } else {
+              console.log(`  ❌ Too far from line`);
+            }
           }
+        }
+
+        // Helper function to calculate distance from point to line segment
+        function distanceToLineSegment(
+          point: number[],
+          lineStart: number[],
+          lineEnd: number[]
+        ): number {
+          const x = point[0], y = point[1];
+          const x1 = lineStart[0], y1 = lineStart[1];
+          const x2 = lineEnd[0], y2 = lineEnd[1];
+
+          const A = x - x1;
+          const B = y - y1;
+          const C = x2 - x1;
+          const D = y2 - y1;
+
+          const dot = A * C + B * D;
+          const lenSq = C * C + D * D;
+          let param = -1;
+
+          if (lenSq !== 0) param = dot / lenSq;
+
+          let xx, yy;
+
+          if (param < 0) {
+            xx = x1;
+            yy = y1;
+          } else if (param > 1) {
+            xx = x2;
+            yy = y2;
+          } else {
+            xx = x1 + param * C;
+            yy = y1 + param * D;
+          }
+
+          const dx = x - xx;
+          const dy = y - yy;
+          return Math.sqrt(dx * dx + dy * dy);
         }
       };
 
@@ -3822,6 +4311,38 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           axialEl.removeEventListener(csToolsEnums.Events.ANNOTATION_RENDERED, handleAnnotationRendered);
           document.removeEventListener('wheel', updateOverlayPositions);
         }
+
+        // Remove context menu listeners from sagittal and coronal
+        const sagittalEl = elementRefs.sagittal.current;
+        if (sagittalEl) {
+          sagittalEl.removeEventListener('contextmenu', handleAnnotationContextMenu as any);
+        }
+
+        const coronalEl = elementRefs.coronal.current;
+        if (coronalEl) {
+          coronalEl.removeEventListener('contextmenu', handleAnnotationContextMenu as any);
+        }
+
+        // Remove global annotation completed listener
+        eventTarget.removeEventListener(csToolsEnums.Events.ANNOTATION_COMPLETED, annotationCompletedHandler);
+      };
+
+      // Handler to detect manual scrolling (wheel event) and temporarily disable auto-scroll
+      const handleManualScroll = () => {
+        // User is manually scrolling with mouse wheel - disable auto-scroll temporarily
+        skipAutoScrollRef.current = true;
+        console.log('🔒 Auto-scroll disabled (user scrolling)');
+
+        // Clear any existing timeout
+        if (autoScrollTimeoutRef.current) {
+          clearTimeout(autoScrollTimeoutRef.current);
+        }
+
+        // Re-enable auto-scroll after 2 seconds of no scrolling
+        autoScrollTimeoutRef.current = setTimeout(() => {
+          skipAutoScrollRef.current = false;
+          console.log('🔓 Auto-scroll re-enabled');
+        }, 2000);
       };
 
       if (axialElement) {
@@ -3833,7 +4354,24 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         // Also listen for wheel events directly on the element
         axialElement.addEventListener('wheel', updateOverlayPositions, { passive: true });
 
-        console.log('  ✅ Overlay position updater and context menu registered');
+        // Listen for wheel events to detect manual scrolling (only wheel, not CAMERA_MODIFIED)
+        axialElement.addEventListener('wheel', handleManualScroll, { passive: true });
+
+        console.log('  ✅ Overlay position updater and context menu registered for axial');
+      }
+
+      // Add context menu listeners to sagittal and coronal viewports for CPR line context menu
+      const sagittalElement = elementRefs.sagittal.current;
+      const coronalElement = elementRefs.coronal.current;
+
+      if (sagittalElement) {
+        sagittalElement.addEventListener('contextmenu', handleAnnotationContextMenu as any);
+        console.log('  ✅ Context menu registered for sagittal');
+      }
+
+      if (coronalElement) {
+        coronalElement.addEventListener('contextmenu', handleAnnotationContextMenu as any);
+        console.log('  ✅ Context menu registered for coronal');
       }
 
       // Also set up an interval as a fallback to check visibility every 500ms
@@ -3844,13 +4382,16 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       // CRITICAL: Activate default tool after setup
       // During MEASUREMENTS stage, we need to activate the initial tool explicitly
       if (currentStage === WorkflowStage.MEASUREMENTS) {
-        console.log('🎯 Activating default tool (Zoom) for MEASUREMENTS stage...');
+        console.log('🎯 Activating default tool (Pan) for MEASUREMENTS stage...');
         // Don't call handleToolChange here as it tries to set tools passive
-        // Just activate Zoom tool directly
-        toolGroup.setToolActive(ZoomTool.toolName, {
+        // Use Pan tool by default so user can scroll CPR views
+        toolGroup.setToolActive(PanTool.toolName, {
           bindings: [{ mouseButton: MouseBindings.Primary }],
         });
-        console.log('  ✅ Zoom tool activated by default');
+        console.log('  ✅ Pan tool activated by default');
+
+        // Set the active tool state
+        setActiveTool('Pan');
       }
 
       console.log('✅✅✅ SETUP TOOLS COMPLETE');
@@ -3865,10 +4406,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
       if (!toolGroup) return;
 
-      // During annulus definition, keep CrosshairsTool disabled (don't set to passive)
-      if (currentStage !== WorkflowStage.ANNULUS_DEFINITION) {
-        toolGroup.setToolPassive(CrosshairsTool.toolName);
-      }
+      // Always disable CrosshairsTool when switching to other tools (completely hide it)
+      // We use FixedCrosshairTool for custom crosshairs instead
+      toolGroup.setToolDisabled(CrosshairsTool.toolName);
 
       // Set other tools to passive first
       toolGroup.setToolPassive(ZoomTool.toolName);
@@ -3878,10 +4418,13 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       toolGroup.setToolPassive(WindowLevelTool.toolName);
       toolGroup.setToolPassive(FixedCrosshairTool.toolName); // Also disable fixed crosshairs when switching tools
 
-      // Set measurement tool instances to passive
-      toolGroup.setToolPassive('SmoothPolygon');
-      toolGroup.setToolPassive('AxialLine');
-      toolGroup.setToolPassive('MPRLongAxisLine');
+      // Set measurement tool instances to enabled (not passive!)
+      // Enabled = annotations are visible and interactive but tool is not actively drawing
+      // Passive = annotations become invisible
+      toolGroup.setToolEnabled('SmoothPolygon');
+      toolGroup.setToolEnabled('AxialLine');
+      toolGroup.setToolEnabled('MPRLongAxisLine');
+      toolGroup.setToolEnabled(CurvedLeafletTool.toolName);
 
       // Always keep these tools active with their default bindings
       toolGroup.setToolActive(StackScrollTool.toolName, {
@@ -3927,15 +4470,15 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         });
       } else if (toolName === 'SmoothPolygon') {
         console.log('🎯 Activating SmoothPolygon tool (SplineROI)');
-        // SplineROI works in two ways:
-        // 1. Click to place first point, then click to add more points (no Shift needed in Cornerstone3D v2)
-        // 2. Or use Primary button binding and the tool handles the interaction
+        // Activate on axial viewport - the tool is already configured with viewport filter
+        // at tool registration (getViewportsForAnnotation) so it will only work on axial
         toolGroup.setToolActive('SmoothPolygon', {
           bindings: [
             { mouseButton: MouseBindings.Primary }  // Single clicks to add points
           ],
         });
-        console.log('  ℹ️ Click to add points, click near first point to close polygon');
+
+        console.log('  ℹ️ Click to add points on AXIAL view only, click near first point to close polygon');
       } else if (toolName === 'AxialLine') {
         console.log('🎯 Activating AxialLine tool');
         toolGroup.setToolActive('AxialLine', {
@@ -3946,6 +4489,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         toolGroup.setToolActive('MPRLongAxisLine', {
           bindings: [{ mouseButton: MouseBindings.Primary }],
         });
+      } else if (toolName === 'CurvedLeafletTool') {
+        console.log('🎯 Activating CurvedLeafletTool for leaflet measurements');
+        toolGroup.setToolActive(CurvedLeafletTool.toolName, {
+          bindings: [{ mouseButton: MouseBindings.Primary }],
+        });
+        console.log('  ℹ️ Click to add points on SAGITTAL/CORONAL views, creates open spline curve');
       }
 
       setActiveTool(toolName);
@@ -3973,7 +4522,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     try {
       const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
       if (!toolGroup) return;
-      
+
       const cuspTool = toolGroup.getToolInstance(CuspNadirTool.toolName) as CuspNadirTool;
       if (cuspTool) {
         cuspTool.clearAll();
@@ -3983,6 +4532,96 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       console.warn('Clear cusp dots error:', error);
     }
   };
+
+  // Workflow auto-activation: when currentWorkflowStep changes, auto-activate the appropriate tool
+  useEffect(() => {
+    if (!workflowControlled || !currentWorkflowStep) {
+      console.log('⚠️ Workflow auto-activation skipped:', { workflowControlled, hasStep: !!currentWorkflowStep });
+      return; // Only activate when workflow is in control
+    }
+
+    // Add a small delay to ensure tool group is ready
+    const activationTimeout = setTimeout(() => {
+      const workflowManager = getWorkflowManager();
+      const toolName = workflowManager.getToolNameForStep(currentWorkflowStep);
+
+      // Check if tool group exists
+      const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+      if (!toolGroup) {
+        console.warn('Tool group not found for workflow step:', currentWorkflowStep.name);
+        return;
+      }
+
+      handleToolChange(toolName);
+    }, 100); // Small delay to ensure everything is initialized
+
+    return () => clearTimeout(activationTimeout);
+  }, [currentWorkflowStep, workflowControlled]);
+
+  // Workflow auto-scroll: automatically scroll to the correct slice height for the current measurement step
+  useEffect(() => {
+    if (!workflowControlled || !currentWorkflowStep || !annularPlane || !renderingEngineRef.current) {
+      return;
+    }
+
+    // Only auto-scroll if the step has changed (not already auto-scrolled to this step)
+    if (lastAutoScrolledStepRef.current === currentWorkflowStep.id) {
+      return;
+    }
+
+    // Skip if user is manually scrolling
+    if (skipAutoScrollRef.current) {
+      return;
+    }
+
+    // Calculate the offset from annulus based on the step configuration
+    const workflowManager = getWorkflowManager();
+    const offsetMm = workflowManager.calculateSliceOffset(currentWorkflowStep, annulusArea);
+
+    // The annular plane normal points from LV towards ascending aorta
+    // Positive offset = move UP (towards ascending aorta) = opposite to normal
+    // Negative offset = move DOWN (towards LV outflow) = along the normal
+    // So we NEGATE the offset to get correct direction
+    const targetPosition: [number, number, number] = [
+      annularPlane.center[0] - (annularPlane.normal[0] * offsetMm),
+      annularPlane.center[1] - (annularPlane.normal[1] * offsetMm),
+      annularPlane.center[2] - (annularPlane.normal[2] * offsetMm)
+    ];
+
+    // Update both the crosshair position AND viewport cameras to actually scroll the slices
+    const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+    if (toolGroup) {
+      const fixedCrosshairTool = toolGroup.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
+      if (fixedCrosshairTool) {
+        // Update crosshair position - this updates the yellow text
+        fixedCrosshairTool.setFixedPosition(targetPosition, 'mprRenderingEngine');
+
+        // Also update all viewport cameras to actually scroll to the new position
+        const viewportIds = ['axial', 'sagittal', 'coronal'];
+        viewportIds.forEach(viewportId => {
+          const viewport = renderingEngineRef.current!.getViewport(viewportId) as Types.IVolumeViewport;
+          if (viewport) {
+            const camera = viewport.getCamera();
+            viewport.setCamera({
+              ...camera,
+              focalPoint: targetPosition
+            });
+            viewport.render();
+          }
+        });
+
+        // CRITICAL: Update currentCenterlineIndexRef to the new position
+        // This ensures manual scrolling starts from the auto-scrolled position, not annulus
+        if (centerlineDataRef.current) {
+          const nearestIndex = findNearestCenterlineIndex(targetPosition);
+          currentCenterlineIndexRef.current = nearestIndex;
+        }
+
+        // Mark this step as auto-scrolled
+        lastAutoScrolledStepRef.current = currentWorkflowStep.id;
+      }
+    }
+  }, [currentWorkflowStep, workflowControlled, annularPlane, annulusArea]);
 
   // Handle stage changes to lock/unlock tools and switch crosshair modes
   useEffect(() => {
@@ -3994,6 +4633,36 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     const fixedCrosshairTool = toolGroup.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
 
     if (currentStage === WorkflowStage.ANNULUS_DEFINITION) {
+      // CRITICAL: Delete all measurement annotations when entering annulus definition
+      console.log('🧹 Deleting all measurement annotations (entering annulus definition)');
+      const allAnnotations = cornerstoneTools.annotation.state.getAllAnnotations();
+      const measurementAnnotations = allAnnotations.filter((ann: any) =>
+        ann?.metadata?.toolName === 'SmoothPolygon' ||
+        ann?.metadata?.toolName === 'AxialLine' ||
+        ann?.metadata?.toolName === 'MPRLongAxisLine'
+      );
+
+      const measurementAnnotationUIDs = new Set(measurementAnnotations.map((ann: any) => ann.annotationUID));
+
+      measurementAnnotations.forEach((ann: any) => {
+        cornerstoneTools.annotation.state.removeAnnotation(ann.annotationUID);
+      });
+
+      if (measurementAnnotations.length > 0) {
+        console.log(`  ✅ Deleted ${measurementAnnotations.length} measurement annotations`);
+
+        // CRITICAL: Clear ALL related UI state
+        setAnnotationLabels({});  // Clear labels
+        setAnnotationOverlays(prev =>
+          prev.filter(overlay => !measurementAnnotationUIDs.has(overlay.annotationUID))
+        );  // Clear text overlays
+
+        // Force render to show deletions
+        if (renderingEngineRef.current) {
+          renderingEngineRef.current.renderViewports(['axial', 'sagittal', 'coronal']);
+        }
+      }
+
       // Allow sphere editing when explicitly selected, otherwise lock
       if (sphereTool && typeof sphereTool.setDraggable === 'function') {
         sphereTool.setDraggable(true); // Allow dragging if tool is selected
@@ -4101,6 +4770,21 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       toolGroup.setToolPassive(CuspNadirTool.toolName);
       toolGroup.setToolPassive(SphereMarkerTool.toolName);
       console.log('✅ CuspNadirTool and SphereMarkerTool set to passive (slice-based visibility, not interactive)');
+
+      // CRITICAL: Enable measurement tools so annotations remain visible
+      // Enabled = annotations are visible and interactive but not actively drawing
+      toolGroup.setToolEnabled('SmoothPolygon');
+      toolGroup.setToolEnabled('AxialLine');
+      toolGroup.setToolEnabled('MPRLongAxisLine');
+      console.log('✅ Measurement tools enabled (annotations visible)');
+
+      // CRITICAL: Force render to show all annotations when entering measurements
+      setTimeout(() => {
+        if (renderingEngineRef.current) {
+          renderingEngineRef.current.renderViewports(['axial', 'sagittal', 'coronal']);
+          console.log('  ✅ Forced render to show all measurement annotations');
+        }
+      }, 100);
 
       // NOTE: FixedCrosshairTool configuration (drag disable, distance measurement)
       // is handled by a dedicated useEffect that runs when entering MEASUREMENTS stage
@@ -4448,11 +5132,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       const tangent = getCenterlineTangentAtIndex(clampedIndex);
 
       if (!newPosition || !tangent) {
-        console.warn('⚠️ Failed to get centerline position or tangent at index', clampedIndex);
+        console.warn('Failed to get centerline position or tangent at index', clampedIndex);
         return;
       }
-
-      console.log(`📜 MPR scroll to centerline index ${clampedIndex.toFixed(2)}/${numCenterlinePoints - 1}`);
 
       // Update axial viewport - position camera perpendicular to centerline
       const axialVp = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
@@ -4592,7 +5274,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         if (coronalVp) cuspToolInstance.updateVisibilityForSingleViewport(coronalVp, 2);
       }
 
-      console.log('✅ All viewports updated to centerline position', newIndex);
     };
 
     // Add event listener with capture=true to intercept BEFORE Cornerstone's handlers
@@ -4632,17 +5313,27 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     const axialElement = axialViewport.element;
     const numCenterlinePoints = centerlineDataRef.current.position.length / 3;
 
-    // Initialize centerline index to annulus center position (if not already set)
-    if (currentCenterlineIndexRef.current === 0 && lockedFocalPointRef.current) {
-      const nearestIndex = findNearestCenterlineIndex(lockedFocalPointRef.current);
-      currentCenterlineIndexRef.current = nearestIndex;
-      console.log(`📍 Initialized centerline index to ${nearestIndex} (nearest to annulus center)`);
-    }
+    // Don't auto-initialize to annulus - let workflow auto-scroll handle initial positioning
+    // The auto-scroll will set the correct position based on the workflow step
+    // if (currentCenterlineIndexRef.current === 0 && lockedFocalPointRef.current) {
+    //   const nearestIndex = findNearestCenterlineIndex(lockedFocalPointRef.current);
+    //   currentCenterlineIndexRef.current = nearestIndex;
+    //   console.log(`📍 Initialized centerline index to ${nearestIndex} (nearest to annulus center)`);
+    // }
 
     const handleWheel = (evt: WheelEvent) => {
       evt.preventDefault();
       evt.stopPropagation();
       evt.stopImmediatePropagation();
+
+      // CRITICAL: Disable auto-scroll immediately when user manually scrolls
+      skipAutoScrollRef.current = true;
+      if (autoScrollTimeoutRef.current) {
+        clearTimeout(autoScrollTimeoutRef.current);
+      }
+      autoScrollTimeoutRef.current = setTimeout(() => {
+        skipAutoScrollRef.current = false;
+      }, 2000);
 
       // Use fractional scrolling for ultra-smooth navigation
       const scrollDirection = evt.deltaY > 0 ? 1 : -1;
@@ -4663,11 +5354,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       const tangent = getCenterlineTangentAtIndex(clampedIndex);
 
       if (!newPosition || !tangent) {
-        console.warn('⚠️ Failed to get centerline position or tangent at index', clampedIndex);
+        console.warn('Failed to get centerline position or tangent at index', clampedIndex);
         return;
       }
-
-      console.log(`📜 MPR scroll to centerline index ${clampedIndex.toFixed(2)}/${numCenterlinePoints - 1}`);
 
       // Update axial viewport - position camera perpendicular to centerline
       const axialVp = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
@@ -4807,7 +5496,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         if (coronalVp) cuspToolInstance.updateVisibilityForSingleViewport(coronalVp, 2);
       }
 
-      console.log('✅ All viewports updated to centerline position', newIndex);
     };
 
     // Add event listener with capture=true to intercept BEFORE Cornerstone's handlers
@@ -5653,6 +6341,15 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                     padding: '2px',
                     userSelect: 'none'
                   }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setContextMenu({
+                      x: e.clientX,
+                      y: e.clientY,
+                      annotationUID: overlay.annotationUID
+                    });
+                  }}
                   onMouseDown={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -5706,6 +6403,26 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                     }
                   }}
                 >
+                  {/* Custom label if exists */}
+                  {annotationLabels[overlay.annotationUID] && (
+                    <div
+                      style={{
+                        color: annotationLabels[overlay.annotationUID].color,
+                        fontSize: '15px',
+                        fontFamily: 'Arial, sans-serif',
+                        fontWeight: 'bold',
+                        lineHeight: '1.3',
+                        textShadow: '1px 1px 3px rgba(0, 0, 0, 1), -1px -1px 3px rgba(0, 0, 0, 1)',
+                        whiteSpace: 'nowrap',
+                        marginBottom: '4px',
+                        borderBottom: `2px solid ${annotationLabels[overlay.annotationUID].color}`,
+                        paddingBottom: '2px'
+                      }}
+                    >
+                      {annotationLabels[overlay.annotationUID].text}
+                    </div>
+                  )}
+                  {/* Measurement lines */}
                   {overlay.lines.map((line, index) => (
                     <div
                       key={index}
@@ -5725,6 +6442,118 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 </div>
               ))}
 
+            {/* Custom labels for line annotations */}
+            {(() => {
+              const viewport = renderingEngineRef.current?.getViewport('axial');
+              if (!viewport) return null;
+
+              const annotations = cornerstoneTools.annotation.state.getAllAnnotations();
+              const lineAnnotations = annotations.filter((ann: any) =>
+                (ann?.metadata?.toolName === 'AxialLine' || ann?.metadata?.toolName === 'MPRLongAxisLine') &&
+                ann?.data?.handles?.points?.length === 2 &&
+                annotationLabels[ann.annotationUID] &&
+                // Only show labels for annotations in current renderMode
+                (!ann?.metadata?.renderMode || ann.metadata.renderMode === renderMode)
+              );
+
+
+              return lineAnnotations.map((annotation: any) => {
+                const label = annotationLabels[annotation.annotationUID];
+                if (!label) return null;
+
+                // Check if annotation should be visible in this viewport
+                // AxialLine: only in axial viewport
+                // MPRLongAxisLine: only in sagittal/coronal viewports (handled in those sections)
+                if (annotation.metadata?.toolName === 'AxialLine') {
+                  // AxialLine should only show in axial
+                } else if (annotation.metadata?.toolName === 'MPRLongAxisLine') {
+                  // MPRLongAxisLine should NOT show in axial
+                  return null;
+                }
+
+                // Get the midpoint of the line
+                const p1 = annotation.data.handles.points[0];
+                const p2 = annotation.data.handles.points[1];
+                const midpoint: Types.Point3 = [
+                  (p1[0] + p2[0]) / 2,
+                  (p1[1] + p2[1]) / 2,
+                  (p1[2] + p2[2]) / 2
+                ];
+
+                // Check visibility based on camera plane (like polygon overlays)
+                const camera = viewport.getCamera();
+                const { viewPlaneNormal, focalPoint } = camera;
+
+                const vectorToPoint = [
+                  midpoint[0] - focalPoint[0],
+                  midpoint[1] - focalPoint[1],
+                  midpoint[2] - focalPoint[2]
+                ];
+
+                const distanceToPlane = Math.abs(
+                  vectorToPoint[0] * viewPlaneNormal[0] +
+                  vectorToPoint[1] * viewPlaneNormal[1] +
+                  vectorToPoint[2] * viewPlaneNormal[2]
+                );
+
+                const slabThickness = (viewport as any).getSlabThickness?.() || 0.1;
+                const visibilityThreshold = slabThickness / 2;
+
+                if (distanceToPlane > visibilityThreshold) {
+                  return null;
+                }
+
+                // Convert to canvas coordinates
+                const canvasPoint = viewport.worldToCanvas(midpoint);
+
+                // Check if point is visible
+                const canvas = viewport.canvas;
+                if (canvasPoint[0] < -50 || canvasPoint[0] > canvas.width + 50 ||
+                    canvasPoint[1] < -50 || canvasPoint[1] > canvas.height + 50) {
+                  return null;
+                }
+
+                return (
+                  <div
+                    key={annotation.annotationUID}
+                    className="absolute z-50"
+                    style={{
+                      left: `${canvasPoint[0]}px`,
+                      top: `${canvasPoint[1] - 30}px`, // Position above the line
+                      transform: 'translateX(-50%)'
+                    }}
+                  >
+                    <div
+                      style={{
+                        color: label.color,
+                        fontSize: '15px',
+                        fontFamily: 'Arial, sans-serif',
+                        fontWeight: 'bold',
+                        textShadow: '1px 1px 3px rgba(0, 0, 0, 1), -1px -1px 3px rgba(0, 0, 0, 1)',
+                        whiteSpace: 'nowrap',
+                        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+                        padding: '2px 6px',
+                        borderRadius: '3px',
+                        border: `1px solid ${label.color}`,
+                        cursor: 'pointer'
+                      }}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setContextMenu({
+                          x: e.clientX,
+                          y: e.clientY,
+                          annotationUID: annotation.annotationUID
+                        });
+                      }}
+                    >
+                      {label.text}
+                    </div>
+                  </div>
+                );
+              });
+            })()}
+
             {/* Render axis lines for polygon annotations */}
             {(() => {
               const viewport = renderingEngineRef.current?.getViewport('axial');
@@ -5741,6 +6570,33 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 const axes = annotation.metadata.axesMeasurements;
                 if (!axes) return null;
 
+                // Check if polygon is in current slice (same logic as overlay visibility)
+                const firstPoint = annotation.data?.handles?.points?.[0] || annotation.data?.contour?.polyline?.[0];
+                if (!firstPoint) return null;
+
+                const camera = viewport.getCamera();
+                const { viewPlaneNormal, focalPoint } = camera;
+
+                const vectorToPoint = [
+                  firstPoint[0] - focalPoint[0],
+                  firstPoint[1] - focalPoint[1],
+                  firstPoint[2] - focalPoint[2]
+                ];
+
+                const distanceToPlane = Math.abs(
+                  vectorToPoint[0] * viewPlaneNormal[0] +
+                  vectorToPoint[1] * viewPlaneNormal[1] +
+                  vectorToPoint[2] * viewPlaneNormal[2]
+                );
+
+                const slabThickness = (viewport as any).getSlabThickness?.() || 0.1;
+                const visibilityThreshold = slabThickness / 2;
+
+                // Only render axis lines if polygon is in current slice
+                if (distanceToPlane > visibilityThreshold) {
+                  return null;
+                }
+
                 // Convert world coordinates to canvas coordinates
                 const longAxisP1Canvas = viewport.worldToCanvas(axes.longAxisP1);
                 const longAxisP2Canvas = viewport.worldToCanvas(axes.longAxisP2);
@@ -5750,9 +6606,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 // Find the text overlay for this annotation
                 const textOverlay = annotationOverlays.find(o => o.annotationUID === annotation.annotationUID);
 
-                // Get the first point of the polygon for the connector line
-                const firstPoint = annotation.data?.handles?.points?.[0] || annotation.data?.contour?.polyline?.[0];
-                const firstPointCanvas = firstPoint ? viewport.worldToCanvas(firstPoint) : null;
+                const firstPointCanvas = viewport.worldToCanvas(firstPoint);
 
                 return (
                   <svg
@@ -5805,16 +6659,79 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               <ContextMenu
                 x={contextMenu.x}
                 y={contextMenu.y}
-                items={[
-                  {
-                    label: 'Delete Annotation',
-                    icon: <FaTrash />,
-                    onClick: () => {
-                      deleteAnnotation(contextMenu.annotationUID);
-                      setContextMenu(null);
-                    }
-                  }
-                ]}
+                items={
+                  contextMenu.annotationUID === 'cpr-position-line' && contextMenu.cprLineData
+                    ? [
+                        {
+                          label: `Height: ${Math.abs(contextMenu.cprLineData.distanceFromAnnulus).toFixed(2)} mm`,
+                          icon: null,
+                          onClick: () => {
+                            // Add new height indicator line (allow multiple)
+                            if (contextMenu.cprLineData) {
+                              // Convert canvas Y coordinates to display Y coordinates for SVG rendering
+                              const viewport = renderingEngineRef.current?.getViewport(contextMenu.cprLineData.viewportId);
+                              if (viewport) {
+                                const canvas = viewport.getCanvas() as HTMLCanvasElement;
+                                const element = contextMenu.cprLineData.viewportId === 'sagittal'
+                                  ? elementRefs.sagittal.current
+                                  : elementRefs.coronal.current;
+
+                                if (element && canvas) {
+                                  const rect = element.getBoundingClientRect();
+                                  const canvasHeight = canvas.height;
+                                  const displayHeight = rect.height;
+
+                                  // Convert canvas pixels to display pixels
+                                  const y1Display = (contextMenu.cprLineData.annulusYPixel / canvasHeight) * displayHeight;
+                                  const y2Display = (contextMenu.cprLineData.clickedYPixel / canvasHeight) * displayHeight;
+
+                                  const newIndicator = {
+                                    id: `height-${Date.now()}`,
+                                    viewportId: contextMenu.cprLineData.viewportId,
+                                    y1: y1Display,
+                                    y2: y2Display,
+                                    height: contextMenu.cprLineData.distanceFromAnnulus
+                                  };
+                                  setCprHeightIndicators(prev => [...prev, newIndicator]);
+                                }
+                              }
+                            }
+                            setContextMenu(null);
+                          }
+                        }
+                      ]
+                    : [
+                        {
+                          label: annotationLabels[contextMenu.annotationUID] ? 'Edit Label' : 'Add Label',
+                          icon: <FaTag />,
+                          onClick: () => {
+                            // Get the annotation to check for existing label
+                            const annotations = cornerstoneTools.annotation.state.getAllAnnotations();
+                            const annotation = annotations.find((ann: any) => ann.annotationUID === contextMenu.annotationUID);
+
+                            // Pre-fill with existing customLabel (used by both workflow and manual labels)
+                            const existingLabel = annotation?.metadata?.customLabel;
+                            const stateLabel = annotationLabels[contextMenu.annotationUID];
+
+                            setLabelModal({
+                              visible: true,
+                              annotationUID: contextMenu.annotationUID,
+                              currentLabel: stateLabel?.text || existingLabel?.text || '',
+                              currentColor: stateLabel?.color || existingLabel?.color || '#ffff00'
+                            });
+                            setContextMenu(null);
+                          }
+                        },
+                        {
+                          label: 'Delete Annotation',
+                          icon: <FaTrash />,
+                          onClick: () => {
+                            deleteAnnotation(contextMenu.annotationUID);
+                            setContextMenu(null);
+                          }
+                        }
+                      ]
+                }
                 onClose={() => setContextMenu(null)}
               />
             )}
@@ -5825,11 +6742,158 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
             <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
               Sagittal
             </div>
-            <div 
-              ref={elementRefs.sagittal} 
+            <div
+              ref={elementRefs.sagittal}
               className="w-full h-full"
               style={{ minHeight: '300px' }}
             />
+
+            {/* Custom labels for line annotations (Sagittal) */}
+            {(() => {
+              const viewport = renderingEngineRef.current?.getViewport('sagittal');
+              if (!viewport) return null;
+
+              const annotations = cornerstoneTools.annotation.state.getAllAnnotations();
+              // Sagittal only shows MPRLongAxisLine (not AxialLine)
+              const lineAnnotations = annotations.filter((ann: any) =>
+                ann?.metadata?.toolName === 'MPRLongAxisLine' &&
+                ann?.data?.handles?.points?.length === 2 &&
+                annotationLabels[ann.annotationUID] &&
+                // Only show labels for annotations in current renderMode
+                (!ann?.metadata?.renderMode || ann.metadata.renderMode === renderMode)
+              );
+
+              return lineAnnotations.map((annotation: any) => {
+                const label = annotationLabels[annotation.annotationUID];
+                if (!label) return null;
+
+                // Get the midpoint of the line
+                const p1 = annotation.data.handles.points[0];
+                const p2 = annotation.data.handles.points[1];
+                const midpoint: Types.Point3 = [
+                  (p1[0] + p2[0]) / 2,
+                  (p1[1] + p2[1]) / 2,
+                  (p1[2] + p2[2]) / 2
+                ];
+
+                // MPRLongAxisLine labels always show in sagittal/coronal (no depth check needed)
+                // They span the full volume
+
+                // Convert to canvas coordinates
+                const canvasPoint = viewport.worldToCanvas(midpoint);
+
+                // Check if point is visible
+                const canvas = viewport.canvas;
+                if (canvasPoint[0] < -50 || canvasPoint[0] > canvas.width + 50 ||
+                    canvasPoint[1] < -50 || canvasPoint[1] > canvas.height + 50) {
+                  return null;
+                }
+
+                return (
+                  <div
+                    key={annotation.annotationUID}
+                    className="absolute z-50"
+                    style={{
+                      left: `${canvasPoint[0]}px`,
+                      top: `${canvasPoint[1] - 30}px`,
+                      transform: 'translateX(-50%)'
+                    }}
+                  >
+                    <div
+                      style={{
+                        color: label.color,
+                        fontSize: '15px',
+                        fontFamily: 'Arial, sans-serif',
+                        fontWeight: 'bold',
+                        textShadow: '1px 1px 3px rgba(0, 0, 0, 1), -1px -1px 3px rgba(0, 0, 0, 1)',
+                        whiteSpace: 'nowrap',
+                        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+                        padding: '2px 6px',
+                        borderRadius: '3px',
+                        border: `1px solid ${label.color}`,
+                        cursor: 'pointer'
+                      }}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setContextMenu({
+                          x: e.clientX,
+                          y: e.clientY,
+                          annotationUID: annotation.annotationUID
+                        });
+                      }}
+                    >
+                      {label.text}
+                    </div>
+                  </div>
+                );
+              });
+            })()}
+
+            {/* CPR Height Indicator Lines (Sagittal) */}
+            {cprHeightIndicators.filter(ind => ind.viewportId === 'sagittal').length > 0 && elementRefs.sagittal.current && (() => {
+              const rect = elementRefs.sagittal.current.getBoundingClientRect();
+              const viewportWidth = rect.width;
+
+              return (
+                <svg
+                  className="absolute top-0 left-0 pointer-events-none"
+                  style={{ width: '100%', height: '100%', zIndex: 20 }}
+                >
+                  {cprHeightIndicators
+                    .filter(ind => ind.viewportId === 'sagittal')
+                    .map((indicator, index) => {
+                      // Calculate actual pixel position from the right
+                      const xPosition = viewportWidth - (50 + index * 40);
+
+                      return (
+                        <g key={indicator.id}>
+                          {/* Vertical line from annulus to clicked position */}
+                          <line
+                            x1={xPosition}
+                            y1={indicator.y1}
+                            x2={xPosition}
+                            y2={indicator.y2}
+                            stroke="#ffff00"
+                            strokeWidth="2"
+                          />
+
+                          {/* Arrow markers at both ends - pointing down/up */}
+                          {/* Top arrow (pointing down) */}
+                          <polygon
+                            points={`${xPosition - 5},${indicator.y1} ${xPosition + 5},${indicator.y1} ${xPosition},${indicator.y1 + 8}`}
+                            fill="#ffff00"
+                          />
+                          {/* Bottom arrow (pointing up) */}
+                          <polygon
+                            points={`${xPosition - 5},${indicator.y2} ${xPosition + 5},${indicator.y2} ${xPosition},${indicator.y2 - 8}`}
+                            fill="#ffff00"
+                          />
+
+                          {/* Label showing height at midpoint */}
+                          <text
+                            x={xPosition - 8}
+                            y={(indicator.y1 + indicator.y2) / 2}
+                            fill="#ffff00"
+                            fontSize="13"
+                            fontWeight="bold"
+                            textAnchor="end"
+                            dominantBaseline="middle"
+                            style={{
+                              paintOrder: 'stroke',
+                              stroke: 'black',
+                              strokeWidth: '3px',
+                              strokeLinejoin: 'round'
+                            }}
+                          >
+                            {Math.abs(indicator.height).toFixed(2)} mm
+                          </text>
+                        </g>
+                      );
+                    })}
+                </svg>
+              );
+            })()}
           </div>
           
           {/* Coronal View */}
@@ -5837,13 +6901,297 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
             <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
               Coronal
             </div>
-            <div 
-              ref={elementRefs.coronal} 
+            <div
+              ref={elementRefs.coronal}
               className="w-full h-full"
               style={{ minHeight: '300px' }}
             />
+
+            {/* Custom labels for line annotations (Coronal) */}
+            {(() => {
+              const viewport = renderingEngineRef.current?.getViewport('coronal');
+              if (!viewport) return null;
+
+              const annotations = cornerstoneTools.annotation.state.getAllAnnotations();
+              // Coronal only shows MPRLongAxisLine (not AxialLine)
+              const lineAnnotations = annotations.filter((ann: any) =>
+                ann?.metadata?.toolName === 'MPRLongAxisLine' &&
+                ann?.data?.handles?.points?.length === 2 &&
+                annotationLabels[ann.annotationUID] &&
+                // Only show labels for annotations in current renderMode
+                (!ann?.metadata?.renderMode || ann.metadata.renderMode === renderMode)
+              );
+
+              return lineAnnotations.map((annotation: any) => {
+                const label = annotationLabels[annotation.annotationUID];
+                if (!label) return null;
+
+                // Get the midpoint of the line
+                const p1 = annotation.data.handles.points[0];
+                const p2 = annotation.data.handles.points[1];
+                const midpoint: Types.Point3 = [
+                  (p1[0] + p2[0]) / 2,
+                  (p1[1] + p2[1]) / 2,
+                  (p1[2] + p2[2]) / 2
+                ];
+
+                // MPRLongAxisLine labels always show in sagittal/coronal (no depth check needed)
+                // They span the full volume
+
+                // Convert to canvas coordinates
+                const canvasPoint = viewport.worldToCanvas(midpoint);
+
+                // Check if point is visible
+                const canvas = viewport.canvas;
+                if (canvasPoint[0] < -50 || canvasPoint[0] > canvas.width + 50 ||
+                    canvasPoint[1] < -50 || canvasPoint[1] > canvas.height + 50) {
+                  return null;
+                }
+
+                return (
+                  <div
+                    key={annotation.annotationUID}
+                    className="absolute z-50"
+                    style={{
+                      left: `${canvasPoint[0]}px`,
+                      top: `${canvasPoint[1] - 30}px`,
+                      transform: 'translateX(-50%)'
+                    }}
+                  >
+                    <div
+                      style={{
+                        color: label.color,
+                        fontSize: '15px',
+                        fontFamily: 'Arial, sans-serif',
+                        fontWeight: 'bold',
+                        textShadow: '1px 1px 3px rgba(0, 0, 0, 1), -1px -1px 3px rgba(0, 0, 0, 1)',
+                        whiteSpace: 'nowrap',
+                        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+                        padding: '2px 6px',
+                        borderRadius: '3px',
+                        border: `1px solid ${label.color}`,
+                        cursor: 'pointer'
+                      }}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setContextMenu({
+                          x: e.clientX,
+                          y: e.clientY,
+                          annotationUID: annotation.annotationUID
+                        });
+                      }}
+                    >
+                      {label.text}
+                    </div>
+                  </div>
+                );
+              });
+            })()}
+
+            {/* CPR Height Indicator Lines (Coronal) */}
+            {cprHeightIndicators.filter(ind => ind.viewportId === 'coronal').length > 0 && elementRefs.coronal.current && (() => {
+              const rect = elementRefs.coronal.current.getBoundingClientRect();
+              const viewportWidth = rect.width;
+
+              return (
+                <svg
+                  className="absolute top-0 left-0 pointer-events-none"
+                  style={{ width: '100%', height: '100%', zIndex: 20 }}
+                >
+                  {cprHeightIndicators
+                    .filter(ind => ind.viewportId === 'coronal')
+                    .map((indicator, index) => {
+                      // Calculate actual pixel position from the right
+                      const xPosition = viewportWidth - (50 + index * 40);
+
+                      return (
+                        <g key={indicator.id}>
+                          {/* Vertical line from annulus to clicked position */}
+                          <line
+                            x1={xPosition}
+                            y1={indicator.y1}
+                            x2={xPosition}
+                            y2={indicator.y2}
+                            stroke="#ffff00"
+                            strokeWidth="2"
+                          />
+
+                          {/* Arrow markers at both ends - pointing down/up */}
+                          {/* Top arrow (pointing down) */}
+                          <polygon
+                            points={`${xPosition - 5},${indicator.y1} ${xPosition + 5},${indicator.y1} ${xPosition},${indicator.y1 + 8}`}
+                            fill="#ffff00"
+                          />
+                          {/* Bottom arrow (pointing up) */}
+                          <polygon
+                            points={`${xPosition - 5},${indicator.y2} ${xPosition + 5},${indicator.y2} ${xPosition},${indicator.y2 - 8}`}
+                            fill="#ffff00"
+                          />
+
+                          {/* Label showing height at midpoint */}
+                          <text
+                            x={xPosition - 8}
+                            y={(indicator.y1 + indicator.y2) / 2}
+                            fill="#ffff00"
+                            fontSize="13"
+                            fontWeight="bold"
+                            textAnchor="end"
+                            dominantBaseline="middle"
+                            style={{
+                              paintOrder: 'stroke',
+                              stroke: 'black',
+                              strokeWidth: '3px',
+                              strokeLinejoin: 'round'
+                            }}
+                          >
+                            {Math.abs(indicator.height).toFixed(2)} mm
+                          </text>
+                        </g>
+                      );
+                    })}
+                </svg>
+              );
+            })()}
           </div>
         </div>
+
+        {/* Label Modal */}
+        {labelModal && labelModal.visible && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50"
+            onClick={() => setLabelModal(null)}
+          >
+            <div
+              className="bg-slate-800 border border-slate-600 rounded-lg shadow-2xl p-6 min-w-[400px]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h2 className="text-white text-xl font-bold mb-4 flex items-center gap-2">
+                <FaTag />
+                {labelModal.currentLabel ? 'Edit Label' : 'Add Label'}
+              </h2>
+
+              <div className="space-y-4">
+                {/* Text Input */}
+                <div>
+                  <label className="block text-white text-sm font-medium mb-2">
+                    Label Text
+                  </label>
+                  <input
+                    type="text"
+                    value={labelModal.currentLabel}
+                    onChange={(e) => setLabelModal({ ...labelModal, currentLabel: e.target.value })}
+                    placeholder="e.g., Annulus, LVOT, Sinus dimension"
+                    className="w-full px-3 py-2 bg-slate-700 text-white border border-slate-600 rounded focus:outline-none focus:border-blue-500"
+                    autoFocus
+                  />
+                </div>
+
+                {/* Color Picker */}
+                <div>
+                  <label className="block text-white text-sm font-medium mb-2">
+                    Label Color
+                  </label>
+                  <div className="flex gap-2 items-center">
+                    <input
+                      type="color"
+                      value={labelModal.currentColor}
+                      onChange={(e) => setLabelModal({ ...labelModal, currentColor: e.target.value })}
+                      className="w-16 h-10 bg-slate-700 border border-slate-600 rounded cursor-pointer"
+                    />
+                    <span className="text-white text-sm">{labelModal.currentColor}</span>
+                  </div>
+                  {/* Preset colors */}
+                  <div className="flex gap-2 mt-2">
+                    {['#ffff00', '#ff0000', '#00ff00', '#00ffff', '#ff00ff', '#ffffff'].map(color => (
+                      <button
+                        key={color}
+                        onClick={() => setLabelModal({ ...labelModal, currentColor: color })}
+                        className="w-8 h-8 rounded border-2 border-slate-600 hover:border-white transition-colors"
+                        style={{ backgroundColor: color }}
+                        title={color}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                {/* Buttons */}
+                <div className="flex gap-3 justify-end mt-6">
+                  <button
+                    onClick={() => setLabelModal(null)}
+                    className="px-4 py-2 bg-slate-700 text-white rounded hover:bg-slate-600 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (labelModal.currentLabel.trim()) {
+                        // Save to state for backward compatibility
+                        setAnnotationLabels(prev => ({
+                          ...prev,
+                          [labelModal.annotationUID]: {
+                            text: labelModal.currentLabel.trim(),
+                            color: labelModal.currentColor
+                          }
+                        }));
+
+                        // Save to annotation metadata (same system used by workflow)
+                        const annotations = cornerstoneTools.annotation.state.getAllAnnotations();
+                        const annotation = annotations.find((ann: any) => ann.annotationUID === labelModal.annotationUID);
+                        if (annotation) {
+                          // Save to customLabel in metadata (used by both workflow and manual labels)
+                          if (!annotation.metadata) annotation.metadata = {};
+                          annotation.metadata.customLabel = {
+                            text: labelModal.currentLabel.trim(),
+                            color: labelModal.currentColor
+                          };
+
+                          // Invalidate to trigger re-render
+                          annotation.invalidated = true;
+                          renderingEngineRef.current?.render();
+                        }
+                      }
+                      setLabelModal(null);
+                    }}
+                    className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Workflow Confirmation Button - Show when measurement is complete but not confirmed */}
+        {workflowControlled && measurementReadyForConfirm && currentWorkflowStep && onConfirmMeasurement && (
+          <div className="absolute top-4 right-4 z-50">
+            <button
+              onClick={() => {
+                if (currentMeasurementData && onMeasurementComplete) {
+                  // Call the measurement complete callback with stored data
+                  onMeasurementComplete(
+                    currentWorkflowStep.id,
+                    currentMeasurementData.annotationUID,
+                    currentMeasurementData.measuredValue
+                  );
+                }
+                // Reset state
+                setMeasurementReadyForConfirm(false);
+                setCurrentMeasurementData(null);
+                // Call confirm callback to advance workflow
+                onConfirmMeasurement();
+              }}
+              className="flex items-center gap-3 px-6 py-4 bg-green-600 hover:bg-green-700 text-white rounded-lg shadow-2xl transition-all duration-200 hover:scale-105 border-2 border-green-400"
+            >
+              <FaCheck className="text-2xl" />
+              <div className="text-left">
+                <div className="font-bold text-lg">Confirm Measurement</div>
+                <div className="text-xs text-green-200">Click to advance to next step</div>
+              </div>
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

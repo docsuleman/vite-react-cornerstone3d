@@ -1,0 +1,147 @@
+{
+  "workflowVersion": "1.0",
+  "measurements": [
+    {
+      "id": "annulus",
+      "name": "Annular Measurement",
+      "type": "polygon",
+      "section": "axial",
+      "level": "annulus",
+      "offsetFromAnnulus": 0,
+      "required": true,
+      "autoLabel": "Annulus"
+    },
+    {
+      "id": "lvot",
+      "name": "LVOT",
+      "type": "polygon",
+      "section": "axial",
+      "level": "relative",
+      "offsetFromAnnulus": -2,
+      "required": true,
+      "autoLabel": "LVOT"
+    },
+    {
+      "id": "sov-l",
+      "name": "SOV Left",
+      "type": "line",
+      "section": "axial",
+      "level": "dynamic",
+      "offsetCalculation": "annulusArea < 400 ? 8 : (annulusArea < 500 ? 10 : 12)",
+      "required": true,
+      "autoLabel": "SOV-L"
+    },
+    {
+      "id": "sov-r",
+      "name": "SOV Right",
+      "type": "line",
+      "section": "axial",
+      "level": "dynamic",
+      "offsetCalculation": "annulusArea < 400 ? 8 : (annulusArea < 500 ? 10 : 12)",
+      "required": true,
+      "autoLabel": "SOV-R"
+    },
+    {
+      "id": "sov-n",
+      "name": "SOV Non-Coronary",
+      "type": "line",
+      "section": "axial",
+      "level": "dynamic",
+      "offsetCalculation": "annulusArea < 400 ? 8 : (annulusArea < 500 ? 10 : 12)",
+      "required": true,
+      "autoLabel": "SOV-N"
+    },
+    {
+      "id": "stj",
+      "name": "STJ Area",
+      "type": "polygon",
+      "section": "axial",
+      "level": "dynamic",
+      "offsetCalculation": "annulusArea < 400 ? 20 : (annulusArea < 500 ? 24 : 28)",
+      "required": true,
+      "autoLabel": "STJ"
+    },
+    {
+      "id": "ascending-aorta",
+      "name": "Ascending Aorta",
+      "type": "polygon",
+      "section": "axial",
+      "level": "relative",
+      "offsetFromAnnulus": 45,
+      "required": true,
+      "autoLabel": "Ascending Aorta"
+    },
+    {
+      "id": "lca-height",
+      "name": "LCA Height",
+      "type": "line",
+      "section": "longaxis",
+      "level": "manual",
+      "required": true,
+      "autoLabel": "LCA Height"
+    },
+    {
+      "id": "rca-height",
+      "name": "RCA Height",
+      "type": "line",
+      "section": "longaxis",
+      "level": "manual",
+      "required": true,
+      "autoLabel": "RCA Height"
+    },
+    {
+      "id": "leaflet-left",
+      "name": "Left Leaflet Length",
+      "type": "spline",
+      "section": "longaxis",
+      "level": "manual",
+      "required": true,
+      "autoLabel": "Leaflet Left"
+    },
+    {
+      "id": "leaflet-right",
+      "name": "Right Leaflet Length",
+      "type": "spline",
+      "section": "longaxis",
+      "level": "manual",
+      "required": true,
+      "autoLabel": "Leaflet Right"
+    },
+    {
+      "id": "stj-height",
+      "name": "STJ Height",
+      "type": "line",
+      "section": "longaxis",
+      "level": "manual",
+      "required": true,
+      "autoLabel": "STJ Height"
+    },
+    {
+      "id": "membranous-septum",
+      "name": "Membranous Septum",
+      "type": "line",
+      "section": "longaxis",
+      "level": "manual",
+      "required": false,
+      "autoLabel": "Membranous Septum"
+    },
+    {
+      "id": "lca-sinus-distance",
+      "name": "LCA-Sinus Distance",
+      "type": "line",
+      "section": "axial",
+      "level": "coronaryLevel",
+      "required": false,
+      "autoLabel": "LCA-Sinus"
+    },
+    {
+      "id": "rca-sinus-distance",
+      "name": "RCA-Sinus Distance",
+      "type": "line",
+      "section": "axial",
+      "level": "coronaryLevel",
+      "required": false,
+      "autoLabel": "RCA-Sinus"
+    }
+  ]
+}

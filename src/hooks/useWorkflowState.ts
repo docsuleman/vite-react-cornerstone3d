@@ -24,6 +24,9 @@ const initialState: WorkflowState = {
     [WorkflowStage.ANNULUS_DEFINITION]: false,
     [WorkflowStage.MEASUREMENTS]: false,
   },
+  measurementWorkflowActive: false,
+  currentMeasurementStepIndex: 0,
+  completedMeasurementSteps: [],
   errors: [],
   warnings: [],
 };
@@ -217,6 +220,41 @@ function workflowReducer(state: WorkflowState, action: WorkflowAction): Workflow
         currentStage: WorkflowStage.PATIENT_SELECTION,
       };
 
+    case WORKFLOW_ACTIONS.START_MEASUREMENT_WORKFLOW:
+      return {
+        ...state,
+        measurementWorkflowActive: true,
+        currentMeasurementStepIndex: 0,
+        completedMeasurementSteps: [],
+      };
+
+    case WORKFLOW_ACTIONS.SET_MEASUREMENT_STEP_INDEX:
+      return {
+        ...state,
+        currentMeasurementStepIndex: action.payload,
+      };
+
+    case WORKFLOW_ACTIONS.NEXT_MEASUREMENT_STEP:
+      return {
+        ...state,
+        currentMeasurementStepIndex: state.currentMeasurementStepIndex + 1,
+      };
+
+    case WORKFLOW_ACTIONS.COMPLETE_MEASUREMENT_STEP:
+      return {
+        ...state,
+        completedMeasurementSteps: [...state.completedMeasurementSteps, action.payload.stepId],
+        currentMeasurementStepIndex: state.currentMeasurementStepIndex + 1,
+      };
+
+    case WORKFLOW_ACTIONS.RESET_MEASUREMENT_WORKFLOW:
+      return {
+        ...state,
+        measurementWorkflowActive: false,
+        currentMeasurementStepIndex: 0,
+        completedMeasurementSteps: [],
+      };
+
     default:
       return state;
   }
@@ -296,6 +334,30 @@ export function useWorkflowState() {
 
     resetWorkflow: useCallback(() => {
       dispatch({ type: WORKFLOW_ACTIONS.RESET_WORKFLOW });
+    }, []),
+
+    // Measurement workflow actions
+    startMeasurementWorkflow: useCallback(() => {
+      dispatch({ type: WORKFLOW_ACTIONS.START_MEASUREMENT_WORKFLOW });
+    }, []),
+
+    setMeasurementStepIndex: useCallback((index: number) => {
+      dispatch({ type: WORKFLOW_ACTIONS.SET_MEASUREMENT_STEP_INDEX, payload: index });
+    }, []),
+
+    nextMeasurementStep: useCallback(() => {
+      dispatch({ type: WORKFLOW_ACTIONS.NEXT_MEASUREMENT_STEP });
+    }, []),
+
+    completeMeasurementStep: useCallback((stepId: string, annotationUID: string, measuredValue?: any) => {
+      dispatch({
+        type: WORKFLOW_ACTIONS.COMPLETE_MEASUREMENT_STEP,
+        payload: { stepId, annotationUID, measuredValue }
+      });
+    }, []),
+
+    resetMeasurementWorkflow: useCallback(() => {
+      dispatch({ type: WORKFLOW_ACTIONS.RESET_MEASUREMENT_WORKFLOW });
     }, []),
   };
 
