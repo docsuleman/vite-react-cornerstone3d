@@ -132,6 +132,8 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
         return <FaCog className="text-lg" />;
       case WorkflowStage.MEASUREMENTS:
         return <FaRuler className="text-lg" />;
+      case WorkflowStage.REPORT:
+        return <FaFileAlt className="text-lg" />;
       default:
         return <FaCog className="text-lg" />;
     }
@@ -242,9 +244,9 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
   );
 
   const renderToolPanel = () => (
-    <div className="w-80 bg-slate-900 text-white border-r border-slate-700 flex flex-col min-h-0">
+    <div className="w-80 bg-slate-900 text-white border-r border-slate-700 flex flex-col min-h-0 overflow-y-auto">
       {/* Current Stage Info */}
-      <div className="p-6 border-b border-slate-700">
+      <div className="p-6 border-b border-slate-700 flex-shrink-0">
         <div className="flex items-center gap-3 mb-4">
           {getStageIcon(state.currentStage)}
           <h3 className="text-xl font-semibold">{getStageTitle(state.currentStage)}</h3>
@@ -294,6 +296,19 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
           </div>
         )}
       </div>
+
+      {/* View Report Button - Show when measurements exist */}
+      {Object.keys(state.measurements).length > 0 && (
+        <div className="px-6 py-3 border-b border-slate-700 flex-shrink-0">
+          <button
+            onClick={() => actions.setStage(WorkflowStage.REPORT)}
+            className="w-full px-4 py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm flex items-center justify-center gap-2 transition-colors font-medium"
+          >
+            <FaFileAlt />
+            View Report
+          </button>
+        </div>
+      )}
 
       {/* View Type Selector - Only show during MEASUREMENTS stage */}
       {state.patientInfo && state.currentStage === WorkflowStage.MEASUREMENTS && state.rootPoints.length >= 3 && (
@@ -351,18 +366,7 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
       {/* Measurements Panel */}
       {Object.keys(state.measurements).length > 0 && (
         <div className="border-t border-slate-700 p-6">
-          <div className="flex justify-between items-center mb-4">
-            <h4 className="text-lg font-semibold text-slate-200">Measurements</h4>
-            {state.completedMeasurementSteps.length > 0 && (
-              <button
-                onClick={() => setShowReport(true)}
-                className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded text-sm flex items-center gap-2 transition-colors"
-              >
-                <FaFileAlt />
-                View Report
-              </button>
-            )}
-          </div>
+          <h4 className="text-lg font-semibold text-slate-200 mb-4">Measurements</h4>
 
           {state.measurements.annulus && (
             <div className="bg-slate-800 rounded-lg p-4">
@@ -436,6 +440,15 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
               </button>
             </div>
           </div>
+        </div>
+      ) : state.currentStage === WorkflowStage.REPORT && state.patientInfo ? (
+        <div className="flex-1 bg-white overflow-hidden">
+          <MeasurementReportPage
+            patientInfo={state.patientInfo}
+            measurements={state.measurements}
+            completedSteps={workflowSteps.filter(step => state.completedMeasurementSteps.includes(step.id))}
+            onClose={() => actions.setStage(WorkflowStage.MEASUREMENTS)}
+          />
         </div>
       ) : (state.currentStage === WorkflowStage.ROOT_DEFINITION ||
             state.currentStage === WorkflowStage.ANNULUS_DEFINITION ||

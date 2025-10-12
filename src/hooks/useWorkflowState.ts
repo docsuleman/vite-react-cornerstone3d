@@ -23,6 +23,7 @@ const initialState: WorkflowState = {
     [WorkflowStage.ROOT_DEFINITION]: false,
     [WorkflowStage.ANNULUS_DEFINITION]: false,
     [WorkflowStage.MEASUREMENTS]: false,
+    [WorkflowStage.REPORT]: false,
   },
   measurementWorkflowActive: false,
   currentMeasurementStepIndex: 0,
@@ -370,10 +371,12 @@ export function useWorkflowState() {
           return state.isStageComplete[WorkflowStage.ROOT_DEFINITION];
         case WorkflowStage.MEASUREMENTS:
           return state.isStageComplete[WorkflowStage.ANNULUS_DEFINITION];
+        case WorkflowStage.REPORT:
+          return Object.keys(state.measurements).length > 0; // Can view report if measurements exist
         default:
           return true;
       }
-    }, [state.isStageComplete]),
+    }, [state.isStageComplete, state.measurements]),
 
     getCurrentStageProgress: useCallback((): number => {
       switch (state.currentStage) {
@@ -399,6 +402,8 @@ export function useWorkflowState() {
           return "Annulus Definition";
         case WorkflowStage.MEASUREMENTS:
           return "TAVI Measurements";
+        case WorkflowStage.REPORT:
+          return "Report";
         default:
           return "Unknown Stage";
       }

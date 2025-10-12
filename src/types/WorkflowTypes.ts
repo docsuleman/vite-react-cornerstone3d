@@ -4,7 +4,8 @@ export enum WorkflowStage {
   PATIENT_SELECTION = 'patient_selection',
   ROOT_DEFINITION = 'root_definition',
   ANNULUS_DEFINITION = 'annulus_definition',
-  MEASUREMENTS = 'measurements'
+  MEASUREMENTS = 'measurements',
+  REPORT = 'report'
 }
 
 export enum RootPointType {
@@ -129,6 +130,7 @@ export interface WorkflowState {
     [WorkflowStage.ROOT_DEFINITION]: boolean;
     [WorkflowStage.ANNULUS_DEFINITION]: boolean;
     [WorkflowStage.MEASUREMENTS]: boolean;
+    [WorkflowStage.REPORT]: boolean;
   };
   // Measurement workflow state
   measurementWorkflowActive: boolean;
