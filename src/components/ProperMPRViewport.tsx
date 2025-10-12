@@ -12,12 +12,15 @@ import { init as csToolsInit } from "@cornerstonejs/tools";
 import { init as dicomImageLoaderInit } from "@cornerstonejs/dicom-image-loader";
 import * as cornerstoneTools from "@cornerstonejs/tools";
 import { initializeCornerstone, isCornerStoneInitialized } from '../utils/cornerstoneInit';
-import { FaCrosshairs, FaSearchPlus, FaArrowsAlt, FaAdjust, FaCircle, FaMousePointer, FaScroll, FaTrash, FaDotCircle, FaPlay, FaPause } from "react-icons/fa";
+import { FaCrosshairs, FaSearchPlus, FaArrowsAlt, FaAdjust, FaCircle, FaMousePointer, FaScroll, FaTrash, FaDotCircle, FaPlay, FaPause, FaDrawPolygon, FaRuler } from "react-icons/fa";
 import SphereMarkerTool from '../customTools/Spheremarker';
 import CuspNadirTool from '../customTools/CuspNadirTool';
 import FixedCrosshairTool from '../customTools/FixedCrosshairTool';
+import VerticalDistanceTool from '../customTools/VerticalDistanceTool';
+import ContextMenu from './ContextMenu';
 import { WorkflowStage } from '../types/WorkflowTypes';
 import { CenterlineGenerator } from '../utils/CenterlineGenerator';
+import { calculateSplineAxes, formatAxisMeasurement } from '../utils/SplineStatistics';
 import vtkImageData from '@kitware/vtk.js/Common/DataModel/ImageData';
 import vtkImageCPRMapper from '@kitware/vtk.js/Rendering/Core/ImageCPRMapper';
 import vtkImageSlice from '@kitware/vtk.js/Rendering/Core/ImageSlice';
@@ -35,6 +38,8 @@ const {
   PanTool,
   WindowLevelTool,
   StackScrollTool,
+  SplineROITool,
+  LengthTool,
   synchronizers,
 } = cornerstoneTools;
 
@@ -77,6 +82,18 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTool, setActiveTool] = useState<string>('Zoom');
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; annotationUID: string } | null>(null);
+  const [annotationOverlays, setAnnotationOverlays] = useState<Array<{
+    uid: string;
+    x: number;
+    y: number;
+    lines: string[];
+    viewportId: string;
+    annotationUID: string; // Store reference to the actual annotation
+  }>>([]);
+  const [draggingOverlay, setDraggingOverlay] = useState<string | null>(null);
+  const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [axisLinesKey, setAxisLinesKey] = useState(0); // Force re-render of axis lines
 
   // Use refs for imageInfo to avoid re-renders that break CrosshairsTool
   const imageInfoRef = useRef<any>(null);
@@ -125,6 +142,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const originalCameraStatesRef = useRef<{ [viewportId: string]: any }>({}); // Store original camera states before CPR
   const isSettingUpCPRRef = useRef<boolean>(false); // Prevent concurrent setupCPRActors calls
   const axialReferenceFrameRef = useRef<{ viewUp: Types.Point3; viewRight: Types.Point3; viewPlaneNormal: Types.Point3 } | null>(null); // Store axial camera reference frame for rotation
+  const overlayUpdateIntervalRef = useRef<number | null>(null); // Store overlay update interval ID
 
   // Preload all phases sequentially when play is first hit
   useEffect(() => {
@@ -328,6 +346,109 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
     switchPhase();
   }, [selectedPhase, phaseInfo, patientInfo]);
+
+  // Handle global mouse events for dragging overlays
+  useEffect(() => {
+    const handleGlobalMouseMove = (e: MouseEvent) => {
+      if (draggingOverlay) {
+        e.preventDefault();
+        const viewportElement = document.getElementById('axial');
+        if (viewportElement) {
+          const rect = viewportElement.getBoundingClientRect();
+          const mouseX = e.clientX - rect.left;
+          const mouseY = e.clientY - rect.top;
+          const newX = mouseX - dragOffset.x;
+          const newY = mouseY - dragOffset.y;
+
+          // Store the custom position in the annotation metadata so it persists
+          const annotations = cornerstoneTools.annotation.state.getAllAnnotations();
+          const annotation = annotations.find((ann: any) => ann.annotationUID === draggingOverlay);
+          if (annotation) {
+            if (!annotation.metadata) annotation.metadata = {};
+            annotation.metadata.customTextPosition = { x: newX, y: newY, userMoved: true };
+          }
+
+          setAnnotationOverlays(prev =>
+            prev.map(o =>
+              o.uid === draggingOverlay ? { ...o, x: newX, y: newY, userMoved: true } : o
+            )
+          );
+        }
+      }
+    };
+
+    const handleGlobalMouseUp = () => {
+      if (draggingOverlay) {
+        setDraggingOverlay(null);
+      }
+    };
+
+    if (draggingOverlay) {
+      document.addEventListener('mousemove', handleGlobalMouseMove);
+      document.addEventListener('mouseup', handleGlobalMouseUp);
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleGlobalMouseMove);
+      document.removeEventListener('mouseup', handleGlobalMouseUp);
+    };
+  }, [draggingOverlay, dragOffset]);
+
+  // Delete annotation function (accessible from JSX)
+  const deleteAnnotation = useCallback((annotationUID: string) => {
+    try {
+      console.log(`🗑️ Deleting annotation ${annotationUID.substring(0, 8)}`);
+
+      // Get the annotation
+      const allAnnotations = cornerstoneTools.annotation.state.getAllAnnotations();
+      const annotation = allAnnotations.find((ann: any) => ann.annotationUID === annotationUID);
+
+      if (!annotation) {
+        console.warn('  ⚠️ Annotation not found');
+        return;
+      }
+
+      // Remove annotation using Cornerstone's API
+      cornerstoneTools.annotation.state.removeAnnotation(annotationUID);
+
+      // Remove associated overlay from React state
+      setAnnotationOverlays(prev => prev.filter(o => o.annotationUID !== annotationUID));
+
+      // Re-render viewports
+      if (renderingEngineRef.current) {
+        const viewportIds = ['axial', 'sagittal', 'coronal'];
+        renderingEngineRef.current.renderViewports(viewportIds);
+        console.log('  ✅ Annotation deleted and viewports re-rendered');
+      }
+    } catch (error) {
+      console.error('  ❌ Failed to delete annotation:', error);
+    }
+  }, []);
+
+  // Keyboard shortcuts for annotations (Delete key)
+  useEffect(() => {
+    if (currentStage !== WorkflowStage.MEASUREMENTS) return;
+
+    const handleKeyDown = (evt: KeyboardEvent) => {
+      // Delete key to delete selected annotation
+      if (evt.key === 'Delete' || evt.key === 'Backspace') {
+        // Get all annotations and find the highlighted one
+        const allAnnotations = cornerstoneTools.annotation.state.getAllAnnotations();
+        const highlightedAnnotation = allAnnotations.find((ann: any) => ann.highlighted);
+
+        if (highlightedAnnotation) {
+          evt.preventDefault();
+          deleteAnnotation(highlightedAnnotation.annotationUID);
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [currentStage, deleteAnnotation]);
 
   useEffect(() => {
     if (!patientInfo?.seriesInstanceUID) return;
@@ -800,6 +921,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
     try {
       console.log('🧹 Cleaning up MPR Viewport...');
+
+      // Clean up overlay update interval
+      if (overlayUpdateIntervalRef.current) {
+        clearInterval(overlayUpdateIntervalRef.current);
+        overlayUpdateIntervalRef.current = null;
+      }
 
       // DON'T destroy synchronizer - keep it alive for reuse (fixes sync issues)
       // slabSynchronizerRef.current = null;
@@ -2863,6 +2990,11 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       cornerstoneTools.addTool(CuspNadirTool);
       cornerstoneTools.addTool(FixedCrosshairTool);
 
+      // Add measurement tools
+      cornerstoneTools.addTool(SplineROITool);
+      cornerstoneTools.addTool(LengthTool);
+      cornerstoneTools.addTool(VerticalDistanceTool);
+
       // Destroy existing tool group if it exists
       try {
         const existingToolGroup = ToolGroupManager.getToolGroup(toolGroupId);
@@ -3067,6 +3199,660 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         }
       }
 
+      // Configure measurement tools with viewport restrictions
+      console.log('📐 Configuring measurement tools...');
+
+      // 1. Smooth Polygon Tool (SplineROI with CatmullRom) - Axial only
+      // Simplified configuration - test if basic tool works
+      toolGroup.addToolInstance('SmoothPolygon', SplineROITool.toolName, {
+        configuration: {
+          calculateStats: true,
+        }
+      });
+
+      // Override the SplineROI statistics calculation to include our custom measurements
+      const smoothPolygonTool = toolGroup.getToolInstance('SmoothPolygon');
+      if (smoothPolygonTool) {
+        // Get the tool's class (constructor)
+        const ToolClass = (smoothPolygonTool as any).constructor;
+
+        // Store the original _getTextLines method if it exists
+        const original_getTextLines = ToolClass.prototype._getTextLines || ToolClass.prototype.getTextLines;
+
+        // Override with custom implementation to hide built-in text
+        // We show all measurements in the custom draggable overlay instead
+        ToolClass.prototype._getTextLines = function(data: any, targetId: string) {
+          // Return empty array to hide the built-in text on the polygon
+          return [];
+        };
+
+        // Also try overriding getTextLines (some versions use this)
+        ToolClass.prototype.getTextLines = ToolClass.prototype._getTextLines;
+      }
+
+      // 2. Axial Line Tool - Axial only
+      toolGroup.addToolInstance('AxialLine', LengthTool.toolName, {
+        // Viewport filter function: only enable on axial viewport
+        getViewportsForAnnotation: (annotation: any, viewportIds: string[]) => {
+          return viewportIds.filter(id => id === 'axial');
+        }
+      });
+
+      // 3. MPR Long Axis Line Tool - Sagittal/Coronal only
+      toolGroup.addToolInstance('MPRLongAxisLine', LengthTool.toolName, {
+        // Viewport filter function: only enable on sagittal and coronal viewports
+        getViewportsForAnnotation: (annotation: any, viewportIds: string[]) => {
+          return viewportIds.filter(id => id === 'sagittal' || id === 'coronal');
+        }
+      });
+
+
+      // Add event listener for SplineROI annotations to calculate extended statistics
+      const annotationModifiedHandler = (evt: any) => {
+        const { annotation } = evt.detail;
+
+        // Only process SmoothPolygon annotations (our tool instance name)
+        if (annotation?.metadata?.toolName !== 'SmoothPolygon') {
+          return;
+        }
+
+        // Get spline points from annotation
+        const splinePoints = annotation?.data?.spline?.points;
+
+        if (!splinePoints || splinePoints.length < 3) {
+          return;
+        }
+
+        try {
+          // Get built-in stats - they're nested by volumeId
+          const cachedStats = annotation?.data?.cachedStats;
+
+          // Find the first volumeId key and get its stats
+          const volumeIds = Object.keys(cachedStats || {});
+          const firstVolumeStats = volumeIds.length > 0 ? cachedStats[volumeIds[0]] : {};
+
+          const area = firstVolumeStats?.area || 0;
+
+          // Calculate perimeter from spline points (built-in perimeter is often 0)
+          let perimeter = 0;
+          for (let i = 0; i < splinePoints.length; i++) {
+            const p1 = splinePoints[i];
+            const p2 = splinePoints[(i + 1) % splinePoints.length];
+
+            if (!p1 || !p2 || !Array.isArray(p1) || !Array.isArray(p2)) {
+              continue;
+            }
+
+            const dx = p2[0] - p1[0];
+            const dy = p2[1] - p1[1];
+            const dz = p2[2] - p1[2];
+            perimeter += Math.sqrt(dx * dx + dy * dy + dz * dz);
+          }
+
+          // Calculate long/short axes
+          const axes = calculateSplineAxes(splinePoints, perimeter);
+
+          // Calculate area-derived diameter
+          const areaDerivedDiameter = 2 * Math.sqrt(area / Math.PI);
+
+          // Store all measurements in cachedStats for display
+          // Stats are stored per volumeId, so update the first volumeId's stats
+          if (!annotation.data.cachedStats) {
+            annotation.data.cachedStats = {};
+          }
+
+          // Prepare text lines for overlay
+          let overlayTextLines: string[] = [];
+
+          if (volumeIds.length > 0) {
+            const volumeId = volumeIds[0];
+            const currentStats = annotation.data.cachedStats[volumeId] || {};
+
+            annotation.data.cachedStats[volumeId] = {
+              ...currentStats,
+              perimeter: perimeter, // Store calculated perimeter
+              'Long Axis': axes.longAxisLength,
+              'Short Axis': axes.shortAxisLength,
+              'Perimeter Ø': axes.perimeterDerivedDiameter,
+              'Area Ø': areaDerivedDiameter,
+            };
+
+            // Create custom text lines array for display
+            if (area > 0) {
+              overlayTextLines.push(`Area: ${area.toFixed(2)} mm²`);
+            }
+            if (areaDerivedDiameter > 0) {
+              overlayTextLines.push(`Area Ø: ${areaDerivedDiameter.toFixed(2)} mm`);
+            }
+            if (axes.longAxisLength > 0) {
+              overlayTextLines.push(`Long: ${axes.longAxisLength.toFixed(2)} mm`);
+            }
+            if (axes.shortAxisLength > 0) {
+              overlayTextLines.push(`Short: ${axes.shortAxisLength.toFixed(2)} mm`);
+            }
+            if (perimeter > 0) {
+              overlayTextLines.push(`Perim: ${perimeter.toFixed(2)} mm`);
+              if (axes.perimeterDerivedDiameter > 0) {
+                overlayTextLines.push(`Perim Ø: ${axes.perimeterDerivedDiameter.toFixed(2)} mm`);
+              }
+            }
+
+            // Add textBox handle with custom text (Cornerstone3D renders this)
+            if (!annotation.data.handles.textBox) {
+              annotation.data.handles.textBox = {
+                hasMoved: false,
+                worldPosition: [0, 0, 0] as Types.Point3,
+                worldBoundingBox: {
+                  topLeft: [0, 0, 0] as Types.Point3,
+                  topRight: [0, 0, 0] as Types.Point3,
+                  bottomLeft: [0, 0, 0] as Types.Point3,
+                  bottomRight: [0, 0, 0] as Types.Point3,
+                }
+              };
+            }
+
+            // Store text lines in cached stats for rendering
+            annotation.data.cachedStats[volumeId].textLines = overlayTextLines;
+          }
+
+          // Store axes endpoints in metadata for potential line overlay
+          if (!annotation.metadata) {
+            annotation.metadata = {};
+          }
+          annotation.metadata.axesMeasurements = axes;
+
+          // Mark annotation as modified to trigger re-render
+          annotation.invalidated = true;
+
+          // Trigger re-render of axis lines
+          setAxisLinesKey(prev => prev + 1);
+
+          // Add custom text overlay using React state
+          const viewportId = annotation.metadata?.viewportId || 'axial';
+          if (annotation.data?.handles?.points?.length > 0 && overlayTextLines.length > 0) {
+            // Get the first point of the polygon as anchor
+            const firstPoint = annotation.data.handles.points[0];
+
+            // Get viewport to convert world to canvas
+            const viewport = renderingEngineRef.current?.getViewport(viewportId);
+            if (viewport) {
+              const canvasPoint = viewport.worldToCanvas(firstPoint);
+
+              // Update React state to show overlay
+              setAnnotationOverlays(prev => {
+                // Find existing overlay for this annotation
+                const existingOverlay = prev.find(o => o.uid === annotation.annotationUID);
+                const filtered = prev.filter(o => o.uid !== annotation.annotationUID);
+
+                // Check if user has moved the text (stored in annotation metadata)
+                const customPos = annotation.metadata?.customTextPosition;
+                const userMoved = customPos?.userMoved || existingOverlay?.userMoved || false;
+
+                // If user moved it, use the stored custom position
+                // Otherwise use default position from first point
+                const overlayX = userMoved && customPos ? customPos.x : canvasPoint[0] + 10;
+                const overlayY = userMoved && customPos ? customPos.y : canvasPoint[1] - 10;
+
+                // Add new overlay with preserved position if user moved it
+                return [...filtered, {
+                  uid: annotation.annotationUID,
+                  x: overlayX,
+                  y: overlayY,
+                  lines: overlayTextLines,
+                  viewportId,
+                  annotationUID: annotation.annotationUID,
+                  userMoved: userMoved
+                }];
+              });
+            }
+          }
+        } catch (error) {
+          // Silent error handling
+        }
+      };
+
+      // Use annotation state API to monitor for new annotations
+      const { annotation: annotationAPI } = cornerstoneTools;
+
+      // Listen for annotation events to calculate/update stats
+      // Note: axialElement declared above using document.getElementById, but we'll use the ref instead
+
+      // Track which annotations we've processed and their polyline hash
+      const processedAnnotations = new Map<string, string>();
+
+      const getPolylineHash = (polyline: number[]): string => {
+        // Create a simple hash from first/last few points to detect changes
+        if (polyline.length < 6) return polyline.join(',');
+        return `${polyline[0]},${polyline[1]},${polyline[2]},${polyline[polyline.length-3]},${polyline[polyline.length-2]},${polyline[polyline.length-1]},${polyline.length}`;
+      };
+
+      // Track if user is currently dragging
+      let isDragging = false;
+
+      const handleAnnotationRendered = (evt: any) => {
+        // ANNOTATION_RENDERED is the only event that fires for SplineROI tool
+        // We need to check all annotations to find closed ones we haven't processed yet
+
+        // Skip processing during drag to prevent snap-back
+        if (isDragging) return;
+
+        try {
+          const allAnnotations = annotationAPI?.state?.getAllAnnotations?.();
+          if (!allAnnotations) return;
+
+          allAnnotations.forEach((annotation: any) => {
+            // Only process SmoothPolygon annotations that are closed
+            if (annotation?.metadata?.toolName === 'SmoothPolygon' &&
+                annotation?.data?.contour?.closed) {
+
+              const uid = annotation.annotationUID;
+              const polyline = annotation.data?.contour?.polyline || [];
+
+              const currentHash = getPolylineHash(polyline);
+
+              // Check if this annotation has changed since last processing
+              const lastHash = processedAnnotations.get(uid);
+
+              if (!lastHash || lastHash !== currentHash) {
+                // New or modified annotation - process it
+                processedAnnotations.set(uid, currentHash);
+
+                // Check if polyline is already in point format or flat format
+                let contourPoints: [number, number, number][] = [];
+
+                if (Array.isArray(polyline[0])) {
+                  // Polyline is already an array of points [x,y,z]
+                  contourPoints = polyline as [number, number, number][];
+                } else {
+                  // Polyline is flat array, convert to points
+                  for (let i = 0; i < polyline.length; i += 3) {
+                    contourPoints.push([polyline[i], polyline[i+1], polyline[i+2]]);
+                  }
+                }
+
+                if (contourPoints.length >= 3) {
+                  // Modify the annotation in-place instead of creating a new object
+                  // This prevents the annotation from "snapping back" when dragged
+                  if (!annotation.data.spline) {
+                    annotation.data.spline = {};
+                  }
+                  annotation.data.spline.points = contourPoints;
+
+                  annotationModifiedHandler({ detail: { annotation: annotation } });
+                }
+              }
+              // If hash matches, skip processing (already calculated and unchanged)
+            }
+          });
+        } catch (error) {
+          // Silent error handling
+        }
+      };
+
+      // Delay attaching event listeners until DOM elements are ready
+      setTimeout(() => {
+        const axialElementFromRef = elementRefs.axial.current;
+
+        if (axialElementFromRef) {
+          axialElementFromRef.addEventListener(csToolsEnums.Events.ANNOTATION_RENDERED, handleAnnotationRendered);
+        }
+      }, 500);
+
+      // Customize annotation rendering to show extended statistics
+      const annotationRenderingHandler = (evt: any) => {
+        const { element, viewportId, renderingEngine } = evt.detail;
+
+        // Only customize for SmoothPolygon annotations
+        const enabledElement = element;
+        if (!enabledElement) return;
+
+        // Get all annotations for this viewport
+        const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+        if (!toolGroup) return;
+
+        // We'll render custom text overlays in a separate canvas layer
+        // This is handled by modifying the annotation's text content
+        // The annotation system will automatically render it
+      };
+
+      // Handle right-click on annotations to show context menu
+      const handleAnnotationContextMenu = (evt: MouseEvent) => {
+        if (currentStage !== WorkflowStage.MEASUREMENTS) return;
+
+        evt.preventDefault();
+
+        // Get the viewport element that was clicked
+        const target = evt.target as HTMLElement;
+        const viewportElement = target.closest('.viewport-element');
+        if (!viewportElement) return;
+
+        const viewportId = viewportElement.id;
+        if (!viewportId) return;
+
+        const viewport = renderingEngineRef.current?.getViewport(viewportId);
+        if (!viewport) return;
+
+        // Get canvas coordinates
+        const rect = (viewportElement as HTMLElement).getBoundingClientRect();
+        const canvasX = evt.clientX - rect.left;
+        const canvasY = evt.clientY - rect.top;
+
+        // Convert to world coordinates
+        const worldPoint = viewport.canvasToWorld([canvasX, canvasY]);
+
+        // Check if click is near any annotation
+        const allAnnotations = cornerstoneTools.annotation.state.getAllAnnotations();
+        const tolerance = 10; // pixels
+
+        for (const annotation of allAnnotations) {
+          if (annotation.metadata?.toolName === 'SmoothPolygon' && annotation.data?.handles?.points) {
+            // Check if click is near any of the polygon points
+            for (const point of annotation.data.handles.points) {
+              const canvasPoint = viewport.worldToCanvas(point);
+              const distance = Math.sqrt(
+                Math.pow(canvasPoint[0] - canvasX, 2) +
+                Math.pow(canvasPoint[1] - canvasY, 2)
+              );
+
+              if (distance <= tolerance) {
+                // Show context menu
+                setContextMenu({
+                  x: evt.clientX,
+                  y: evt.clientY,
+                  annotationUID: annotation.annotationUID
+                });
+                return;
+              }
+            }
+          }
+        }
+      };
+
+      // Add camera modified listener to update overlay positions
+      const updateOverlayPositions = () => {
+        if (!renderingEngineRef.current) return;
+
+        setAnnotationOverlays(prev => {
+          const updated: typeof prev = [];
+          const processedUIDs = new Set<string>();
+
+          // First, update existing overlays
+          prev.forEach(overlay => {
+            try {
+              const annotations = annotationAPI?.state?.getAllAnnotations?.();
+              const annotation = annotations?.find((ann: any) => ann.annotationUID === overlay.annotationUID);
+
+              if (!annotation || !annotation.data?.handles?.points?.length) {
+                return; // Annotation deleted
+              }
+
+              processedUIDs.add(overlay.annotationUID);
+
+              const viewport = renderingEngineRef.current?.getViewport(overlay.viewportId);
+              if (!viewport) return;
+
+              const contourPoints = annotation.data?.contour?.polyline || annotation.data?.handles?.points || [];
+              if (contourPoints.length === 0) return;
+
+              const firstPoint = contourPoints[0];
+              const camera = viewport.getCamera();
+              const { viewPlaneNormal, focalPoint } = camera;
+
+              const vectorToPoint = [
+                firstPoint[0] - focalPoint[0],
+                firstPoint[1] - focalPoint[1],
+                firstPoint[2] - focalPoint[2]
+              ];
+
+              const distanceToPlane = Math.abs(
+                vectorToPoint[0] * viewPlaneNormal[0] +
+                vectorToPoint[1] * viewPlaneNormal[1] +
+                vectorToPoint[2] * viewPlaneNormal[2]
+              );
+
+              const slabThickness = (viewport as any).getSlabThickness?.() || 0.1;
+              const visibilityThreshold = slabThickness / 2;
+              const isVisible = distanceToPlane <= visibilityThreshold;
+
+              if (isVisible) {
+                const canvasPoint = viewport.worldToCanvas(firstPoint);
+                const canvas = viewport.canvas;
+                const isInBounds = canvasPoint[0] >= -50 &&
+                                 canvasPoint[0] <= canvas.width + 50 &&
+                                 canvasPoint[1] >= -50 &&
+                                 canvasPoint[1] <= canvas.height + 50;
+
+                if (isInBounds) {
+                  // Check if user has moved the text (stored in annotation metadata)
+                  const customPos = annotation.metadata?.customTextPosition;
+                  const userMoved = customPos?.userMoved || overlay.userMoved || false;
+
+                  // Preserve user's dragged position if they moved it
+                  const finalX = userMoved && customPos ? customPos.x : canvasPoint[0] + 10;
+                  const finalY = userMoved && customPos ? customPos.y : canvasPoint[1] - 10;
+
+                  updated.push({
+                    ...overlay,
+                    x: finalX,
+                    y: finalY,
+                    userMoved: userMoved
+                  });
+                }
+              }
+            } catch (error) {
+              console.warn('Error updating overlay:', error);
+            }
+          });
+
+          // Check for annotations that don't have overlays yet (newly visible)
+          try {
+            const allAnnotations = annotationAPI?.state?.getAllAnnotations?.();
+            if (allAnnotations) {
+              allAnnotations.forEach((annotation: any) => {
+                if (annotation.metadata?.toolName === 'SmoothPolygon' &&
+                    !processedUIDs.has(annotation.annotationUID) &&
+                    annotation.data?.contour?.closed) {
+
+                  // Check if this annotation is visible
+                  const viewport = renderingEngineRef.current?.getViewport('axial');
+                  if (!viewport) return;
+
+                  const contourPoints = annotation.data?.contour?.polyline || annotation.data?.handles?.points || [];
+                  if (contourPoints.length === 0) return;
+
+                  const firstPoint = contourPoints[0];
+                  const camera = viewport.getCamera();
+                  const { viewPlaneNormal, focalPoint } = camera;
+
+                  const vectorToPoint = [
+                    firstPoint[0] - focalPoint[0],
+                    firstPoint[1] - focalPoint[1],
+                    firstPoint[2] - focalPoint[2]
+                  ];
+
+                  const distanceToPlane = Math.abs(
+                    vectorToPoint[0] * viewPlaneNormal[0] +
+                    vectorToPoint[1] * viewPlaneNormal[1] +
+                    vectorToPoint[2] * viewPlaneNormal[2]
+                  );
+
+                  const slabThickness = (viewport as any).getSlabThickness?.() || 0.1;
+                  const visibilityThreshold = slabThickness / 2;
+
+                  if (distanceToPlane <= visibilityThreshold) {
+                    // This annotation is visible but doesn't have an overlay - create one
+                    const cachedStats = annotation.data?.cachedStats;
+                    const volumeIds = Object.keys(cachedStats || {});
+                    if (volumeIds.length > 0) {
+                      let stats = cachedStats[volumeIds[0]];
+
+
+                      // Check if extended stats exist
+                      const hasExtendedStats = stats['Long Axis'] !== undefined;
+
+                      if (!hasExtendedStats) {
+                        // Extended stats not calculated yet - calculate them now
+                        const splinePoints = annotation.data?.spline?.points;
+
+                        // If no spline points, the annotation might not be fully processed yet
+                        if (!splinePoints || splinePoints.length < 3) {
+                          // Try using contour polyline points instead
+                          const polylinePoints = annotation.data?.contour?.polyline;
+                          if (polylinePoints && polylinePoints.length >= 9) { // At least 3 points (x,y,z each)
+                            // Convert flat array to point array
+                            const points: [number, number, number][] = [];
+                            for (let i = 0; i < polylinePoints.length; i += 3) {
+                              points.push([polylinePoints[i], polylinePoints[i+1], polylinePoints[i+2]]);
+                            }
+
+                            try {
+                              const area = stats.area || 0;
+
+                              // Calculate perimeter from points
+                              let perimeter = 0;
+                              for (let i = 0; i < points.length; i++) {
+                                const p1 = points[i];
+                                const p2 = points[(i + 1) % points.length];
+                                const dx = p2[0] - p1[0];
+                                const dy = p2[1] - p1[1];
+                                const dz = p2[2] - p1[2];
+                                perimeter += Math.sqrt(dx * dx + dy * dy + dz * dz);
+                              }
+
+                              const axes = calculateSplineAxes(points, perimeter);
+                              const areaDerivedDiameter = 2 * Math.sqrt(area / Math.PI);
+
+                              // Store in cachedStats
+                              annotation.data.cachedStats[volumeIds[0]] = {
+                                ...stats,
+                                perimeter: perimeter,
+                                'Long Axis': axes.longAxisLength,
+                                'Short Axis': axes.shortAxisLength,
+                                'Perimeter Ø': axes.perimeterDerivedDiameter,
+                                'Area Ø': areaDerivedDiameter,
+                              };
+                              stats = annotation.data.cachedStats[volumeIds[0]];
+                            } catch (error) {
+                              console.warn('Failed to calculate axes from polyline:', error);
+                              return;
+                            }
+                          } else {
+                            return; // No points available yet
+                          }
+                        } else {
+                          // Use spline points
+                          try {
+                            const area = stats.area || 0;
+
+                            // Calculate perimeter from spline points
+                            let perimeter = 0;
+                            for (let i = 0; i < splinePoints.length; i++) {
+                              const p1 = splinePoints[i];
+                              const p2 = splinePoints[(i + 1) % splinePoints.length];
+                              const dx = p2[0] - p1[0];
+                              const dy = p2[1] - p1[1];
+                              const dz = p2[2] - p1[2];
+                              perimeter += Math.sqrt(dx * dx + dy * dy + dz * dz);
+                            }
+
+                            const axes = calculateSplineAxes(splinePoints, perimeter);
+                            const areaDerivedDiameter = 2 * Math.sqrt(area / Math.PI);
+
+                            // Store in cachedStats
+                            annotation.data.cachedStats[volumeIds[0]] = {
+                              ...stats,
+                              perimeter: perimeter,
+                              'Long Axis': axes.longAxisLength,
+                              'Short Axis': axes.shortAxisLength,
+                              'Perimeter Ø': axes.perimeterDerivedDiameter,
+                              'Area Ø': areaDerivedDiameter,
+                            };
+                            stats = annotation.data.cachedStats[volumeIds[0]];
+                          } catch (error) {
+                            console.warn('Failed to calculate axes from spline:', error);
+                            return;
+                          }
+                        }
+                      }
+
+                      const textLines: string[] = [];
+                      if (stats.area) textLines.push(`Area: ${stats.area.toFixed(2)} mm²`);
+                      if (stats['Area Ø']) textLines.push(`Area Ø: ${stats['Area Ø'].toFixed(2)} mm`);
+                      if (stats['Long Axis']) textLines.push(`Long: ${stats['Long Axis'].toFixed(2)} mm`);
+                      if (stats['Short Axis']) textLines.push(`Short: ${stats['Short Axis'].toFixed(2)} mm`);
+                      if (stats.perimeter) textLines.push(`Perim: ${stats.perimeter.toFixed(2)} mm`);
+                      if (stats['Perimeter Ø']) textLines.push(`Perim Ø: ${stats['Perimeter Ø'].toFixed(2)} mm`);
+
+                      if (textLines.length > 0) {
+                        const canvasPoint = viewport.worldToCanvas(firstPoint);
+                        updated.push({
+                          uid: annotation.annotationUID,
+                          x: canvasPoint[0] + 10,
+                          y: canvasPoint[1] - 10,
+                          lines: textLines,
+                          viewportId: 'axial',
+                          annotationUID: annotation.annotationUID
+                        });
+                      }
+                    }
+                  }
+                }
+              });
+            }
+          } catch (error) {
+            console.warn('Error checking for new overlays:', error);
+          }
+
+          return updated;
+        });
+      };
+
+      // Listen for camera modified and stack viewport scroll events
+      // Use the ref to get the axial element
+      const axialElement = elementRefs.axial.current;
+
+      // Store event listener reference for cleanup
+      const cleanupOverlayListeners = () => {
+        const axialEl = elementRefs.axial.current;
+        if (axialEl) {
+          axialEl.removeEventListener(Enums.Events.CAMERA_MODIFIED, updateOverlayPositions);
+          axialEl.removeEventListener(Enums.Events.STACK_VIEWPORT_SCROLL, updateOverlayPositions);
+          axialEl.removeEventListener(Enums.Events.IMAGE_RENDERED, updateOverlayPositions);
+          axialEl.removeEventListener('contextmenu', handleAnnotationContextMenu as any);
+          axialEl.removeEventListener(csToolsEnums.Events.ANNOTATION_RENDERED, handleAnnotationRendered);
+          document.removeEventListener('wheel', updateOverlayPositions);
+        }
+      };
+
+      if (axialElement) {
+        axialElement.addEventListener(Enums.Events.CAMERA_MODIFIED, updateOverlayPositions);
+        axialElement.addEventListener(Enums.Events.STACK_VIEWPORT_SCROLL, updateOverlayPositions);
+        axialElement.addEventListener(Enums.Events.IMAGE_RENDERED, updateOverlayPositions);
+        axialElement.addEventListener('contextmenu', handleAnnotationContextMenu as any);
+
+        // Also listen for wheel events directly on the element
+        axialElement.addEventListener('wheel', updateOverlayPositions, { passive: true });
+
+        console.log('  ✅ Overlay position updater and context menu registered');
+      }
+
+      // Also set up an interval as a fallback to check visibility every 500ms
+      overlayUpdateIntervalRef.current = window.setInterval(updateOverlayPositions, 500);
+
+      console.log('  ✅ Overlay visibility checker running every 500ms');
+
+      // CRITICAL: Activate default tool after setup
+      // During MEASUREMENTS stage, we need to activate the initial tool explicitly
+      if (currentStage === WorkflowStage.MEASUREMENTS) {
+        console.log('🎯 Activating default tool (Zoom) for MEASUREMENTS stage...');
+        // Don't call handleToolChange here as it tries to set tools passive
+        // Just activate Zoom tool directly
+        toolGroup.setToolActive(ZoomTool.toolName, {
+          bindings: [{ mouseButton: MouseBindings.Primary }],
+        });
+        console.log('  ✅ Zoom tool activated by default');
+      }
+
       console.log('✅✅✅ SETUP TOOLS COMPLETE');
     } catch (error) {
       console.error('❌ Failed to setup tools:', error);
@@ -3091,6 +3877,11 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       toolGroup.setToolPassive(CuspNadirTool.toolName);
       toolGroup.setToolPassive(WindowLevelTool.toolName);
       toolGroup.setToolPassive(FixedCrosshairTool.toolName); // Also disable fixed crosshairs when switching tools
+
+      // Set measurement tool instances to passive
+      toolGroup.setToolPassive('SmoothPolygon');
+      toolGroup.setToolPassive('AxialLine');
+      toolGroup.setToolPassive('MPRLongAxisLine');
 
       // Always keep these tools active with their default bindings
       toolGroup.setToolActive(StackScrollTool.toolName, {
@@ -3134,8 +3925,29 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         toolGroup.setToolActive(WindowLevelTool.toolName, {
           bindings: [{ mouseButton: MouseBindings.Primary }],
         });
+      } else if (toolName === 'SmoothPolygon') {
+        console.log('🎯 Activating SmoothPolygon tool (SplineROI)');
+        // SplineROI works in two ways:
+        // 1. Click to place first point, then click to add more points (no Shift needed in Cornerstone3D v2)
+        // 2. Or use Primary button binding and the tool handles the interaction
+        toolGroup.setToolActive('SmoothPolygon', {
+          bindings: [
+            { mouseButton: MouseBindings.Primary }  // Single clicks to add points
+          ],
+        });
+        console.log('  ℹ️ Click to add points, click near first point to close polygon');
+      } else if (toolName === 'AxialLine') {
+        console.log('🎯 Activating AxialLine tool');
+        toolGroup.setToolActive('AxialLine', {
+          bindings: [{ mouseButton: MouseBindings.Primary }],
+        });
+      } else if (toolName === 'MPRLongAxisLine') {
+        console.log('🎯 Activating MPRLongAxisLine tool');
+        toolGroup.setToolActive('MPRLongAxisLine', {
+          bindings: [{ mouseButton: MouseBindings.Primary }],
+        });
       }
-      
+
       setActiveTool(toolName);
     } catch (error) {
       console.warn('Tool change error:', error);
@@ -4638,6 +5450,36 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               <FaArrowsAlt />
               <span className="hidden sm:inline">Pan</span>
             </button>
+
+            {/* Measurement tools - only show during MEASUREMENTS stage */}
+            {currentStage === WorkflowStage.MEASUREMENTS && (
+              <>
+                <button
+                  onClick={() => handleToolChange('SmoothPolygon')}
+                  className={`p-1.5 rounded text-xs flex items-center gap-1 whitespace-nowrap ${activeTool === 'SmoothPolygon' ? 'bg-pink-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                  title="Smooth Polygon (Axial only) - Click to add points, click near first point to close"
+                >
+                  <FaDrawPolygon />
+                  <span className="hidden sm:inline">Polygon</span>
+                </button>
+                <button
+                  onClick={() => handleToolChange('AxialLine')}
+                  className={`p-1.5 rounded text-xs flex items-center gap-1 whitespace-nowrap ${activeTool === 'AxialLine' ? 'bg-cyan-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                  title="Axial Line (Axial only)"
+                >
+                  <FaRuler />
+                  <span className="hidden sm:inline">Line</span>
+                </button>
+                <button
+                  onClick={() => handleToolChange('MPRLongAxisLine')}
+                  className={`p-1.5 rounded text-xs flex items-center gap-1 whitespace-nowrap ${activeTool === 'MPRLongAxisLine' ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
+                  title="Long Axis Line (Sagittal/Coronal only)"
+                >
+                  <FaRuler />
+                  <span className="hidden sm:inline">MPR Line</span>
+                </button>
+              </>
+            )}
           </div>
           
           {/* Window/Level Presets - Compact */}
@@ -4793,13 +5635,191 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
             <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
               Axial
             </div>
-            <div 
-              ref={elementRefs.axial} 
+            <div
+              ref={elementRefs.axial}
               className="w-full h-full"
               style={{ minHeight: '300px' }}
             />
+            {/* Custom annotation text overlays */}
+            {annotationOverlays
+              .filter(overlay => overlay.viewportId === 'axial')
+              .map(overlay => (
+                <div
+                  key={overlay.uid}
+                  className="absolute z-50 cursor-move"
+                  style={{
+                    left: `${overlay.x}px`,
+                    top: `${overlay.y}px`,
+                    padding: '2px',
+                    userSelect: 'none'
+                  }}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const rect = e.currentTarget.parentElement?.getBoundingClientRect();
+                    if (rect) {
+                      setDraggingOverlay(overlay.uid);
+                      // Store offset from current mouse position to overlay position
+                      setDragOffset({
+                        x: (e.clientX - rect.left) - overlay.x,
+                        y: (e.clientY - rect.top) - overlay.y
+                      });
+                    }
+                  }}
+                  onMouseMove={(e) => {
+                    if (draggingOverlay === overlay.uid) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const rect = e.currentTarget.parentElement?.getBoundingClientRect();
+                      if (rect) {
+                        const mouseX = e.clientX - rect.left;
+                        const mouseY = e.clientY - rect.top;
+                        const newX = mouseX - dragOffset.x;
+                        const newY = mouseY - dragOffset.y;
+
+                        // Store the custom position in the annotation metadata so it persists
+                        const annotations = cornerstoneTools.annotation.state.getAllAnnotations();
+                        const annotation = annotations.find((ann: any) => ann.annotationUID === overlay.uid);
+                        if (annotation) {
+                          if (!annotation.metadata) annotation.metadata = {};
+                          annotation.metadata.customTextPosition = { x: newX, y: newY, userMoved: true };
+                        }
+
+                        setAnnotationOverlays(prev =>
+                          prev.map(o =>
+                            o.uid === overlay.uid ? { ...o, x: newX, y: newY, userMoved: true } : o
+                          )
+                        );
+                      }
+                    }
+                  }}
+                  onMouseUp={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setDraggingOverlay(null);
+                  }}
+                  onMouseLeave={(e) => {
+                    if (draggingOverlay === overlay.uid) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setDraggingOverlay(null);
+                    }
+                  }}
+                >
+                  {overlay.lines.map((line, index) => (
+                    <div
+                      key={index}
+                      style={{
+                        color: '#ffff00',
+                        fontSize: '13px',
+                        fontFamily: 'Arial, sans-serif',
+                        fontWeight: 'bold',
+                        lineHeight: '1.3',
+                        textShadow: '1px 1px 2px rgba(0, 0, 0, 0.9), -1px -1px 2px rgba(0, 0, 0, 0.9)',
+                        whiteSpace: 'nowrap'
+                      }}
+                    >
+                      {line}
+                    </div>
+                  ))}
+                </div>
+              ))}
+
+            {/* Render axis lines for polygon annotations */}
+            {(() => {
+              const viewport = renderingEngineRef.current?.getViewport('axial');
+              if (!viewport) return null;
+
+              const annotations = cornerstoneTools.annotation.state.getAllAnnotations();
+              const polygonAnnotations = annotations.filter((ann: any) =>
+                ann?.metadata?.toolName === 'SmoothPolygon' &&
+                ann?.data?.contour?.closed &&
+                ann?.metadata?.axesMeasurements
+              );
+
+              return polygonAnnotations.map((annotation: any, idx: number) => {
+                const axes = annotation.metadata.axesMeasurements;
+                if (!axes) return null;
+
+                // Convert world coordinates to canvas coordinates
+                const longAxisP1Canvas = viewport.worldToCanvas(axes.longAxisP1);
+                const longAxisP2Canvas = viewport.worldToCanvas(axes.longAxisP2);
+                const shortAxisP1Canvas = viewport.worldToCanvas(axes.shortAxisP1);
+                const shortAxisP2Canvas = viewport.worldToCanvas(axes.shortAxisP2);
+
+                // Find the text overlay for this annotation
+                const textOverlay = annotationOverlays.find(o => o.annotationUID === annotation.annotationUID);
+
+                // Get the first point of the polygon for the connector line
+                const firstPoint = annotation.data?.handles?.points?.[0] || annotation.data?.contour?.polyline?.[0];
+                const firstPointCanvas = firstPoint ? viewport.worldToCanvas(firstPoint) : null;
+
+                return (
+                  <svg
+                    key={`${annotation.annotationUID}-${axisLinesKey}`}
+                    className="absolute top-0 left-0 pointer-events-none"
+                    style={{ width: '100%', height: '100%' }}
+                  >
+                    {/* Connector line from text to polygon (yellow dashed) */}
+                    {textOverlay && firstPointCanvas && (
+                      <line
+                        x1={textOverlay.x}
+                        y1={textOverlay.y}
+                        x2={firstPointCanvas[0]}
+                        y2={firstPointCanvas[1]}
+                        stroke="#ffff00"
+                        strokeWidth="1"
+                        strokeDasharray="3,3"
+                        opacity="0.6"
+                      />
+                    )}
+
+                    {/* Long axis line (red) */}
+                    <line
+                      x1={longAxisP1Canvas[0]}
+                      y1={longAxisP1Canvas[1]}
+                      x2={longAxisP2Canvas[0]}
+                      y2={longAxisP2Canvas[1]}
+                      stroke="#ff0000"
+                      strokeWidth="2"
+                      strokeDasharray="5,5"
+                    />
+
+                    {/* Short axis line (cyan) */}
+                    <line
+                      x1={shortAxisP1Canvas[0]}
+                      y1={shortAxisP1Canvas[1]}
+                      x2={shortAxisP2Canvas[0]}
+                      y2={shortAxisP2Canvas[1]}
+                      stroke="#00ffff"
+                      strokeWidth="2"
+                      strokeDasharray="5,5"
+                    />
+                  </svg>
+                );
+              });
+            })()}
+
+            {/* Context menu for annotation actions */}
+            {contextMenu && (
+              <ContextMenu
+                x={contextMenu.x}
+                y={contextMenu.y}
+                items={[
+                  {
+                    label: 'Delete Annotation',
+                    icon: <FaTrash />,
+                    onClick: () => {
+                      deleteAnnotation(contextMenu.annotationUID);
+                      setContextMenu(null);
+                    }
+                  }
+                ]}
+                onClose={() => setContextMenu(null)}
+              />
+            )}
           </div>
-          
+
           {/* Sagittal View */}
           <div className="relative bg-black border border-slate-700">
             <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
