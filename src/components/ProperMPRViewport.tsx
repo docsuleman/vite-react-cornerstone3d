@@ -8,6 +8,7 @@ import {
   cornerstoneStreamingImageVolumeLoader,
   eventTarget,
   getRenderingEngine,
+  cache,
 } from "@cornerstonejs/core";
 import { init as csRenderInit } from "@cornerstonejs/core";
 import { init as csToolsInit } from "@cornerstonejs/tools";
@@ -46,6 +47,7 @@ const {
   StackScrollTool,
   SplineROITool,
   LengthTool,
+  RectangleROITool,
   synchronizers,
 } = cornerstoneTools;
 
@@ -89,6 +91,7 @@ interface ProperMPRViewportProps {
   onActiveToolChange?: (tool: string) => void; // Notify parent of active tool
   requestedTool?: string; // Tool requested from parent
   windowLevelPreset?: string; // W/L preset from parent toolbar
+  initializeCropBox?: boolean; // Initialize default crop box for volume cropping
 }
 
 const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
@@ -108,7 +111,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   centerlineData: centerlineDataProp,
   onActiveToolChange,
   requestedTool,
-  windowLevelPreset = 'cardiac'
+  windowLevelPreset = 'cardiac',
+  initializeCropBox = false
 }) => {
   const elementRefs = {
     axial: useRef(null),
@@ -231,6 +235,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const cprPositionRatioRef = useRef<number>(0); // Store current position ratio for redrawing after render
   const cprAnnulusRatioRef = useRef<number | undefined>(undefined); // Store annulus position ratio for reference line
   const cprActorsRef = useRef<{ actor: any; mapper: any; viewportId: string; config: any }[]>([]); // Store CPR actors and mappers when in CPR mode
+  const initialViewUpRef = useRef<Types.Point3 | null>(null); // Store initial viewUp from first centerline alignment (ANNULUS_DEFINITION)
+  const lockedAxialCameraRef = useRef<{ position: Types.Point3; viewUp: Types.Point3; parallelScale: number } | null>(null); // Store locked camera orientation for annular plane
   const currentVolumeRef = useRef<any>(null); // Store current volume for CPR conversion
   const centerlinePolyDataRef = useRef<any>(null); // Store VTK centerline polydata for CPR rotation
   const cprRotationAngleRef = useRef<number>(0); // Store cumulative CPR rotation angle in radians
@@ -650,6 +656,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   }, [patientInfo, currentStage]);
 
   // Setup centerline-aligned MPR views when entering ANNULUS_DEFINITION stage
+  // FIRST ADJUSTMENT: Align axial viewport perpendicular to centerline tangent at valve (red dot)
+  // This provides initial rough cross-sectional view with proper anterior-posterior orientation
+  // SECOND ADJUSTMENT: After 3 cusp dots placed, adjustToAnnularPlane() refines to true annular plane
   useEffect(() => {
     console.log('🔍 Centerline alignment check:', {
       currentStage,
@@ -669,7 +678,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       return;
     }
 
-    console.log('✅ ANNULUS_DEFINITION stage detected with spheres! Setting up centerline-aligned views...');
+    console.log('✅ ANNULUS_DEFINITION stage: Setting up initial centerline-aligned view at valve (FIRST ADJUSTMENT)...');
 
     const timer = setTimeout(() => {
       console.log('🎯 Setting up centerline-aligned axial view at valve position');
@@ -806,10 +815,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           closestCenterlinePoint[2] + tangent[2] * cameraDistance
         ];
 
-        console.log('📐 Setting axial viewport camera perpendicular to centerline:');
+        const initialViewUp: Types.Point3 = [0, 0, 1];
+
+        console.log('📐 Setting axial viewport camera perpendicular to centerline (FIRST ADJUSTMENT):');
         console.log('   Camera position:', newCameraPos);
         console.log('   Focal point (centerline):', closestCenterlinePoint);
-        console.log('   ViewUp:', [0, 0, 1]);
+        console.log('   ViewUp:', initialViewUp);
         console.log('   Preserved parallelScale:', currentParallelScale);
 
         // Set camera - spread existing camera to preserve clippingRange and other properties
@@ -818,9 +829,14 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           ...axialCamera,
           position: newCameraPos,
           focalPoint: closestCenterlinePoint,
-          viewUp: [0, 0, 1] as Types.Point3,
+          viewUp: initialViewUp,
           parallelScale: currentParallelScale // Preserve zoom level from ROOT_DEFINITION
         });
+
+        // CRITICAL: Store initial viewUp for second adjustment (after cusp dots placed)
+        // The second adjustment will preserve this anterior-posterior orientation
+        initialViewUpRef.current = initialViewUp;
+        console.log('💾 Stored initial viewUp for second adjustment:', initialViewUp);
 
         lockedFocalPointRef.current = closestCenterlinePoint;
 
@@ -1361,6 +1377,26 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         clearInterval(overlayUpdateIntervalRef.current);
         overlayUpdateIntervalRef.current = null;
       }
+
+      // Clean up annular plane orientation listener
+      if (renderingEngineRef.current) {
+        try {
+          const axialVp = renderingEngineRef.current.getViewport('axial');
+          if (axialVp && axialVp.element) {
+            const listener = (axialVp.element as any)._annulusPlaneOrientationListener;
+            if (listener) {
+              axialVp.element.removeEventListener(Enums.Events.CAMERA_MODIFIED, listener);
+              delete (axialVp.element as any)._annulusPlaneOrientationListener;
+              console.log('🧹 Removed annular plane orientation listener');
+            }
+          }
+        } catch (error) {
+          console.warn('Failed to remove orientation listener:', error);
+        }
+      }
+
+      // Clear locked camera ref
+      lockedAxialCameraRef.current = null;
 
       // DON'T destroy synchronizer - keep it alive for reuse (fixes sync issues)
       // slabSynchronizerRef.current = null;
@@ -2264,10 +2300,21 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
             viewport.render();
           }
         });
+
+        // Just enable RectangleROI tool - don't auto-create annotation
+        // Auto-creation is causing performance issues and the annotation isn't editable
+        if (initializeCropBox) {
+          const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+          if (toolGroup) {
+            // Enable RectangleROI so users can draw it manually
+            toolGroup.setToolEnabled(RectangleROITool.toolName);
+            console.log('✅ RectangleROI tool enabled for manual crop box drawing');
+          }
+        }
       }, 200);
 
       // For ANNULUS_DEFINITION stage, position axial view perpendicular to centerline at valve
-   
+
 
       if (currentStage === WorkflowStage.ANNULUS_DEFINITION && existingSpheres && existingSpheres.length >= 3) {
         console.log('✅ Condition met! Setting up centerline camera in 500ms...');
@@ -2986,12 +3033,31 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     const p2 = dots[1].pos as Types.Point3;
     const p3 = dots[2].pos as Types.Point3;
 
-    console.log('📐 Calculating annular plane from 3 cusp points:');
+    console.log('📐 Calculating annular plane from 3 cusp points (SECOND ADJUSTMENT):');
     console.log(`   P1 (${dots[0].cuspType}) - Color: ${dots[0].color}:`, p1);
     console.log(`   P2 (${dots[1].cuspType}) - Color: ${dots[1].color}:`, p2);
     console.log(`   P3 (${dots[2].cuspType}) - Color: ${dots[2].color}:`, p3);
-    console.log('   ⚠️ Colors should be: Red (#FF6B6B), Gold (#FFD700), Royal Blue (#4169E1)');
-    console.log('   ℹ️ These are the ONLY 3 points used for centroid calculation');
+
+    // Calculate distances between points to verify they're not too close
+    const dist12 = Math.sqrt(
+      (p2[0] - p1[0]) ** 2 +
+      (p2[1] - p1[1]) ** 2 +
+      (p2[2] - p1[2]) ** 2
+    );
+    const dist23 = Math.sqrt(
+      (p3[0] - p2[0]) ** 2 +
+      (p3[1] - p2[1]) ** 2 +
+      (p3[2] - p2[2]) ** 2
+    );
+    const dist31 = Math.sqrt(
+      (p1[0] - p3[0]) ** 2 +
+      (p1[1] - p3[1]) ** 2 +
+      (p1[2] - p3[2]) ** 2
+    );
+
+    console.log(`   Distance P1-P2: ${dist12.toFixed(2)}mm`);
+    console.log(`   Distance P2-P3: ${dist23.toFixed(2)}mm`);
+    console.log(`   Distance P3-P1: ${dist31.toFixed(2)}mm`);
 
     // Calculate two vectors in the plane
     const v1 = [
@@ -3179,30 +3245,91 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       newFocalPoint[2] + planeNormal[2] * cameraDistance
     ];
 
-    // Calculate viewUp perpendicular to plane normal
+    // CRITICAL: Preserve the viewUp from first adjustment (anterior-posterior orientation)
+    // BUT: viewUp must be perpendicular to the viewing direction (plane normal)
+    // So we need to project the initial viewUp onto the plane to make it orthogonal
     let viewUp: Types.Point3;
-    const reference = Math.abs(planeNormal[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
-    const cross = [
-      planeNormal[1] * reference[2] - planeNormal[2] * reference[1],
-      planeNormal[2] * reference[0] - planeNormal[0] * reference[2],
-      planeNormal[0] * reference[1] - planeNormal[1] * reference[0]
-    ];
 
-    const crossLen = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
-    if (crossLen > 0) {
-      viewUp = [cross[0] / crossLen, cross[1] / crossLen, cross[2] / crossLen] as Types.Point3;
+    if (initialViewUpRef.current) {
+      const initialViewUp = initialViewUpRef.current;
+
+      // Calculate dot product of initialViewUp and plane normal
+      const dotProduct =
+        initialViewUp[0] * planeNormal[0] +
+        initialViewUp[1] * planeNormal[1] +
+        initialViewUp[2] * planeNormal[2];
+
+      console.log('📐 Dot product of initialViewUp and planeNormal:', dotProduct.toFixed(3));
+
+      // If they're nearly perpendicular (dot product close to 0), we can use initialViewUp directly
+      if (Math.abs(dotProduct) < 0.1) {
+        viewUp = initialViewUp;
+        console.log('✅ Using initial viewUp directly (already perpendicular to plane normal):', viewUp);
+      } else {
+        // Project initialViewUp onto the plane (remove component along plane normal)
+        // projectedViewUp = initialViewUp - (initialViewUp · planeNormal) * planeNormal
+        const projectedViewUp = [
+          initialViewUp[0] - dotProduct * planeNormal[0],
+          initialViewUp[1] - dotProduct * planeNormal[1],
+          initialViewUp[2] - dotProduct * planeNormal[2]
+        ];
+
+        // Normalize the projected vector
+        const projLen = Math.sqrt(
+          projectedViewUp[0] ** 2 +
+          projectedViewUp[1] ** 2 +
+          projectedViewUp[2] ** 2
+        );
+
+        if (projLen > 0.01) {
+          viewUp = [
+            projectedViewUp[0] / projLen,
+            projectedViewUp[1] / projLen,
+            projectedViewUp[2] / projLen
+          ] as Types.Point3;
+          console.log('✅ Using projected viewUp (orthogonalized to plane normal):', viewUp);
+        } else {
+          // If projection is too small, use cross product fallback
+          console.warn('⚠️ Projected viewUp too small, using cross product fallback');
+          const reference = Math.abs(planeNormal[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+          const cross = [
+            planeNormal[1] * reference[2] - planeNormal[2] * reference[1],
+            planeNormal[2] * reference[0] - planeNormal[0] * reference[2],
+            planeNormal[0] * reference[1] - planeNormal[1] * reference[0]
+          ];
+
+          const crossLen = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
+          viewUp = crossLen > 0
+            ? [cross[0] / crossLen, cross[1] / crossLen, cross[2] / crossLen] as Types.Point3
+            : [0, 0, 1] as Types.Point3;
+        }
+      }
     } else {
-      viewUp = [0, 0, 1] as Types.Point3;
+      // Fallback: Calculate viewUp perpendicular to plane normal (old logic)
+      console.warn('⚠️ No stored viewUp - calculating new one (this should not happen in ANNULUS_DEFINITION)');
+      const reference = Math.abs(planeNormal[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+      const cross = [
+        planeNormal[1] * reference[2] - planeNormal[2] * reference[1],
+        planeNormal[2] * reference[0] - planeNormal[0] * reference[2],
+        planeNormal[0] * reference[1] - planeNormal[1] * reference[0]
+      ];
+
+      const crossLen = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
+      if (crossLen > 0) {
+        viewUp = [cross[0] / crossLen, cross[1] / crossLen, cross[2] / crossLen] as Types.Point3;
+      } else {
+        viewUp = [0, 0, 1] as Types.Point3;
+      }
     }
 
     // Preserve current zoom level
     const currentCamera = axialVp.getCamera();
     const currentParallelScale = currentCamera.parallelScale || 60;
 
-    console.log('🎥 Setting axial camera perpendicular to annular plane:');
+    console.log('🎥 Setting axial camera perpendicular to annular plane (SECOND ADJUSTMENT):');
     console.log('   Camera position:', cameraPos);
     console.log('   Focal point (centerline):', newFocalPoint);
-    console.log('   ViewUp:', viewUp);
+    console.log('   ViewUp (preserved from first adjustment):', viewUp);
     console.log('   Preserving parallelScale:', currentParallelScale);
 
     // Set camera - spread existing camera to preserve clippingRange and other properties
@@ -3215,54 +3342,174 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       parallelScale: currentParallelScale, // Preserve current zoom level
     });
 
-    // CRITICAL: Programmatically trigger a tiny focal point change to force slice update
-    // This mimics what happens when you scroll
-    const triggerSliceUpdate = () => {
-      const cam = axialVp.getCamera();
-      const epsilon = 0.001;
+    // CRITICAL: Lock the camera orientation so scrolling doesn't change it
+    // Store the camera position direction (normalized) and viewUp
+    const viewDirection = [
+      cameraPos[0] - newFocalPoint[0],
+      cameraPos[1] - newFocalPoint[1],
+      cameraPos[2] - newFocalPoint[2]
+    ];
+    const viewDirLen = Math.sqrt(viewDirection[0] ** 2 + viewDirection[1] ** 2 + viewDirection[2] ** 2);
+    const normalizedViewDir: Types.Point3 = [
+      viewDirection[0] / viewDirLen,
+      viewDirection[1] / viewDirLen,
+      viewDirection[2] / viewDirLen
+    ];
 
-      // Move focal point by tiny amount
-      axialVp.setCamera({
-        ...cam,
-        focalPoint: [
-          newFocalPoint[0] + epsilon,
-          newFocalPoint[1] + epsilon,
-          newFocalPoint[2] + epsilon
-        ] as Types.Point3
-      });
-      axialVp.render();
-
-      // Move back to correct position
-      setTimeout(() => {
-        axialVp.setCamera({
-          ...cam,
-          focalPoint: newFocalPoint,
-        });
-        axialVp.render();
-      }, 5);
+    lockedAxialCameraRef.current = {
+      position: normalizedViewDir, // Store normalized direction, not absolute position
+      viewUp: viewUp,
+      parallelScale: currentParallelScale
     };
 
-    // Force render with multiple passes to ensure camera takes effect
+    console.log('🔒 Locked axial camera orientation:', {
+      viewDirection: normalizedViewDir,
+      viewUp: viewUp,
+      parallelScale: currentParallelScale
+    });
+
+    console.log('📐 Axial viewport camera updated to be perpendicular to annular plane');
+
+    // Force immediate render to apply camera changes
+    axialVp.render();
+
+    // CRITICAL: Add camera modified listener to re-apply orientation after scrolling
+    // This ensures the orientation stays locked even when the focal point changes
+    const cameraModifiedListener = () => {
+      if (!lockedAxialCameraRef.current) return;
+
+      const currentCam = axialVp.getCamera();
+      const locked = lockedAxialCameraRef.current;
+
+      // Calculate new camera position from current focal point and locked direction
+      const newCameraPos: Types.Point3 = [
+        currentCam.focalPoint[0] + locked.position[0] * cameraDistance,
+        currentCam.focalPoint[1] + locked.position[1] * cameraDistance,
+        currentCam.focalPoint[2] + locked.position[2] * cameraDistance
+      ];
+
+      // Check if orientation has changed (viewUp or position direction)
+      const currentViewDir = [
+        currentCam.position[0] - currentCam.focalPoint[0],
+        currentCam.position[1] - currentCam.focalPoint[1],
+        currentCam.position[2] - currentCam.focalPoint[2]
+      ];
+      const currentViewDirLen = Math.sqrt(
+        currentViewDir[0] ** 2 + currentViewDir[1] ** 2 + currentViewDir[2] ** 2
+      );
+      const normalizedCurrentViewDir = [
+        currentViewDir[0] / currentViewDirLen,
+        currentViewDir[1] / currentViewDirLen,
+        currentViewDir[2] / currentViewDirLen
+      ];
+
+      // Calculate dot product to check if direction changed
+      const dotProduct =
+        normalizedCurrentViewDir[0] * locked.position[0] +
+        normalizedCurrentViewDir[1] * locked.position[1] +
+        normalizedCurrentViewDir[2] * locked.position[2];
+
+      // If orientation has changed significantly (dot product < 0.99), re-apply it
+      if (dotProduct < 0.99) {
+        console.log('🔄 Re-applying locked camera orientation (orientation changed during scroll)');
+        axialVp.setCamera({
+          ...currentCam,
+          position: newCameraPos,
+          viewUp: locked.viewUp,
+          parallelScale: locked.parallelScale
+        });
+        axialVp.render();
+      }
+    };
+
+    // Add listener to axial viewport's camera modified event
+    const axialElement = axialVp.element;
+    axialElement.addEventListener(Enums.Events.CAMERA_MODIFIED, cameraModifiedListener);
+
+    // Store listener reference for cleanup
+    (axialElement as any)._annulusPlaneOrientationListener = cameraModifiedListener;
+
+    console.log('✅ Axial viewport camera set perpendicular to annular plane with orientation lock');
+
+    // CRITICAL: Also update sagittal and coronal viewports to show the annular plane
+    // They should intersect at the annulus center focal point
     const sagittalViewport = renderingEngine.getViewport('sagittal') as Types.IVolumeViewport;
     const coronalViewport = renderingEngine.getViewport('coronal') as Types.IVolumeViewport;
 
-    axialVp.render();
-    if (sagittalViewport) sagittalViewport.render();
-    if (coronalViewport) coronalViewport.render();
+    if (sagittalViewport) {
+      const sagCam = sagittalViewport.getCamera();
+      sagittalViewport.setCamera({
+        ...sagCam,
+        focalPoint: newFocalPoint,
+      });
+      sagittalViewport.render();
+      console.log('✅ Sagittal viewport focal point updated');
+    }
 
-    // Trigger slice updates with delays
-    setTimeout(triggerSliceUpdate, 10);
+    if (coronalViewport) {
+      const corCam = coronalViewport.getCamera();
+      coronalViewport.setCamera({
+        ...corCam,
+        focalPoint: newFocalPoint,
+      });
+      coronalViewport.render();
+      console.log('✅ Coronal viewport focal point updated');
+    }
 
-    setTimeout(() => {
-      renderingEngine.renderViewports(['axial', 'sagittal', 'coronal']);
-    }, 50);
+    // CRITICAL: Use CrosshairsTool to synchronize - trigger jump to annulus center
+    // This ensures all viewports scroll to show the intersection at the annular plane
+    const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+    const crosshairTool = toolGroup?.getToolInstance(CrosshairsTool.toolName) as any;
 
-    setTimeout(() => {
-      renderingEngine.renderViewports(['axial', 'sagittal', 'coronal']);
-    }, 150);
+    if (crosshairTool) {
+      console.log('🎯 Triggering CrosshairsTool jump to annulus center');
+
+      // Force crosshair to jump to the new focal point
+      // This will cause all synchronized viewports to update their slices
+      try {
+        // Simulate a mouse event at the focal point in the axial viewport
+        // This is the most reliable way to make CrosshairsTool jump
+        const canvas = axialVp.canvas;
+
+        // Convert world coordinates to canvas coordinates
+        const canvasCoords = axialVp.worldToCanvas(newFocalPoint);
+
+        console.log('   Canvas coords for focal point:', canvasCoords);
+
+        // Create a synthetic mouse event
+        const mouseEvent = new MouseEvent('mousedown', {
+          bubbles: true,
+          cancelable: true,
+          clientX: canvasCoords[0],
+          clientY: canvasCoords[1],
+          button: 0 // Left button
+        });
+
+        // Dispatch the event to trigger crosshair jump
+        canvas.dispatchEvent(mouseEvent);
+
+        // Immediately dispatch mouseup to complete the interaction
+        const mouseUpEvent = new MouseEvent('mouseup', {
+          bubbles: true,
+          cancelable: true,
+          clientX: canvasCoords[0],
+          clientY: canvasCoords[1],
+          button: 0
+        });
+        canvas.dispatchEvent(mouseUpEvent);
+
+        console.log('✅ Crosshair jump triggered via synthetic mouse event');
+      } catch (error) {
+        console.warn('⚠️ Could not trigger crosshair jump:', error);
+      }
+    }
+
+    // Final render of all viewports
+    renderingEngine.renderViewports(['axial', 'sagittal', 'coronal']);
+
+    console.log('✅ All viewports rendered with new annular plane alignment');
 
     // Update fixed crosshair to annulus center (red dot at centroid of 3 cusp dots)
-    const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
     const fixedCrosshairTool = toolGroup?.getToolInstance(FixedCrosshairTool.toolName) as any;
     if (fixedCrosshairTool) {
       console.log('🎯 Setting fixed crosshair (red dot) position to annulus center:', newFocalPoint);
@@ -3534,6 +3781,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       // Add measurement tools
       cornerstoneTools.addTool(SplineROITool);
       cornerstoneTools.addTool(LengthTool);
+      cornerstoneTools.addTool(RectangleROITool);
       cornerstoneTools.addTool(VerticalDistanceTool);
       cornerstoneTools.addTool(VerticalLineTool);
       cornerstoneTools.addTool(CurvedLeafletTool);
@@ -3601,6 +3849,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       toolGroup.addTool(WindowLevelTool.toolName, {
         bindings: [{ mouseButton: MouseBindings.Primary }],
       });
+
+      // Add RectangleROI tool for volume cropping in ROOT_DEFINITION stage
+      toolGroup.addTool(RectangleROITool.toolName);
 
       toolGroup.addTool(StackScrollTool.toolName, {
         bindings: [{ mouseButton: MouseBindings.Primary }],

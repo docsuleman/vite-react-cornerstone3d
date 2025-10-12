@@ -320,6 +320,36 @@ export default async function createImageIdsAndCacheMetaData({
       console.log(`ℹ️ Single phase detected or phases in separate series - using all ${instancesToUse.length} instances`);
     }
 
+    // CRITICAL: Sort instances by slice location for proper spatial ordering
+    const IMAGE_POSITION_PATIENT = "00200032";
+    const SLICE_LOCATION = "00201041";
+    const INSTANCE_NUMBER = "00200013";
+
+    instancesToUse = instancesToUse.sort((a, b) => {
+      // Try slice location first
+      const aSliceLoc = a[SLICE_LOCATION]?.Value?.[0];
+      const bSliceLoc = b[SLICE_LOCATION]?.Value?.[0];
+
+      if (aSliceLoc !== undefined && bSliceLoc !== undefined) {
+        return parseFloat(aSliceLoc) - parseFloat(bSliceLoc);
+      }
+
+      // Try image position Z coordinate
+      const aImagePos = a[IMAGE_POSITION_PATIENT]?.Value?.[2];
+      const bImagePos = b[IMAGE_POSITION_PATIENT]?.Value?.[2];
+
+      if (aImagePos !== undefined && bImagePos !== undefined) {
+        return parseFloat(aImagePos) - parseFloat(bImagePos);
+      }
+
+      // Fallback to instance number
+      const aInstanceNum = a[INSTANCE_NUMBER]?.Value?.[0] || 0;
+      const bInstanceNum = b[INSTANCE_NUMBER]?.Value?.[0] || 0;
+      return parseInt(aInstanceNum) - parseInt(bInstanceNum);
+    });
+
+    console.log(`📐 Sorted ${instancesToUse.length} instances by slice location`);
+
 
     // Extract spacing values from the first instance to use as reference
     const firstInstance = instancesToUse[0];

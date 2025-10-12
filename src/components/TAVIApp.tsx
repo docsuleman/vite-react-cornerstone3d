@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { FaUser, FaStethoscope, FaEye, FaRuler, FaCog, FaChevronRight, FaCheck, FaExclamationTriangle, FaCircle, FaTrash, FaFileAlt, FaCrosshairs, FaAdjust, FaSearchPlus, FaHandPaper, FaDotCircle, FaDrawPolygon } from 'react-icons/fa';
+import { FaUser, FaStethoscope, FaEye, FaRuler, FaCog, FaChevronRight, FaCheck, FaExclamationTriangle, FaCircle, FaTrash, FaFileAlt, FaCrosshairs, FaAdjust, FaSearchPlus, FaHandPaper, FaDotCircle, FaDrawPolygon, FaSquare } from 'react-icons/fa';
 import appIcon from '../assets/app-icon.png';
 import PatientSearch from './PatientSearch';
 import LeftSidebarSteps from './LeftSidebarSteps';
+import MultiPhaseModal from './MultiPhaseModal';
 // import HybridCPRViewport from './HybridCPRViewport'; // Disabled - ImageCPRMapper not suitable for data extraction
 import CornerstoneCPRViewport from './CornerstoneCPRViewport';
 import TriViewCPRViewport from './TriViewCPRViewport'; // Pure VTK.js CPR with working rotation
@@ -12,9 +13,11 @@ import MeasurementWorkflowPanel from './MeasurementWorkflowPanel';
 import MeasurementReportPage from './MeasurementReportPage';
 import { useWorkflowState } from '../hooks/useWorkflowState';
 import { WorkflowStage, RootPointType } from '../types/WorkflowTypes';
-import { Study, Series } from '../services/DicomWebService';
+import { Study, Series, dicomWebService } from '../services/DicomWebService';
 import { getWorkflowManager } from '../utils/MeasurementWorkflowManager';
 import { MeasurementStep } from '../types/MeasurementWorkflowTypes';
+import * as cornerstoneTools from '@cornerstonejs/tools';
+import createImageIdsAndCacheMetaData from '../lib/createImageIdsAndCacheMetaData';
 
 interface TAVIAppProps {
   // Props for integrating with existing Cornerstone3D setup
@@ -28,6 +31,12 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
     visible: boolean;
     targetStage: WorkflowStage;
   } | null>(null);
+
+  // Multi-phase detection state
+  const [showPhaseModal, setShowPhaseModal] = useState(false);
+  const [pendingStudy, setPendingStudy] = useState<Study | null>(null);
+  const [availableSeries, setAvailableSeries] = useState<Series[]>([]);
+
   const { state, actions, canAdvanceToStage, getCurrentStageProgress, getStageTitle } = useWorkflowState();
 
   // Toolbar state management
@@ -71,7 +80,43 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
     }
   }, [state.currentStage]);
 
-  const handlePatientSelected = (study: Study, series: Series) => {
+  const handlePatientSelected = async (study: Study, series: Series) => {
+    setShowPatientSearch(false);
+
+    try {
+      // Check if the SELECTED series has multiple phases within it
+      // by using the phase detection from createImageIdsAndCacheMetaData
+      console.log(`🔍 Checking for multiple phases in series ${series.SeriesInstanceUID}`);
+
+      // Temporarily load metadata to detect phases
+      const { phaseInfo } = await createImageIdsAndCacheMetaData({
+        StudyInstanceUID: study.StudyInstanceUID,
+        SeriesInstanceUID: series.SeriesInstanceUID,
+        wadoRsRoot: dicomWebService.getWadoRsRoot()
+      });
+
+      console.log(`📊 Phase detection result:`, phaseInfo);
+
+      // If this series has multiple phases, show phase selection modal
+      if (phaseInfo.isMultiPhase && phaseInfo.totalPhases > 1) {
+        console.log(`✨ Found ${phaseInfo.totalPhases} phases in series - showing phase modal`);
+        setPendingStudy(study);
+        // Store the series with phase info
+        setAvailableSeries([series]); // Just one series, but with multiple phases inside
+        setShowPhaseModal(true);
+      } else {
+        // Single phase - proceed directly
+        console.log(`➡️ Single phase detected - proceeding directly`);
+        proceedWithSeries(study, series);
+      }
+    } catch (error) {
+      console.error('Failed to detect cardiac phases:', error);
+      // Fallback: proceed with the selected series
+      proceedWithSeries(study, series);
+    }
+  };
+
+  const proceedWithSeries = (study: Study, series: Series) => {
     actions.setPatientInfo({
       patientID: study.PatientID,
       patientName: study.PatientName,
@@ -79,8 +124,26 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
       seriesInstanceUID: series.SeriesInstanceUID,
     });
 
-    setShowPatientSearch(false);
     actions.setStage(WorkflowStage.ROOT_DEFINITION);
+  };
+
+  const handlePhaseSelected = (series: Series) => {
+    if (pendingStudy) {
+      proceedWithSeries(pendingStudy, series);
+    }
+    setShowPhaseModal(false);
+    setPendingStudy(null);
+    setAvailableSeries([]);
+  };
+
+  const handlePhaseSkip = () => {
+    if (pendingStudy && availableSeries.length > 0) {
+      // Use the first series as default
+      proceedWithSeries(pendingStudy, availableSeries[0]);
+    }
+    setShowPhaseModal(false);
+    setPendingStudy(null);
+    setAvailableSeries([]);
   };
 
   const handleStageChange = (stage: WorkflowStage) => {
@@ -140,6 +203,88 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
   // Handle toolbar button clicks
   const handleToolClick = (toolName: string) => {
     setRequestedTool(toolName);
+  };
+
+  // Handle crop Apply button
+  const handleApplyCrop = () => {
+    try {
+      // Get RectangleROI annotations from Cornerstone Tools
+      const { annotation } = cornerstoneTools;
+      const annotationManager = annotation.state.getAnnotationManager();
+      const rectangleAnnotations = annotationManager.getAnnotations('RectangleROI');
+
+      if (!rectangleAnnotations || rectangleAnnotations.length === 0) {
+        console.warn('⚠️ No crop box found. Please draw a rectangle ROI first.');
+        actions.addWarning('No crop box found. Please draw a rectangle ROI on the viewport first.');
+        return;
+      }
+
+      // Use the most recent annotation
+      const cropAnnotation = rectangleAnnotations[rectangleAnnotations.length - 1];
+      const points = cropAnnotation.data.handles.points;
+
+      if (!points || points.length < 4) {
+        console.error('❌ Invalid crop annotation');
+        return;
+      }
+
+      // Calculate bounding box in world coordinates
+      const xCoords = points.map(p => p[0]);
+      const yCoords = points.map(p => p[1]);
+      const zCoords = points.map(p => p[2]);
+
+      const worldBounds: [number, number, number, number, number, number] = [
+        Math.min(...xCoords),
+        Math.max(...xCoords),
+        Math.min(...yCoords),
+        Math.max(...yCoords),
+        Math.min(...zCoords),
+        Math.max(...zCoords)
+      ];
+
+      // TODO: Convert world bounds to voxel space
+      // For now, use world bounds for both (will be refined when 3D viewport integration is complete)
+      const volumeCropInfo = {
+        bounds: worldBounds,
+        worldBounds: worldBounds,
+        appliedAt: WorkflowStage.ROOT_DEFINITION,
+        timestamp: Date.now()
+      };
+
+      actions.setVolumeCrop(volumeCropInfo);
+      console.log('✅ Crop applied:', volumeCropInfo);
+      console.log('📦 Crop bounds (world):', worldBounds);
+    } catch (error) {
+      console.error('❌ Failed to apply crop:', error);
+      actions.addError('Failed to apply crop. Please try again.');
+    }
+  };
+
+  // Handle crop Reset button
+  const handleResetCrop = () => {
+    try {
+      // Clear crop from workflow state
+      actions.clearVolumeCrop();
+
+      // Remove all RectangleROI annotations
+      const { annotation } = cornerstoneTools;
+      const annotationManager = annotation.state.getAnnotationManager();
+      const rectangleAnnotations = annotationManager.getAnnotations('RectangleROI');
+
+      if (rectangleAnnotations && rectangleAnnotations.length > 0) {
+        rectangleAnnotations.forEach(ann => {
+          annotationManager.removeAnnotation(ann.annotationUID);
+        });
+      }
+
+      console.log('🔄 Crop reset - all crop boxes cleared');
+
+      // TODO: Optionally initialize a default cardiac crop box
+      // This would create a ~150x150x150mm box centered on the volume
+    } catch (error) {
+      console.error('❌ Failed to reset crop:', error);
+      actions.addError('Failed to reset crop.');
+    }
   };
 
   const getStageIcon = (stage: WorkflowStage) => {
@@ -487,6 +632,12 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             {state.currentStage === WorkflowStage.ROOT_DEFINITION && (
               <div className="text-slate-300 text-sm">
                 <p className="mb-2">Click on the viewport to place centerline points.</p>
+                <p className="text-xs text-slate-400 mt-2">
+                  • Place at least 3 points along the aorta<br/>
+                  • First: LV outflow tract<br/>
+                  • Middle: Aortic valve<br/>
+                  • Last: Ascending aorta
+                </p>
               </div>
             )}
           </div>
@@ -604,6 +755,7 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             onActiveToolChange={setActiveTool}
             requestedTool={requestedTool}
             windowLevelPreset={windowLevelPreset}
+            initializeCropBox={state.currentStage === WorkflowStage.ROOT_DEFINITION}
             onMeasurementComplete={(stepId, annotationUID, measuredValue) => {
               // Complete the step in workflow manager and state
               workflowManager.completeCurrentStep(annotationUID, measuredValue);
@@ -790,6 +942,32 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
         <PatientSearch
           onSeriesSelected={handlePatientSelected}
           onClose={() => setShowPatientSearch(false)}
+        />
+      )}
+
+      {/* Multi-Phase Selection Modal */}
+      {showPhaseModal && pendingStudy && availableSeries.length > 0 && (
+        <MultiPhaseModal
+          studyInstanceUID={pendingStudy.StudyInstanceUID}
+          series={availableSeries[0]}
+          wadoRsRoot={dicomWebService.getWadoRsRoot()}
+          onPhaseSelected={(phaseIndex) => {
+            // When phase is selected, proceed with the series and phase index
+            if (pendingStudy && availableSeries[0]) {
+              console.log(`✅ User selected phase ${phaseIndex}`);
+              proceedWithSeries(pendingStudy, availableSeries[0]);
+              // TODO: Store selected phase index in workflow state
+            }
+            setShowPhaseModal(false);
+            setPendingStudy(null);
+            setAvailableSeries([]);
+          }}
+          onSkip={handlePhaseSkip}
+          onClose={() => {
+            setShowPhaseModal(false);
+            setPendingStudy(null);
+            setAvailableSeries([]);
+          }}
         />
       )}
 
