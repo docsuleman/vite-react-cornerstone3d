@@ -10,7 +10,8 @@ import {
   AnnulusPointType,
   CenterlineData,
   AnnularPlane,
-  TAVIMeasurements
+  TAVIMeasurements,
+  VolumeCropInfo
 } from '../types/WorkflowTypes';
 
 const initialState: WorkflowState = {
@@ -217,6 +218,18 @@ function workflowReducer(state: WorkflowState, action: WorkflowAction): Workflow
         },
       };
 
+    case WORKFLOW_ACTIONS.SET_VOLUME_CROP:
+      return {
+        ...state,
+        volumeCropInfo: action.payload,
+      };
+
+    case WORKFLOW_ACTIONS.CLEAR_VOLUME_CROP:
+      return {
+        ...state,
+        volumeCropInfo: undefined,
+      };
+
     case WORKFLOW_ACTIONS.RESET_WORKFLOW:
       return {
         ...initialState,
@@ -337,6 +350,15 @@ export function useWorkflowState() {
 
     resetWorkflow: useCallback(() => {
       dispatch({ type: WORKFLOW_ACTIONS.RESET_WORKFLOW });
+    }, []),
+
+    // Volume cropping actions
+    setVolumeCrop: useCallback((cropInfo: VolumeCropInfo) => {
+      dispatch({ type: WORKFLOW_ACTIONS.SET_VOLUME_CROP, payload: cropInfo });
+    }, []),
+
+    clearVolumeCrop: useCallback(() => {
+      dispatch({ type: WORKFLOW_ACTIONS.CLEAR_VOLUME_CROP });
     }, []),
 
     // Measurement workflow actions

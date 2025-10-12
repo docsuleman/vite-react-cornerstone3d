@@ -67,6 +67,14 @@ export interface PolygonMeasurements {
   timestamp: number;
 }
 
+export interface VolumeCropInfo {
+  bounds: [number, number, number, number, number, number]; // xMin, xMax, yMin, yMax, zMin, zMax in voxel space
+  worldBounds: [number, number, number, number, number, number]; // Same bounds in world coordinates
+  appliedAt: WorkflowStage;
+  selectedPhaseIndex?: number; // For multi-phase volumes, which phase was used for cropping
+  timestamp: number;
+}
+
 export interface TAVIMeasurements {
   // Existing annulus measurements
   annulus?: AnnulusMeasurements;
@@ -132,6 +140,8 @@ export interface WorkflowState {
     [WorkflowStage.MEASUREMENTS]: boolean;
     [WorkflowStage.REPORT]: boolean;
   };
+  // Volume cropping information
+  volumeCropInfo?: VolumeCropInfo;
   // Measurement workflow state
   measurementWorkflowActive: boolean;
   currentMeasurementStepIndex: number;
@@ -164,6 +174,9 @@ export const WORKFLOW_ACTIONS = {
   CLEAR_WARNINGS: 'CLEAR_WARNINGS',
   RESET_WORKFLOW: 'RESET_WORKFLOW',
   MARK_STAGE_COMPLETE: 'MARK_STAGE_COMPLETE',
+  // Volume cropping actions
+  SET_VOLUME_CROP: 'SET_VOLUME_CROP',
+  CLEAR_VOLUME_CROP: 'CLEAR_VOLUME_CROP',
   // Measurement workflow actions
   START_MEASUREMENT_WORKFLOW: 'START_MEASUREMENT_WORKFLOW',
   SET_MEASUREMENT_STEP_INDEX: 'SET_MEASUREMENT_STEP_INDEX',

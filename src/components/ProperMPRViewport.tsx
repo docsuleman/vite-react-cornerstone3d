@@ -85,6 +85,10 @@ interface ProperMPRViewportProps {
     orientation: Float32Array;
     length: number;
   };
+  // Toolbar communication
+  onActiveToolChange?: (tool: string) => void; // Notify parent of active tool
+  requestedTool?: string; // Tool requested from parent
+  windowLevelPreset?: string; // W/L preset from parent toolbar
 }
 
 const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
@@ -101,7 +105,10 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   onConfirmMeasurement,
   annularPlane,
   annulusArea = 400,
-  centerlineData: centerlineDataProp
+  centerlineData: centerlineDataProp,
+  onActiveToolChange,
+  requestedTool,
+  windowLevelPreset = 'cardiac'
 }) => {
   const elementRefs = {
     axial: useRef(null),
@@ -560,6 +567,76 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     };
   }, [currentStage, deleteAnnotation]);
 
+  // Notify parent when active tool changes
+  useEffect(() => {
+    if (onActiveToolChange) {
+      onActiveToolChange(activeTool);
+    }
+  }, [activeTool, onActiveToolChange]);
+
+  // Respond to tool change requests from parent
+  useEffect(() => {
+    if (requestedTool && requestedTool !== activeTool) {
+      handleToolChange(requestedTool);
+    }
+  }, [requestedTool]);
+
+  // Auto-activate appropriate tool when stage changes
+  useEffect(() => {
+    // Wait a bit for toolGroup to be initialized
+    const timeoutId = setTimeout(() => {
+      const defaultTool =
+        currentStage === WorkflowStage.ROOT_DEFINITION ? 'SphereMarker' :
+        currentStage === WorkflowStage.ANNULUS_DEFINITION ? 'CuspNadir' :
+        activeTool;
+
+      if (defaultTool !== activeTool) {
+        console.log(`🎯 Auto-activating ${defaultTool} for stage:`, currentStage);
+        handleToolChange(defaultTool);
+      }
+    }, 500); // Give time for viewport initialization
+
+    return () => clearTimeout(timeoutId);
+  }, [currentStage]);
+
+  // Apply window/level preset from parent
+  useEffect(() => {
+    const renderingEngine = renderingEngineRef.current;
+    if (!renderingEngine) return;
+
+    // Map preset names to window/level values
+    const presets: { [key: string]: { window: number; level: number } } = {
+      'cardiac': { window: 400, level: 20 },  // -180 to 220
+      'soft-tissue': { window: 400, level: 40 },
+      'lung': { window: 1500, level: -500 },
+      'bone': { window: 1800, level: 400 },
+      'angio': { window: 600, level: 300 },
+    };
+
+    const wl = presets[windowLevelPreset] || presets['cardiac'];
+
+    // Apply to all viewports
+    const viewportIds = ['axial', 'sagittal', 'coronal'];
+    viewportIds.forEach((id) => {
+      try {
+        const viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
+        if (viewport) {
+          viewport.setProperties({
+            voiRange: {
+              lower: wl.level - wl.window / 2,
+              upper: wl.level + wl.window / 2,
+            },
+          });
+          viewport.render();
+        }
+      } catch (error) {
+        console.warn(`Failed to apply W/L to ${id}:`, error);
+      }
+    });
+
+    console.log(`📊 Applied W/L preset "${windowLevelPreset}": W=${wl.window}, L=${wl.level}`);
+  }, [windowLevelPreset]);
+
   useEffect(() => {
     if (!patientInfo?.seriesInstanceUID) return;
 
@@ -671,6 +748,17 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       currentCenterlineIndexRef.current = closestIndex;
 
+      // Get the actual closest centerline point (not the sphere position)
+      const closestCenterlinePoint: Types.Point3 = [
+        centerlineData.position[closestIndex * 3],
+        centerlineData.position[closestIndex * 3 + 1],
+        centerlineData.position[closestIndex * 3 + 2]
+      ];
+
+      console.log('📍 Valve sphere position:', valveCenterlinePos);
+      console.log('📍 Closest centerline point:', closestCenterlinePoint);
+      console.log('📏 Distance from sphere to centerline:', minDist.toFixed(2), 'mm');
+
       // Calculate centerline tangent at valve
       const prevIdx = Math.max(0, closestIndex - 1);
       const nextIdx = Math.min(numPoints - 1, closestIndex + 1);
@@ -708,26 +796,78 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
         // Axial: looks along centerline tangent
         const axialCamera = axialViewport.getCamera();
+        // Preserve current zoom level
+        const currentParallelScale = axialCamera.parallelScale || 150;
+
+        // Calculate new camera properties using the CENTERLINE point as focal point
+        const newCameraPos: Types.Point3 = [
+          closestCenterlinePoint[0] + tangent[0] * cameraDistance,
+          closestCenterlinePoint[1] + tangent[1] * cameraDistance,
+          closestCenterlinePoint[2] + tangent[2] * cameraDistance
+        ];
+
+        console.log('📐 Setting axial viewport camera perpendicular to centerline:');
+        console.log('   Camera position:', newCameraPos);
+        console.log('   Focal point (centerline):', closestCenterlinePoint);
+        console.log('   ViewUp:', [0, 0, 1]);
+        console.log('   Preserved parallelScale:', currentParallelScale);
+
+        // Set camera - spread existing camera to preserve clippingRange and other properties
+        // This ensures crosshair synchronization is maintained
         axialViewport.setCamera({
           ...axialCamera,
-          position: [
-            valveCenterlinePos[0] + tangent[0] * cameraDistance,
-            valveCenterlinePos[1] + tangent[1] * cameraDistance,
-            valveCenterlinePos[2] + tangent[2] * cameraDistance
-          ] as Types.Point3,
-          focalPoint: valveCenterlinePos as Types.Point3,
+          position: newCameraPos,
+          focalPoint: closestCenterlinePoint,
           viewUp: [0, 0, 1] as Types.Point3,
-          parallelScale: 150
+          parallelScale: currentParallelScale // Preserve zoom level from ROOT_DEFINITION
         });
 
-        lockedFocalPointRef.current = valveCenterlinePos as Types.Point3;
+        lockedFocalPointRef.current = closestCenterlinePoint;
 
-        console.log('✅ Axial viewport aligned perpendicular to centerline');
+        // CRITICAL: Programmatically trigger a tiny focal point change to force slice update
+        // This mimics what happens when you scroll
+        const triggerSliceUpdate = () => {
+          const cam = axialViewport.getCamera();
+          const epsilon = 0.001;
 
-        // Render viewports
-        renderingEngine.renderViewports(['axial', 'sagittal', 'coronal']);
+          // Move focal point by tiny amount
+          axialViewport.setCamera({
+            ...cam,
+            focalPoint: [
+              closestCenterlinePoint[0] + epsilon,
+              closestCenterlinePoint[1] + epsilon,
+              closestCenterlinePoint[2] + epsilon
+            ] as Types.Point3
+          });
+          axialViewport.render();
+
+          // Move back to correct position
+          setTimeout(() => {
+            axialViewport.setCamera({
+              ...cam,
+              focalPoint: closestCenterlinePoint,
+            });
+            axialViewport.render();
+          }, 5);
+        };
+
+        // Initial render
+        axialViewport.render();
+        sagittalViewport.render();
+        coronalViewport.render();
+
+        // Trigger slice updates with delays
+        setTimeout(triggerSliceUpdate, 10);
+
+        setTimeout(() => {
+          renderingEngine.renderViewports(['axial', 'sagittal', 'coronal']);
+        }, 50);
+
+        setTimeout(() => {
+          renderingEngine.renderViewports(['axial', 'sagittal', 'coronal']);
+        }, 150);
       }
-    }, 500);
+    }, 100); // Reduced timeout from 500ms to 100ms for faster response
 
     return () => clearTimeout(timer);
   }, [currentStage, existingSpheres]);
@@ -2989,11 +3129,42 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
     console.log('✅ Centerline regenerated with projected valve');
 
-    // IMPORTANT: Use the annulus center (centroid of 3 cusp dots) as the focal point
-    // This ensures the red dot is at the center of the three cusp dots, on the annular plane
-    const newFocalPoint = annulusCenter;
+    // IMPORTANT: Project annulus center onto centerline to get accurate focal point
+    // This ensures proper alignment and avoids camera orientation issues
+    const centerlineData = centerlineDataRef.current;
+    if (!centerlineData) {
+      console.error('❌ No centerline data available');
+      return;
+    }
 
-    console.log('🎯 Using annulus center as focal point (red dot position):', annulusCenter);
+    const centerlinePointCount = centerlineData.position.length / 3;
+    let closestIndex = 0;
+    let minDist = Infinity;
+    for (let i = 0; i < centerlinePointCount; i++) {
+      const x = centerlineData.position[i * 3];
+      const y = centerlineData.position[i * 3 + 1];
+      const z = centerlineData.position[i * 3 + 2];
+      const dist = Math.sqrt(
+        Math.pow(x - annulusCenter[0], 2) +
+        Math.pow(y - annulusCenter[1], 2) +
+        Math.pow(z - annulusCenter[2], 2)
+      );
+      if (dist < minDist) {
+        minDist = dist;
+        closestIndex = i;
+      }
+    }
+
+    // Get the closest centerline point as the focal point
+    const newFocalPoint: Types.Point3 = [
+      centerlineData.position[closestIndex * 3],
+      centerlineData.position[closestIndex * 3 + 1],
+      centerlineData.position[closestIndex * 3 + 2]
+    ];
+
+    console.log('📍 Annulus center (centroid):', annulusCenter);
+    console.log('📍 Closest centerline point (focal point):', newFocalPoint);
+    console.log('📏 Distance from centroid to centerline:', minDist.toFixed(2), 'mm');
 
     // Position axial camera perpendicular to the annular plane
     const axialVp = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
@@ -3024,19 +3195,71 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       viewUp = [0, 0, 1] as Types.Point3;
     }
 
+    // Preserve current zoom level
+    const currentCamera = axialVp.getCamera();
+    const currentParallelScale = currentCamera.parallelScale || 60;
+
     console.log('🎥 Setting axial camera perpendicular to annular plane:');
     console.log('   Camera position:', cameraPos);
-    console.log('   Focal point (annulus center - centroid of 3 cusp dots):', newFocalPoint);
+    console.log('   Focal point (centerline):', newFocalPoint);
     console.log('   ViewUp:', viewUp);
+    console.log('   Preserving parallelScale:', currentParallelScale);
 
+    // Set camera - spread existing camera to preserve clippingRange and other properties
+    // This ensures crosshair synchronization is maintained
     axialVp.setCamera({
+      ...currentCamera,
       position: cameraPos,
       focalPoint: newFocalPoint,
       viewUp: viewUp,
-      parallelScale: 60, // Zoomed in to focus on annulus area
+      parallelScale: currentParallelScale, // Preserve current zoom level
     });
 
+    // CRITICAL: Programmatically trigger a tiny focal point change to force slice update
+    // This mimics what happens when you scroll
+    const triggerSliceUpdate = () => {
+      const cam = axialVp.getCamera();
+      const epsilon = 0.001;
+
+      // Move focal point by tiny amount
+      axialVp.setCamera({
+        ...cam,
+        focalPoint: [
+          newFocalPoint[0] + epsilon,
+          newFocalPoint[1] + epsilon,
+          newFocalPoint[2] + epsilon
+        ] as Types.Point3
+      });
+      axialVp.render();
+
+      // Move back to correct position
+      setTimeout(() => {
+        axialVp.setCamera({
+          ...cam,
+          focalPoint: newFocalPoint,
+        });
+        axialVp.render();
+      }, 5);
+    };
+
+    // Force render with multiple passes to ensure camera takes effect
+    const sagittalViewport = renderingEngine.getViewport('sagittal') as Types.IVolumeViewport;
+    const coronalViewport = renderingEngine.getViewport('coronal') as Types.IVolumeViewport;
+
     axialVp.render();
+    if (sagittalViewport) sagittalViewport.render();
+    if (coronalViewport) coronalViewport.render();
+
+    // Trigger slice updates with delays
+    setTimeout(triggerSliceUpdate, 10);
+
+    setTimeout(() => {
+      renderingEngine.renderViewports(['axial', 'sagittal', 'coronal']);
+    }, 50);
+
+    setTimeout(() => {
+      renderingEngine.renderViewports(['axial', 'sagittal', 'coronal']);
+    }, 150);
 
     // Update fixed crosshair to annulus center (red dot at centroid of 3 cusp dots)
     const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
@@ -6282,158 +6505,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   }, [selectedPhase, phaseInfo, isPreloading]);
 
   return (
-    <div className="flex flex-col w-full h-full">
-      {/* Header - FIXED HEIGHT to prevent viewport shift */}
-      <div className="flex items-center justify-between p-2 bg-slate-800 border-b border-slate-700 flex-shrink-0 h-14">
-        <div className="flex items-center gap-4 min-w-0">
-          {patientInfo && (
-            <div className="text-xs truncate">
-              <span className="text-slate-300">Patient: </span>
-              <span className="text-white font-medium">{patientInfo.patientName || 'Unknown'}</span>
-              <span className="text-slate-400 ml-2">({patientInfo.patientID || 'Unknown ID'})</span>
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-center gap-3 flex-shrink-0">
-          {/* Tool Selection - NO WRAPPING */}
-          <div className="flex items-center gap-1">
-            <span className="text-xs text-slate-300">Tools:</span>
-            <button
-              onClick={() => handleToolChange('Crosshairs')}
-              className={`p-1.5 rounded text-xs flex items-center gap-1 whitespace-nowrap ${activeTool === 'Crosshairs' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
-            >
-              <FaCrosshairs />
-              <span className="hidden sm:inline">Cross</span>
-            </button>
-            <button
-              onClick={() => handleToolChange('WindowLevel')}
-              className={`p-1.5 rounded text-xs flex items-center gap-1 whitespace-nowrap ${activeTool === 'WindowLevel' ? 'bg-orange-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
-            >
-              <FaAdjust />
-              <span>W/L</span>
-            </button>
-            <button
-              onClick={() => handleToolChange('SphereMarker')}
-              className={`p-1.5 rounded text-xs flex items-center gap-1 whitespace-nowrap ${activeTool === 'SphereMarker' ? 'bg-green-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
-            >
-              <FaCircle />
-              <span className="hidden sm:inline">Centerline</span>
-            </button>
-            {/* Show CuspNadir tool only during annulus definition stage */}
-            {currentStage === WorkflowStage.ANNULUS_DEFINITION && (
-              <button
-                onClick={() => handleToolChange('CuspNadir')}
-                className={`p-1.5 rounded text-xs flex items-center gap-1 whitespace-nowrap ${activeTool === 'CuspNadir' ? 'bg-teal-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
-              >
-                <FaDotCircle />
-                <span>Cusp</span>
-              </button>
-            )}
-            <button
-              onClick={() => handleToolChange('Zoom')}
-              className={`p-1.5 rounded text-xs flex items-center gap-1 whitespace-nowrap ${activeTool === 'Zoom' ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
-            >
-              <FaSearchPlus />
-              <span className="hidden sm:inline">Zoom</span>
-            </button>
-            <button
-              onClick={() => handleToolChange('Pan')}
-              className={`p-1.5 rounded text-xs flex items-center gap-1 whitespace-nowrap ${activeTool === 'Pan' ? 'bg-yellow-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
-            >
-              <FaArrowsAlt />
-              <span className="hidden sm:inline">Pan</span>
-            </button>
-
-            {/* Measurement tools - only show during MEASUREMENTS stage */}
-            {currentStage === WorkflowStage.MEASUREMENTS && (
-              <>
-                <button
-                  onClick={() => handleToolChange('SmoothPolygon')}
-                  className={`p-1.5 rounded text-xs flex items-center gap-1 whitespace-nowrap ${activeTool === 'SmoothPolygon' ? 'bg-pink-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
-                  title="Smooth Polygon (Axial only) - Click to add points, click near first point to close"
-                >
-                  <FaDrawPolygon />
-                  <span className="hidden sm:inline">Polygon</span>
-                </button>
-                <button
-                  onClick={() => handleToolChange('AxialLine')}
-                  className={`p-1.5 rounded text-xs flex items-center gap-1 whitespace-nowrap ${activeTool === 'AxialLine' ? 'bg-cyan-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
-                  title="Axial Line (Axial only)"
-                >
-                  <FaRuler />
-                  <span className="hidden sm:inline">Line</span>
-                </button>
-                <button
-                  onClick={() => handleToolChange('MPRLongAxisLine')}
-                  className={`p-1.5 rounded text-xs flex items-center gap-1 whitespace-nowrap ${activeTool === 'MPRLongAxisLine' ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
-                  title="Long Axis Line (Sagittal/Coronal only)"
-                >
-                  <FaRuler />
-                  <span className="hidden sm:inline">MPR Line</span>
-                </button>
-              </>
-            )}
-          </div>
-          
-          {/* Window/Level Presets - Dropdown */}
-          <div className="relative">
-            <button
-              onClick={() => setWlDropdownOpen(!wlDropdownOpen)}
-              className="bg-slate-700 hover:bg-slate-600 px-3 py-1.5 rounded text-white text-xs whitespace-nowrap flex items-center gap-2"
-            >
-              <FaAdjust />
-              <span>W/L</span>
-              <FaChevronDown className={`text-xs transition-transform ${wlDropdownOpen ? 'rotate-180' : ''}`} />
-            </button>
-            {wlDropdownOpen && (
-              <div className="absolute top-full right-0 mt-1 bg-slate-800 border border-slate-600 rounded shadow-lg z-50 py-1 min-w-[120px]">
-                <button
-                  onClick={() => {
-                    handleWindowLevelChange(400, 40);
-                    setWlDropdownOpen(false);
-                  }}
-                  className="w-full px-3 py-2 text-left text-white text-xs hover:bg-slate-700 transition-colors"
-                >
-                  Soft Tissue
-                </button>
-                <button
-                  onClick={() => {
-                    handleWindowLevelChange(900, 350);
-                    setWlDropdownOpen(false);
-                  }}
-                  className="w-full px-3 py-2 text-left text-white text-xs hover:bg-slate-700 transition-colors"
-                >
-                  Angio (Default)
-                </button>
-                <button
-                  onClick={() => {
-                    handleWindowLevelChange(1500, 300);
-                    setWlDropdownOpen(false);
-                  }}
-                  className="w-full px-3 py-2 text-left text-white text-xs hover:bg-slate-700 transition-colors"
-                >
-                  Bone
-                </button>
-                <button
-                  onClick={() => {
-                    handleWindowLevelChange(2000, 0);
-                    setWlDropdownOpen(false);
-                  }}
-                  className="w-full px-3 py-2 text-left text-white text-xs hover:bg-slate-700 transition-colors"
-                >
-                  Lung
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-
-      {/* MPR Viewports */}
-      <div className="flex-1 relative">
-        {isLoading && (
+    <div className="w-full h-full relative">
+      {isLoading && (
           <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 z-10">
             <div className="flex items-center gap-3 text-white">
               <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
@@ -7354,7 +7427,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
             </button>
           </div>
         )}
-      </div>
     </div>
   );
 };

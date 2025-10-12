@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { FaUser, FaStethoscope, FaEye, FaRuler, FaCog, FaChevronRight, FaCheck, FaExclamationTriangle, FaCircle, FaTrash, FaFileAlt } from 'react-icons/fa';
+import { FaUser, FaStethoscope, FaEye, FaRuler, FaCog, FaChevronRight, FaCheck, FaExclamationTriangle, FaCircle, FaTrash, FaFileAlt, FaCrosshairs, FaAdjust, FaSearchPlus, FaHandPaper, FaDotCircle, FaDrawPolygon } from 'react-icons/fa';
 import appIcon from '../assets/app-icon.png';
 import PatientSearch from './PatientSearch';
+import LeftSidebarSteps from './LeftSidebarSteps';
 // import HybridCPRViewport from './HybridCPRViewport'; // Disabled - ImageCPRMapper not suitable for data extraction
 import CornerstoneCPRViewport from './CornerstoneCPRViewport';
 import TriViewCPRViewport from './TriViewCPRViewport'; // Pure VTK.js CPR with working rotation
@@ -29,6 +30,11 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
   } | null>(null);
   const { state, actions, canAdvanceToStage, getCurrentStageProgress, getStageTitle } = useWorkflowState();
 
+  // Toolbar state management
+  const [activeTool, setActiveTool] = useState<string>('Crosshairs');
+  const [requestedTool, setRequestedTool] = useState<string>('Crosshairs');
+  const [windowLevelPreset, setWindowLevelPreset] = useState<string>('cardiac');
+
   // Measurement workflow manager
   const [workflowManager] = useState(() => getWorkflowManager());
   const [workflowSteps, setWorkflowSteps] = useState<MeasurementStep[]>([]);
@@ -55,6 +61,15 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
       actions.startMeasurementWorkflow();
     }
   }, [state.currentStage, state.measurementWorkflowActive, workflowManager, actions]);
+
+  // Auto-activate centerline tool in ROOT_DEFINITION stage
+  useEffect(() => {
+    if (state.currentStage === WorkflowStage.ROOT_DEFINITION) {
+      setRequestedTool('SphereMarker');
+    } else if (state.currentStage === WorkflowStage.ANNULUS_DEFINITION) {
+      setRequestedTool('CuspNadir');
+    }
+  }, [state.currentStage]);
 
   const handlePatientSelected = (study: Study, series: Series) => {
     actions.setPatientInfo({
@@ -120,6 +135,11 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
     if (!nextStep) {
       actions.markStageComplete(WorkflowStage.MEASUREMENTS);
     }
+  };
+
+  // Handle toolbar button clicks
+  const handleToolClick = (toolName: string) => {
+    setRequestedTool(toolName);
   };
 
   const getStageIcon = (stage: WorkflowStage) => {
@@ -244,57 +264,167 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
   );
 
   const renderToolPanel = () => (
-    <div className="w-80 bg-slate-900 text-white border-r border-slate-700 flex flex-col min-h-0 overflow-y-auto">
-      {/* Current Stage Info */}
+    <div className="w-80 bg-slate-900 text-white border-l border-slate-700 flex flex-col min-h-0 overflow-y-auto">
+      {/* Logo and App Name */}
       <div className="p-6 border-b border-slate-700 flex-shrink-0">
         <div className="flex items-center gap-3 mb-4">
-          {getStageIcon(state.currentStage)}
-          <h3 className="text-xl font-semibold">{getStageTitle(state.currentStage)}</h3>
+          <div className="bg-white p-2 rounded-lg">
+            <img src={appIcon} alt="QuanTAVI" className="w-8 h-8" />
+          </div>
+          <div>
+            <h1 className="text-xl font-bold text-white">QuanTAVI</h1>
+            <p className="text-slate-400 text-xs">TAVI Planning</p>
+          </div>
         </div>
-        
-        {state.currentStage === WorkflowStage.ROOT_DEFINITION && (
-          <div className="space-y-3">
-            <p className="text-slate-300 text-sm">
-              Place 3 spheres to define the aortic root:
-            </p>
-            <div className="space-y-2">
-              <div className={`flex items-center gap-3 p-2 rounded ${state.rootPoints.some(p => p.type === 'lv_outflow') ? 'bg-green-900/30 text-green-300' : 'bg-slate-800 text-slate-400'}`}>
-                <FaCircle className="text-green-500 text-xs" />
-                <span className="text-sm">1. LV Outflow Tract</span>
-              </div>
-              <div className={`flex items-center gap-3 p-2 rounded ${state.rootPoints.some(p => p.type === 'aortic_valve') ? 'bg-red-900/30 text-red-300' : 'bg-slate-800 text-slate-400'}`}>
-                <FaCircle className="text-red-500 text-xs" />
-                <span className="text-sm">2. Aortic Valve Level</span>
-              </div>
-              <div className={`flex items-center gap-3 p-2 rounded ${state.rootPoints.some(p => p.type === 'ascending_aorta') ? 'bg-yellow-900/30 text-yellow-300' : 'bg-slate-800 text-slate-400'}`}>
-                <FaCircle className="text-yellow-500 text-xs" />
-                <span className="text-sm">3. Ascending Aorta</span>
-              </div>
-            </div>
-          </div>
-        )}
 
-        {state.currentStage === WorkflowStage.ANNULUS_DEFINITION && (
-          <div className="space-y-3">
-            <p className="text-slate-300 text-sm">
-              Mark the nadir of each cusp:
-            </p>
-            <div className="space-y-2">
-              <div className={`flex items-center gap-3 p-2 rounded ${state.annulusPoints.some(p => p.type === 'right_coronary_cusp') ? 'bg-green-900/30 text-green-300' : 'bg-slate-800 text-slate-400'}`}>
-                <FaCircle className="text-green-500 text-xs" />
-                <span className="text-sm">Right Coronary Cusp</span>
-              </div>
-              <div className={`flex items-center gap-3 p-2 rounded ${state.annulusPoints.some(p => p.type === 'left_coronary_cusp') ? 'bg-red-900/30 text-red-300' : 'bg-slate-800 text-slate-400'}`}>
-                <FaCircle className="text-red-500 text-xs" />
-                <span className="text-sm">Left Coronary Cusp</span>
-              </div>
-              <div className={`flex items-center gap-3 p-2 rounded ${state.annulusPoints.some(p => p.type === 'non_coronary_cusp') ? 'bg-yellow-900/30 text-yellow-300' : 'bg-slate-800 text-slate-400'}`}>
-                <FaCircle className="text-yellow-500 text-xs" />
-                <span className="text-sm">Non-Coronary Cusp</span>
-              </div>
-            </div>
+        {/* Patient Information */}
+        {state.patientInfo && (
+          <div className="bg-slate-800 rounded-lg px-3 py-2">
+            <div className="font-semibold text-sm text-white">{state.patientInfo.patientName || 'Unknown Patient'}</div>
+            <div className="text-slate-400 text-xs">ID: {state.patientInfo.patientID || 'Unknown ID'}</div>
           </div>
         )}
+      </div>
+
+      {/* Toolbar */}
+      {state.patientInfo && (state.currentStage === WorkflowStage.ROOT_DEFINITION ||
+                              state.currentStage === WorkflowStage.ANNULUS_DEFINITION ||
+                              state.currentStage === WorkflowStage.MEASUREMENTS) && (
+        <div className="px-4 py-3 border-b border-slate-700 flex-shrink-0">
+          <h4 className="text-xs font-semibold mb-2 text-slate-400 uppercase tracking-wide">Tools</h4>
+          <div className="grid grid-cols-4 gap-2">
+            <button
+              onClick={() => handleToolClick('Crosshairs')}
+              className={`p-2 rounded transition-colors flex flex-col items-center justify-center gap-1 ${
+                activeTool === 'Crosshairs'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+              title="Crosshairs"
+            >
+              <FaCrosshairs className="text-lg" />
+              <span className="text-xs">Cross</span>
+            </button>
+            <button
+              onClick={() => handleToolClick('WindowLevel')}
+              className={`p-2 rounded transition-colors flex flex-col items-center justify-center gap-1 ${
+                activeTool === 'WindowLevel'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+              title="Window/Level"
+            >
+              <FaAdjust className="text-lg" />
+              <span className="text-xs">W/L</span>
+            </button>
+            <button
+              onClick={() => handleToolClick('Zoom')}
+              className={`p-2 rounded transition-colors flex flex-col items-center justify-center gap-1 ${
+                activeTool === 'Zoom'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+              title="Zoom"
+            >
+              <FaSearchPlus className="text-lg" />
+              <span className="text-xs">Zoom</span>
+            </button>
+            <button
+              onClick={() => handleToolClick('Pan')}
+              className={`p-2 rounded transition-colors flex flex-col items-center justify-center gap-1 ${
+                activeTool === 'Pan'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+              title="Pan"
+            >
+              <FaHandPaper className="text-lg" />
+              <span className="text-xs">Pan</span>
+            </button>
+            {state.currentStage === WorkflowStage.ROOT_DEFINITION && (
+              <button
+                onClick={() => handleToolClick('SphereMarker')}
+                className={`p-2 rounded transition-colors flex flex-col items-center justify-center gap-1 ${
+                  activeTool === 'SphereMarker'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                }`}
+                title="Centerline Tool"
+              >
+                <FaDotCircle className="text-lg" />
+                <span className="text-xs">Line</span>
+              </button>
+            )}
+            {state.currentStage === WorkflowStage.ANNULUS_DEFINITION && (
+              <button
+                onClick={() => handleToolClick('CuspNadir')}
+                className={`p-2 rounded transition-colors flex flex-col items-center justify-center gap-1 ${
+                  activeTool === 'CuspNadir'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                }`}
+                title="Cusp Nadir"
+              >
+                <FaDotCircle className="text-lg" />
+                <span className="text-xs">Cusp</span>
+              </button>
+            )}
+            {state.currentStage === WorkflowStage.MEASUREMENTS && (
+              <>
+                <button
+                  onClick={() => handleToolClick('SmoothPolygon')}
+                  className={`p-2 rounded transition-colors flex flex-col items-center justify-center gap-1 ${
+                    activeTool === 'SmoothPolygon'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                  }`}
+                  title="Polygon"
+                >
+                  <FaDrawPolygon className="text-lg" />
+                  <span className="text-xs">Poly</span>
+                </button>
+                <button
+                  onClick={() => handleToolClick('AxialLine')}
+                  className={`p-2 rounded transition-colors flex flex-col items-center justify-center gap-1 ${
+                    activeTool === 'AxialLine'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                  }`}
+                  title="Length"
+                >
+                  <FaRuler className="text-lg" />
+                  <span className="text-xs">Line</span>
+                </button>
+              </>
+            )}
+          </div>
+
+          {/* Window/Level Presets Dropdown */}
+          <div className="mt-3">
+            <label htmlFor="wl-preset" className="text-xs text-slate-400 mb-1 block">W/L Preset</label>
+            <select
+              id="wl-preset"
+              value={windowLevelPreset}
+              onChange={(e) => setWindowLevelPreset(e.target.value)}
+              className="w-full bg-slate-800 text-slate-200 text-xs rounded px-2 py-2 border border-slate-700 focus:border-blue-500 focus:outline-none"
+            >
+              <option value="cardiac">Cardiac CT (-180/220)</option>
+              <option value="soft-tissue">Soft Tissue (40/400)</option>
+              <option value="lung">Lung (-500/1500)</option>
+              <option value="bone">Bone (400/1800)</option>
+              <option value="angio">Angiography (300/600)</option>
+            </select>
+          </div>
+        </div>
+      )}
+
+      {/* Current Stage Info */}
+      <div className="px-4 py-3 border-b border-slate-700 flex-shrink-0">
+        <h4 className="text-sm font-semibold mb-3 text-white">{getStageTitle(state.currentStage)}</h4>
+        {/* Image placeholder */}
+        <div className="bg-slate-800 border-2 border-dashed border-slate-600 rounded-lg aspect-video flex items-center justify-center">
+          <span className="text-slate-500 text-xs">Instruction Image</span>
+        </div>
       </div>
 
       {/* View Report Button - Show when measurements exist */}
@@ -471,6 +601,9 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             } : undefined}
             annulusArea={state.measurements.annulus?.area}
             centerlineData={state.centerline}
+            onActiveToolChange={setActiveTool}
+            requestedTool={requestedTool}
+            windowLevelPreset={windowLevelPreset}
             onMeasurementComplete={(stepId, annotationUID, measuredValue) => {
               // Complete the step in workflow manager and state
               workflowManager.completeCurrentStep(annotationUID, measuredValue);
@@ -638,12 +771,19 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
   );
 
   return (
-    <div className="h-screen bg-slate-900 flex flex-col">
-      {renderWorkflowHeader()}
-      
+    <div className="h-screen bg-slate-900 flex">
+      {/* Left narrow sidebar with step indicators */}
+      <LeftSidebarSteps
+        currentStage={state.currentStage}
+        completedStages={state.isStageComplete}
+        onStageClick={handleStageChange}
+        canAdvanceToStage={canAdvanceToStage}
+      />
+
+      {/* Main content area: viewports + right sidebar */}
       <div className="flex-1 flex overflow-hidden">
-        {renderToolPanel()}
         {renderViewportArea()}
+        {renderToolPanel()}
       </div>
 
       {showPatientSearch && (
