@@ -9,6 +9,7 @@ import {
   eventTarget,
   getRenderingEngine,
   cache,
+  setVolumesForViewports,
 } from "@cornerstonejs/core";
 import { init as csRenderInit } from "@cornerstonejs/core";
 import { init as csToolsInit } from "@cornerstonejs/tools";
@@ -35,7 +36,16 @@ import vtkPolyData from '@kitware/vtk.js/Common/DataModel/PolyData';
 import vtkPoints from '@kitware/vtk.js/Common/Core/Points';
 import vtkCellArray from '@kitware/vtk.js/Common/Core/CellArray';
 import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray';
+import vtkXMLPolyDataReader from '@kitware/vtk.js/IO/XML/XMLPolyDataReader';
+import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
+import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
+import vtkOrientationMarkerWidget from '@kitware/vtk.js/Interaction/Widgets/OrientationMarkerWidget';
+import vtkOpenGLRenderWindow from '@kitware/vtk.js/Rendering/OpenGL/RenderWindow';
+import vtkRenderWindow from '@kitware/vtk.js/Rendering/Core/RenderWindow';
+import vtkRenderer from '@kitware/vtk.js/Rendering/Core/Renderer';
+import vtkRenderWindowInteractor from '@kitware/vtk.js/Rendering/Core/RenderWindowInteractor';
 import { mat3, vec3 } from 'gl-matrix';
+import HumanVTP from '../assets/Human.vtp?url';
 
 const {
   ToolGroupManager,
@@ -48,6 +58,7 @@ const {
   SplineROITool,
   LengthTool,
   RectangleROITool,
+  TrackballRotateTool,
   synchronizers,
 } = cornerstoneTools;
 
@@ -118,7 +129,11 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     axial: useRef(null),
     sagittal: useRef(null),
     coronal: useRef(null),
+    volume3D: useRef(null), // 4th viewport for ROOT_DEFINITION stage
+    measurement1: useRef(null), // 4th viewport for MEASUREMENTS stage
+    measurement2: useRef(null), // 5th viewport for MEASUREMENTS stage
   };
+  const orientationMarkerRef = useRef<HTMLDivElement>(null); // Container for human orientation marker
 
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -174,6 +189,16 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     visible: boolean;
     targetStage: WorkflowStage;
   } | null>(null);
+  const [maximizedViewport, setMaximizedViewport] = useState<string | null>(null);
+  const [projectionAngle, setProjectionAngle] = useState<number>(0); // LAO/RAO angle for 3D view
+  const [cameraOrientation, setCameraOrientation] = useState<{
+    viewAngle: number; // Rotation around Z-axis
+    tiltAngle: number; // Tilt up/down
+  }>({ viewAngle: 0, tiltAngle: 0 });
+  const [volume3DRange, setVolume3DRange] = useState<{
+    lower: number; // Lower HU threshold
+    upper: number; // Upper HU threshold
+  }>({ lower: 150, upper: 800 }); // Default: show contrast-enhanced vessels, hide bones
 
   // Use refs for imageInfo to avoid re-renders that break CrosshairsTool
   const imageInfoRef = useRef<any>(null);
@@ -205,6 +230,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const running = useRef(false);
   const cineIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const preloadedVolumesRef = useRef<{ [phaseIndex: number]: string }>({}); // Store preloaded volume IDs
+  const orientationWidgetRef = useRef<any>(null); // VTK orientation marker widget
   const renderingEngineRef = useRef<RenderingEngine | null>(null);
   const allPhasesLoadedRef = useRef(false); // Track if all phases have been loaded once
   const isSwitchingPhaseRef = useRef(false); // Track if we're currently switching phases
@@ -2236,6 +2262,30 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         { id: "coronal", orientation: Enums.OrientationAxis.CORONAL },
       ];
 
+      // Add 4th viewport (3D volume rendering) only for ROOT_DEFINITION stage
+      if (currentStage === WorkflowStage.ROOT_DEFINITION && elementRefs.volume3D?.current) {
+        viewports.push({
+          id: "volume3D",
+          orientation: Enums.OrientationAxis.AXIAL // Default orientation for 3D view
+        });
+      }
+
+      // Add 4th and 5th viewports for MEASUREMENTS stage
+      if (currentStage === WorkflowStage.MEASUREMENTS) {
+        if (elementRefs.measurement1?.current) {
+          viewports.push({
+            id: "measurement1",
+            orientation: Enums.OrientationAxis.AXIAL // Additional axial view
+          });
+        }
+        if (elementRefs.measurement2?.current) {
+          viewports.push({
+            id: "measurement2",
+            orientation: Enums.OrientationAxis.SAGITTAL // Additional sagittal view
+          });
+        }
+      }
+
       // Enable viewports and set volumes (check if already enabled first)
       // CRITICAL: Don't await setVolumes - let it stream in background like App.tsx
       viewports.forEach(({ id, orientation }) => {
@@ -2245,23 +2295,76 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         if (!viewport) {
           // Viewport doesn't exist, enable it
           console.log(`  🆕 ${id}: Creating NEW viewport`);
+
+          // Use VOLUME_3D type for the 3D viewport, ORTHOGRAPHIC for MPR views
+          const viewportType = id === 'volume3D'
+            ? Enums.ViewportType.VOLUME_3D
+            : Enums.ViewportType.ORTHOGRAPHIC;
+
+          // VOLUME_3D viewports don't use orientation, use darker background
+          const viewportOptions = id === 'volume3D'
+            ? { background: [0.1, 0.1, 0.15] as Types.Point3 } // Darker blue-ish for 3D
+            : { orientation, background: [0, 0, 0] as Types.Point3 };
+
           renderingEngine.enableElement({
             viewportId: id,
-            type: Enums.ViewportType.ORTHOGRAPHIC,
+            type: viewportType,
             element: elementRefs[id].current,
-            defaultOptions: {
-              orientation,
-              background: [0, 0, 0]
-            },
+            defaultOptions: viewportOptions,
           });
           viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
         } else {
           console.log(`  ♻️ ${id}: REUSING existing viewport`);
         }
 
-        // Don't await - let volumes load in background like App.tsx
-        viewport.setVolumes([{ volumeId }]);
-        viewport.render();
+        // For 3D viewport, use setVolumesForViewports with preset in callback
+        if (id === 'volume3D') {
+          setVolumesForViewports(
+            renderingEngine,
+            [{ volumeId }],
+            [id]
+          ).then(() => {
+            viewport.setProperties({
+              preset: 'CT-Cardiac',
+              sampleDistanceMultiplier: 4,
+            });
+
+            // Set default front view (AP - Anterior-Posterior view)
+            // Camera at back (posterior), looking towards front (anterior/chest)
+            const camera = viewport.getCamera();
+            const { focalPoint, position } = camera;
+
+            // Calculate distance from focal point to camera
+            const distance = Math.sqrt(
+              Math.pow(position[0] - focalPoint[0], 2) +
+              Math.pow(position[1] - focalPoint[1], 2) +
+              Math.pow(position[2] - focalPoint[2], 2)
+            );
+
+            // Set camera to back view (looking from posterior towards anterior)
+            // In medical imaging: +X = patient's right, +Y = anterior (front), +Z = superior (head)
+            // Camera at -Y (back/spine side) looking towards +Y (chest/front)
+            viewport.setCamera({
+              focalPoint: focalPoint, // Keep center
+              position: [focalPoint[0], focalPoint[1] - distance, focalPoint[2]], // Move camera to back (posterior)
+              viewUp: [0, 0, 1], // Z-axis up (head up)
+            });
+
+            viewport.render();
+
+            // Initialize orientation display
+            setTimeout(updateCameraOrientation, 100);
+
+            // Initialize human orientation marker widget
+            setTimeout(initializeOrientationWidget, 200);
+
+            console.log('🎨 Applied CT-Cardiac preset with front view to 3D viewport');
+          });
+        } else {
+          // For MPR viewports, use regular setVolumes
+          viewport.setVolumes([{ volumeId }]);
+          viewport.render();
+        }
       });
 
       // Setup tools first WITHOUT any state updates
@@ -2287,7 +2390,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       // Apply initial window/level AFTER everything else to avoid interfering with CrosshairsTool
       // Small delay to let CrosshairsTool fully stabilize
       setTimeout(() => {
-        const viewportIds = ["axial", "sagittal", "coronal"];
+        let viewportIds = ["axial", "sagittal", "coronal"];
+        if (currentStage === WorkflowStage.ROOT_DEFINITION) {
+          viewportIds.push("volume3D");
+        } else if (currentStage === WorkflowStage.MEASUREMENTS) {
+          viewportIds.push("measurement1", "measurement2");
+        }
         viewportIds.forEach((id) => {
           const viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
           if (viewport) {
@@ -3777,6 +3885,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       cornerstoneTools.addTool(SphereMarkerTool);
       cornerstoneTools.addTool(CuspNadirTool);
       cornerstoneTools.addTool(FixedCrosshairTool);
+      cornerstoneTools.addTool(TrackballRotateTool); // For 3D viewport rotation
 
       // Add measurement tools
       cornerstoneTools.addTool(SplineROITool);
@@ -3876,6 +3985,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       // Add FixedCrosshairTool for annulus definition (fixed, non-draggable crosshairs)
       toolGroup.addTool(FixedCrosshairTool.toolName);
 
+      // Add TrackballRotateTool for 3D viewport manipulation
+      toolGroup.addTool(TrackballRotateTool.toolName);
+
       // Set up callback for sphere position updates
       if (onSpherePositionsUpdate) {
         const sphereTool = toolGroup.getToolInstance(SphereMarkerTool.toolName) as SphereMarkerTool;
@@ -3951,6 +4063,52 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         toolGroup.addViewport(id, renderingEngineId);
         console.log(`    - Added ${id} to tool group`);
       });
+
+      // Add volume3D viewport to tool group for ROOT_DEFINITION stage
+      // Configure it with TrackballRotateTool for 3D manipulation
+      if (currentStage === WorkflowStage.ROOT_DEFINITION) {
+        console.log('  🎯 Setting up volume3D viewport with TrackballRotateTool');
+
+        // Create a separate tool group for 3D viewport to isolate TrackballRotateTool
+        const toolGroup3DId = `${toolGroupId}_3D`;
+        let toolGroup3D;
+
+        try {
+          const existingToolGroup3D = ToolGroupManager.getToolGroup(toolGroup3DId);
+          if (existingToolGroup3D) {
+            ToolGroupManager.destroyToolGroup(toolGroup3DId);
+          }
+        } catch (error) {
+          // Tool group doesn't exist
+        }
+
+        toolGroup3D = ToolGroupManager.createToolGroup(toolGroup3DId);
+
+        // Add only TrackballRotateTool, Zoom, and Pan to 3D tool group
+        toolGroup3D.addTool(TrackballRotateTool.toolName);
+        toolGroup3D.addTool(ZoomTool.toolName);
+        toolGroup3D.addTool(PanTool.toolName);
+
+        // Activate TrackballRotateTool with left mouse button
+        toolGroup3D.setToolActive(TrackballRotateTool.toolName, {
+          bindings: [{ mouseButton: MouseBindings.Primary }],
+        });
+
+        // Activate Zoom with right mouse button
+        toolGroup3D.setToolActive(ZoomTool.toolName, {
+          bindings: [{ mouseButton: MouseBindings.Secondary }],
+        });
+
+        // Activate Pan with middle mouse button
+        toolGroup3D.setToolActive(PanTool.toolName, {
+          bindings: [{ mouseButton: MouseBindings.Auxiliary }],
+        });
+
+        // Add volume3D viewport to this separate tool group
+        toolGroup3D.addViewport('volume3D', renderingEngineId);
+
+        console.log('  ✅ TrackballRotateTool activated for 3D viewport only (separate tool group)');
+      }
 
       // CRITICAL: Force render ALL viewports AFTER CrosshairsTool activation
       // This ensures CrosshairsTool's initial state is rendered correctly
@@ -6755,6 +6913,207 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     }
   }, [selectedPhase, phaseInfo, isPreloading]);
 
+  // Listen for camera modifications on 3D viewport to update orientation marker
+  useEffect(() => {
+    if (currentStage !== WorkflowStage.ROOT_DEFINITION) return;
+    if (!elementRefs.volume3D?.current) return;
+
+    const element = elementRefs.volume3D.current;
+
+    const handleCameraModified = () => {
+      updateCameraOrientation();
+    };
+
+    // Add event listener for camera modifications
+    element.addEventListener(Enums.Events.CAMERA_MODIFIED, handleCameraModified);
+
+    console.log('📹 Camera orientation tracking enabled for 3D viewport');
+
+    return () => {
+      element.removeEventListener(Enums.Events.CAMERA_MODIFIED, handleCameraModified);
+    };
+  }, [currentStage, elementRefs.volume3D]);
+
+  // Double-click handler for viewport maximize/restore
+  const handleViewportDoubleClick = (viewportId: string) => {
+    if (maximizedViewport === viewportId) {
+      // Already maximized, restore to grid layout
+      setMaximizedViewport(null);
+      console.log(`↩️ Restoring viewport "${viewportId}" to grid layout`);
+    } else {
+      // Maximize this viewport
+      setMaximizedViewport(viewportId);
+      console.log(`🔍 Maximizing viewport "${viewportId}"`);
+    }
+  };
+
+  // Calculate current camera orientation angles
+  const calculateCameraOrientation = (camera: Types.ICamera) => {
+    const { position, focalPoint, viewUp } = camera;
+
+    // Calculate view direction vector
+    const viewDir = [
+      position[0] - focalPoint[0],
+      position[1] - focalPoint[1],
+      position[2] - focalPoint[2],
+    ];
+
+    // Normalize
+    const length = Math.sqrt(viewDir[0] ** 2 + viewDir[1] ** 2 + viewDir[2] ** 2);
+    viewDir[0] /= length;
+    viewDir[1] /= length;
+    viewDir[2] /= length;
+
+    // Calculate angle around Z-axis (LAO/RAO angle)
+    // atan2(x, -y) gives angle from posterior (-Y) axis
+    // Since camera is at back looking forward, we need to negate Y
+    const viewAngle = Math.atan2(viewDir[0], -viewDir[1]) * (180 / Math.PI);
+
+    // Calculate tilt angle (cranial/caudal)
+    const tiltAngle = Math.asin(viewDir[2]) * (180 / Math.PI);
+
+    return { viewAngle, tiltAngle };
+  };
+
+  // Update camera orientation when camera changes
+  const updateCameraOrientation = () => {
+    if (!renderingEngineRef.current) return;
+
+    const viewport = renderingEngineRef.current.getViewport('volume3D') as Types.IVolumeViewport;
+    if (!viewport) return;
+
+    const camera = viewport.getCamera();
+    const orientation = calculateCameraOrientation(camera);
+    setCameraOrientation(orientation);
+  };
+
+  // Initialize VTK Orientation Marker Widget with Human model
+  const initializeOrientationWidget = async () => {
+    if (!renderingEngineRef.current) return;
+    if (orientationWidgetRef.current) return; // Already initialized
+
+    const viewport = renderingEngineRef.current.getViewport('volume3D') as Types.IVolumeViewport;
+    if (!viewport) return;
+
+    try {
+      console.log('🧑 Initializing human orientation marker from VTP file...');
+
+      // Fetch and parse the Human.vtp file
+      const response = await fetch(HumanVTP);
+      const arrayBuffer = await response.arrayBuffer();
+
+      const reader = vtkXMLPolyDataReader.newInstance();
+      reader.parseAsArrayBuffer(arrayBuffer);
+
+      // Create actor for the human model
+      const mapper = vtkMapper.newInstance();
+      mapper.setInputConnection(reader.getOutputPort());
+
+      const actor = vtkActor.newInstance();
+      actor.setMapper(mapper);
+
+      // Rotate the human model 180° around Z-axis to face forward
+      actor.rotateZ(180);
+
+      // Get the render window using Cornerstone3D's internal structure
+      const renderingEngine = viewport.getRenderingEngine() as any;
+
+      // Debug: log available properties
+      console.log('🔍 Rendering engine properties:', Object.keys(renderingEngine));
+
+      // Try different methods to access the render window
+      let renderWindow;
+      if (renderingEngine.getOffscreenMultiRenderWindow) {
+        console.log('✅ Using getOffscreenMultiRenderWindow method');
+        renderWindow = renderingEngine.getOffscreenMultiRenderWindow('volume3D').getRenderWindow();
+      } else if (renderingEngine.offscreenMultiRenderWindow) {
+        console.log('✅ Using offscreenMultiRenderWindow property');
+        renderWindow = renderingEngine.offscreenMultiRenderWindow.getRenderWindow();
+      } else {
+        console.error('❌ Cannot find render window accessor method');
+        console.log('Available methods:', Object.keys(renderingEngine).filter(k => k.includes('render') || k.includes('window') || k.includes('vtk')));
+        return;
+      }
+
+      if (!renderWindow) {
+        console.error('❌ Failed to get render window');
+        return;
+      }
+
+      // Get the renderer for the volume3D viewport specifically
+      const renderer = (viewport as any).getRenderer();
+      console.log('🎨 Got renderer for volume3D viewport');
+
+      // Create orientation marker widget with parentRenderer to bind to specific viewport
+      const orientationWidget = vtkOrientationMarkerWidget.newInstance({
+        actor: actor,
+        interactor: renderWindow.getInteractor(),
+        parentRenderer: renderer, // This ensures it only appears in volume3D viewport
+      });
+
+      orientationWidget.setEnabled(true);
+      orientationWidget.setViewportCorner(
+        vtkOrientationMarkerWidget.Corners.BOTTOM_LEFT
+      );
+      orientationWidget.setViewportSize(0.15); // 15% of viewport
+      orientationWidget.setMinPixelSize(100);
+      orientationWidget.setMaxPixelSize(300);
+
+      orientationWidgetRef.current = orientationWidget;
+
+      console.log('✅ Human orientation marker initialized successfully');
+    } catch (error) {
+      console.error('❌ Failed to initialize orientation marker:', error);
+    }
+  };
+
+  // Apply LAO/RAO projection angle to 3D viewport
+  const applyProjectionAngle = (angle: number) => {
+    setProjectionAngle(angle);
+
+    if (!renderingEngineRef.current) return;
+
+    const viewport = renderingEngineRef.current.getViewport('volume3D') as Types.IVolumeViewport;
+    if (!viewport) return;
+
+    const camera = viewport.getCamera();
+    const { focalPoint } = camera;
+
+    // Calculate distance from focal point
+    const distance = Math.sqrt(
+      Math.pow(camera.position[0] - focalPoint[0], 2) +
+      Math.pow(camera.position[1] - focalPoint[1], 2) +
+      Math.pow(camera.position[2] - focalPoint[2], 2)
+    );
+
+    // Convert angle to radians
+    const angleRad = (angle * Math.PI) / 180;
+
+    // LAO/RAO rotation around Z-axis (superior-inferior axis)
+    // Positive angle = LAO (Left Anterior Oblique) - rotate counterclockwise
+    // Negative angle = RAO (Right Anterior Oblique) - rotate clockwise
+    // Start from posterior position (-Y, back view) and rotate
+
+    const newPosition: Types.Point3 = [
+      focalPoint[0] + distance * Math.sin(angleRad), // X component
+      focalPoint[1] - distance * Math.cos(angleRad), // Y component (negative because starting from back)
+      focalPoint[2], // Z stays same (no cranial/caudal tilt)
+    ];
+
+    viewport.setCamera({
+      focalPoint: focalPoint,
+      position: newPosition,
+      viewUp: [0, 0, 1], // Head up
+    });
+
+    viewport.render();
+
+    // Update orientation display
+    setTimeout(updateCameraOrientation, 50);
+
+    console.log(`📐 Applied ${angle > 0 ? 'LAO' : angle < 0 ? 'RAO' : 'AP'} ${Math.abs(angle)}° projection`);
+  };
+
   return (
     <div className="w-full h-full relative">
       {isLoading && (
@@ -6802,18 +7161,102 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           </div>
         )}
         
-        {/* Three MPR views in a grid */}
-        <div className="grid grid-cols-3 h-full gap-1 bg-slate-900">
-          {/* Axial View */}
-          <div className="relative bg-black border border-slate-700" style={{ order: 1 }}>
-            <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
-              Axial
-            </div>
-            <div
-              ref={elementRefs.axial}
-              className="w-full h-full"
-              style={{ minHeight: '300px' }}
-            />
+        {/* MPR views in a dynamic grid based on stage */}
+        <div className={`${maximizedViewport ? 'w-full h-full' :
+          currentStage === WorkflowStage.MEASUREMENTS ? 'flex flex-col h-full gap-1 bg-slate-900' : // 5-viewport: custom layout
+          `grid h-full gap-1 bg-slate-900 ${
+            currentStage === WorkflowStage.ROOT_DEFINITION ? 'grid-cols-2 grid-rows-2' : // 4-viewport: 2x2 grid
+            currentStage === WorkflowStage.ANNULUS_DEFINITION ? 'grid-cols-2 grid-rows-2' : // 2x2 grid
+            'grid-cols-3' // Default: 3 columns
+          }`
+        }`}>
+          {/* MEASUREMENTS Stage: Special 5-viewport layout (3 top, 2 bottom) */}
+          {currentStage === WorkflowStage.MEASUREMENTS && !maximizedViewport ? (
+            <>
+              {/* Top row: 3 small viewports (1/3 height each) */}
+              <div className="flex gap-1 h-1/3">
+                {/* Axial */}
+                <div className="relative bg-black border border-slate-700 w-1/3">
+                  <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                    Axial
+                  </div>
+                  <div
+                    ref={elementRefs.axial}
+                    className="w-full h-full"
+                    style={{ minHeight: '200px' }}
+                    onDoubleClick={() => handleViewportDoubleClick('axial')}
+                  />
+                </div>
+                {/* Sagittal */}
+                <div className="relative bg-black border border-slate-700 w-1/3">
+                  <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                    Sagittal
+                  </div>
+                  <div
+                    ref={elementRefs.sagittal}
+                    className="w-full h-full"
+                    style={{ minHeight: '200px' }}
+                    onDoubleClick={() => handleViewportDoubleClick('sagittal')}
+                  />
+                </div>
+                {/* Coronal */}
+                <div className="relative bg-black border border-slate-700 w-1/3">
+                  <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                    Coronal
+                  </div>
+                  <div
+                    ref={elementRefs.coronal}
+                    className="w-full h-full"
+                    style={{ minHeight: '200px' }}
+                    onDoubleClick={() => handleViewportDoubleClick('coronal')}
+                  />
+                </div>
+              </div>
+
+              {/* Bottom row: 2 large viewports (2/3 height) */}
+              <div className="flex gap-1 h-2/3">
+                {/* Measurement View 1 */}
+                <div className="relative bg-black border border-slate-700 w-1/2">
+                  <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                    Measurement View 1
+                  </div>
+                  <div
+                    ref={elementRefs.measurement1}
+                    className="w-full h-full"
+                    style={{ minHeight: '400px' }}
+                    onDoubleClick={() => handleViewportDoubleClick('measurement1')}
+                  />
+                </div>
+                {/* Measurement View 2 */}
+                <div className="relative bg-black border border-slate-700 w-1/2">
+                  <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                    Measurement View 2
+                  </div>
+                  <div
+                    ref={elementRefs.measurement2}
+                    className="w-full h-full"
+                    style={{ minHeight: '400px' }}
+                    onDoubleClick={() => handleViewportDoubleClick('measurement2')}
+                  />
+                </div>
+              </div>
+            </>
+          ) : currentStage !== WorkflowStage.MEASUREMENTS && (
+            <>
+          {/* Axial View (for non-MEASUREMENTS stages or when maximized) */}
+          {(!maximizedViewport || maximizedViewport === 'axial') && (
+            <div className={`relative bg-black border border-slate-700 ${
+              maximizedViewport === 'axial' ? 'w-full h-full' : ''
+            }`} style={{ order: 1 }}>
+              <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                Axial {maximizedViewport === 'axial' && '(Maximized - Double-click to restore)'}
+              </div>
+              <div
+                ref={elementRefs.axial}
+                className="w-full h-full"
+                style={{ minHeight: '300px' }}
+                onDoubleClick={() => handleViewportDoubleClick('axial')}
+              />
             {/* Custom annotation text overlays */}
             {annotationOverlays
               .filter(overlay => overlay.viewportId === 'axial')
@@ -7222,17 +7665,20 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               />
             )}
           </div>
+          )}
 
           {/* Sagittal View */}
-          <div className="relative bg-black border border-slate-700" style={{ order: 3 }}>
-            <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
-              Sagittal
-            </div>
-            <div
-              ref={elementRefs.sagittal}
-              className="w-full h-full"
-              style={{ minHeight: '300px' }}
-            />
+          {(!maximizedViewport || maximizedViewport === 'sagittal') && (
+            <div className={`relative bg-black border border-slate-700 ${maximizedViewport === 'sagittal' ? 'w-full h-full' : ''}`} style={{ order: 3 }}>
+              <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                Sagittal {maximizedViewport === 'sagittal' && '(Maximized - Double-click to restore)'}
+              </div>
+              <div
+                ref={elementRefs.sagittal}
+                className="w-full h-full"
+                style={{ minHeight: '300px' }}
+                onDoubleClick={() => handleViewportDoubleClick('sagittal')}
+              />
 
             {/* Custom labels for line annotations (Sagittal) */}
             {(() => {
@@ -7381,17 +7827,20 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               );
             })()}
           </div>
-          
+          )}
+
           {/* Coronal View */}
-          <div className="relative bg-black border border-slate-700" style={{ order: 2 }}>
-            <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
-              Coronal
-            </div>
-            <div
-              ref={elementRefs.coronal}
-              className="w-full h-full"
-              style={{ minHeight: '300px' }}
-            />
+          {(!maximizedViewport || maximizedViewport === 'coronal') && (
+            <div className={`relative bg-black border border-slate-700 ${maximizedViewport === 'coronal' ? 'w-full h-full' : ''}`} style={{ order: 2 }}>
+              <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                Coronal {maximizedViewport === 'coronal' && '(Maximized - Double-click to restore)'}
+              </div>
+              <div
+                ref={elementRefs.coronal}
+                className="w-full h-full"
+                style={{ minHeight: '300px' }}
+                onDoubleClick={() => handleViewportDoubleClick('coronal')}
+              />
 
             {/* Custom labels for line annotations (Coronal) */}
             {(() => {
@@ -7540,6 +7989,123 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               );
             })()}
           </div>
+          )}
+
+          {/* 4th Viewport - 3D Volume Rendering (only for ROOT_DEFINITION stage) */}
+          {currentStage === WorkflowStage.ROOT_DEFINITION && (!maximizedViewport || maximizedViewport === 'volume3D') && (
+            <div className={`relative bg-black border border-slate-700 ${maximizedViewport === 'volume3D' ? 'w-full h-full' : ''}`} style={{ order: 4 }}>
+              {/* Camera Angle Display - Top Left */}
+              <div className="absolute top-2 left-2 z-20 bg-black bg-opacity-70 text-white px-3 py-1.5 rounded">
+                <div className="space-y-0.5">
+                  <div className="text-xs text-gray-400">
+                    3D View {maximizedViewport === 'volume3D' && '(Maximized)'}
+                  </div>
+                  <div className="text-sm font-semibold text-gray-300">
+                    {Math.abs(cameraOrientation.viewAngle) < 15 ? 'AP' :
+                     Math.abs(cameraOrientation.viewAngle - 90) < 15 ? 'LAT' :
+                     Math.abs(cameraOrientation.viewAngle + 90) < 15 ? 'LAT' :
+                     cameraOrientation.viewAngle > 0 ? `LAO ${Math.round(cameraOrientation.viewAngle)}°` :
+                     `RAO ${Math.round(Math.abs(cameraOrientation.viewAngle))}°`}
+                  </div>
+                  {Math.abs(cameraOrientation.tiltAngle) > 5 && (
+                    <div className="text-gray-400 text-xs">
+                      {cameraOrientation.tiltAngle > 0 ? `Cranial ${Math.round(cameraOrientation.tiltAngle)}°` :
+                       `Caudal ${Math.round(Math.abs(cameraOrientation.tiltAngle))}°`}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+
+              {/* Reset to AP View - Top Right */}
+              <div className="absolute top-2 right-2 z-20">
+                <button
+                  onClick={() => applyProjectionAngle(0)}
+                  className="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 text-xs rounded shadow-lg font-semibold"
+                  title="Reset to Anterior-Posterior (Front View)"
+                >
+                  Reset to AP
+                </button>
+              </div>
+
+              <div
+                ref={elementRefs.volume3D}
+                className="w-full h-full"
+                style={{ minHeight: '300px' }}
+                onDoubleClick={() => handleViewportDoubleClick('volume3D')}
+              />
+            </div>
+          )}
+
+          {/* Closing tag for non-MEASUREMENTS stages */}
+          </>
+          )}
+
+          {/* Maximized viewport for MEASUREMENTS stage */}
+          {currentStage === WorkflowStage.MEASUREMENTS && maximizedViewport && (
+            <>
+              {maximizedViewport === 'axial' && (
+                <div className="relative bg-black border border-slate-700 w-full h-full">
+                  <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                    Axial (Maximized - Double-click to restore)
+                  </div>
+                  <div
+                    ref={elementRefs.axial}
+                    className="w-full h-full"
+                    onDoubleClick={() => handleViewportDoubleClick('axial')}
+                  />
+                </div>
+              )}
+              {maximizedViewport === 'sagittal' && (
+                <div className="relative bg-black border border-slate-700 w-full h-full">
+                  <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                    Sagittal (Maximized - Double-click to restore)
+                  </div>
+                  <div
+                    ref={elementRefs.sagittal}
+                    className="w-full h-full"
+                    onDoubleClick={() => handleViewportDoubleClick('sagittal')}
+                  />
+                </div>
+              )}
+              {maximizedViewport === 'coronal' && (
+                <div className="relative bg-black border border-slate-700 w-full h-full">
+                  <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                    Coronal (Maximized - Double-click to restore)
+                  </div>
+                  <div
+                    ref={elementRefs.coronal}
+                    className="w-full h-full"
+                    onDoubleClick={() => handleViewportDoubleClick('coronal')}
+                  />
+                </div>
+              )}
+              {maximizedViewport === 'measurement1' && (
+                <div className="relative bg-black border border-slate-700 w-full h-full">
+                  <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                    Measurement View 1 (Maximized - Double-click to restore)
+                  </div>
+                  <div
+                    ref={elementRefs.measurement1}
+                    className="w-full h-full"
+                    onDoubleClick={() => handleViewportDoubleClick('measurement1')}
+                  />
+                </div>
+              )}
+              {maximizedViewport === 'measurement2' && (
+                <div className="relative bg-black border border-slate-700 w-full h-full">
+                  <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                    Measurement View 2 (Maximized - Double-click to restore)
+                  </div>
+                  <div
+                    ref={elementRefs.measurement2}
+                    className="w-full h-full"
+                    onDoubleClick={() => handleViewportDoubleClick('measurement2')}
+                  />
+                </div>
+              )}
+            </>
+          )}
         </div>
 
         {/* Label Modal */}

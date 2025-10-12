@@ -34,7 +34,8 @@
       "Bash(done)",
       "mcp__context7__resolve-library-id",
       "mcp__context7__get-library-docs",
-      "Bash(xargs -r kill -9)"
+      "Bash(xargs -r kill -9)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ],
     "deny": []
   }
