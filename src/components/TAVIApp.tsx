@@ -457,10 +457,11 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             renderMode={viewType}
             patientInfo={state.patientInfo}
             currentStage={state.currentStage}
-            existingSpheres={state.rootPoints.map((point, index) => ({
+            existingSpheres={state.rootPoints.map((point) => ({
               id: point.id,
               pos: point.position as [number, number, number],
-              color: index === 0 ? 'yellow' : index === 1 ? 'red' : 'green'
+              // Color based on anatomical type, not index (important for refinement points)
+              color: point.type === RootPointType.AORTIC_VALVE ? 'red' : 'yellow'
             }))}
             currentWorkflowStep={currentWorkflowStep}
             workflowControlled={state.currentStage === WorkflowStage.MEASUREMENTS && state.measurementWorkflowActive}
@@ -492,25 +493,49 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             }}
             onSpherePositionsUpdate={(spheres) => {
               if (spheres.length >= 3) {
-                console.log(`${spheres.length} spheres placed, updating root points`);
-
                 // Clear existing root points first
                 actions.clearRootPoints();
 
-                // Map spheres to root points with anatomical types for first 3, extended for rest
-                const rootPointTypes = [RootPointType.LV_OUTFLOW, RootPointType.AORTIC_VALVE, RootPointType.ASCENDING_AORTA];
-
+                // CRITICAL: Assign proper anatomical types
+                // When exactly 3 spheres: LV_OUTFLOW, AORTIC_VALVE, ASCENDING_AORTA
+                // When more than 3: First and last keep their types, middle is valve, rest are EXTENDED
                 spheres.forEach((sphere, index) => {
+                  let type: string;
+
+                  if (spheres.length === 3) {
+                    // First 3 spheres: assign specific anatomical types
+                    if (index === 0) {
+                      type = RootPointType.LV_OUTFLOW;
+                    } else if (index === 1) {
+                      type = RootPointType.AORTIC_VALVE;
+                    } else {
+                      type = RootPointType.ASCENDING_AORTA;
+                    }
+                  } else {
+                    // More than 3 spheres: first, middle, last are anatomical, rest are extended
+                    const middleIndex = Math.floor(spheres.length / 2);
+                    if (index === 0) {
+                      type = RootPointType.LV_OUTFLOW;
+                    } else if (index === middleIndex) {
+                      type = RootPointType.AORTIC_VALVE;
+                    } else if (index === spheres.length - 1) {
+                      type = RootPointType.ASCENDING_AORTA;
+                    } else {
+                      type = RootPointType.EXTENDED;
+                    }
+                  }
+
                   const rootPoint = {
                     id: sphere.id,
                     position: sphere.pos,
-                    type: index < 3 ? rootPointTypes[index] : RootPointType.EXTENDED,
+                    type: type,
                     timestamp: Date.now()
                   };
                   actions.addRootPoint(rootPoint);
                 });
 
-                console.log(`Root definition updated with ${spheres.length} points`);
+                // Mark ROOT_DEFINITION stage as complete when we have 3+ points
+                actions.markStageComplete(WorkflowStage.ROOT_DEFINITION);
               }
             }}
             onCuspDotsUpdate={async (dots) => {

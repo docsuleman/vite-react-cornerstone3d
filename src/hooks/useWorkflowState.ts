@@ -52,13 +52,15 @@ function workflowReducer(state: WorkflowState, action: WorkflowAction): Workflow
 
     case WORKFLOW_ACTIONS.ADD_ROOT_POINT:
       const newRootPoint: RootPoint = action.payload;
+      // FIXED: Look for existing point by ID, not by type
+      // This allows multiple refinement points with the same type (EXTENDED)
       const existingRootPointIndex = state.rootPoints.findIndex(
-        p => p.type === newRootPoint.type
+        p => p.id === newRootPoint.id
       );
-      
+
       let updatedRootPoints: RootPoint[];
       if (existingRootPointIndex >= 0) {
-        // Replace existing point of same type
+        // Replace existing point with same ID (updating position)
         updatedRootPoints = [...state.rootPoints];
         updatedRootPoints[existingRootPointIndex] = newRootPoint;
       } else {

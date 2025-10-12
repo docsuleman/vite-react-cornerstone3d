@@ -26,7 +26,8 @@ class SphereMarkerTool extends BaseTool {
     source: any;
     tubeFilter?: any;
   }[] = [];
-  activeSphereDrag: { id: string; distanceFromCamera: number } | null = null;
+  activeSphereDrag: { id: string; distanceFromCamera: number; startPos: Vector3 } | null = null;
+  dragSensitivity: number = 0.3; // Dampening factor: 0.3 = less sensitive, 1.0 = full sensitivity
   positionUpdateCallback: ((spheres: { id: string; pos: Vector3; color: string }[]) => void) | null = null;
   lastLineUpdate: number = 0;
   isDraggable: boolean = true; // Can be disabled during certain workflow stages
@@ -35,6 +36,10 @@ class SphereMarkerTool extends BaseTool {
   globalCameraListener: ((evt: any) => void) | null = null; // Global camera listener
   visibilityUpdatesDisabled: boolean = false; // Flag to temporarily disable visibility updates
   sphereKeeperInterval: number | null = null; // Interval to keep spheres visible
+  baseScreenRadius: number = 5; // Base radius in screen pixels for zoom scaling (reduced for smaller spheres)
+  zoomScaleEnabled: boolean = false; // Enable/disable zoom-based scaling (DISABLED)
+  isSyncingZoom: boolean = false; // Flag to prevent zoom sync feedback loops
+  lastZoomValues: Map<string, number> = new Map(); // Track last zoom value per viewport
 
   // Set draggable state (disable during certain workflow stages)
   setDraggable(draggable: boolean) {
@@ -68,8 +73,71 @@ class SphereMarkerTool extends BaseTool {
 
   // Explicitly clear drag state (useful for debugging or reset)
   clearDragState() {
-
     this.activeSphereDrag = null;
+  }
+
+  // Calculate world-space radius with zoom-responsive scaling
+  // Bigger when zoomed OUT (far), smaller when zoomed IN (close)
+  _calculateWorldRadius(viewport: any, isValveSphere: boolean = false): number {
+    if (!this.zoomScaleEnabled) {
+      return isValveSphere ? 3.0 : this.configuration.sphereRadius;
+    }
+
+    const camera = viewport.getCamera();
+    const parallelScale = camera.parallelScale;
+
+    // Get canvas dimensions
+    const canvas = viewport.getCanvas();
+    const canvasHeight = canvas.height;
+
+    // Calculate world-space size per pixel
+    const worldPerPixel = (parallelScale * 2) / canvasHeight;
+
+    // Base screen radius (larger for valve sphere)
+    const screenRadius = isValveSphere ? this.baseScreenRadius * 1.5 : this.baseScreenRadius;
+
+    // Simple formula: spheres naturally scale with zoom
+    // When zoomed out: parallelScale increases → worldPerPixel increases → radius INCREASES
+    // When zoomed in: parallelScale decreases → worldPerPixel decreases → radius DECREASES
+    return screenRadius * worldPerPixel;
+  }
+
+  // Update all sphere sizes based on current zoom level
+  // If sourceViewport is provided, use that viewport's zoom as reference (for responsive zoom in all views)
+  updateSphereRadii(sourceViewport?: any) {
+    const enabledElements = getEnabledElements();
+    if (enabledElements.length === 0) return;
+
+    // Use the provided source viewport (the one being zoomed), or fallback to axial viewport
+    let referenceViewport = sourceViewport;
+
+    if (!referenceViewport) {
+      // Fallback: use AXIAL viewport if no source viewport provided
+      const axialViewport = enabledElements.find(({ viewport }) =>
+        viewport.id && (viewport.id.includes('axial') || viewport.id.includes('Axial'))
+      )?.viewport;
+      referenceViewport = axialViewport || enabledElements[0].viewport;
+    }
+
+    if (!referenceViewport) {
+      console.warn('No reference viewport found for sphere radius calculation');
+      return;
+    }
+
+    this.spheres.forEach((sphere, index) => {
+      const middleIndex = Math.floor(this.spheres.length / 2);
+      const isValveSphere = (index === middleIndex) && this.spheres.length >= 3;
+
+      const newRadius = this._calculateWorldRadius(referenceViewport, isValveSphere);
+
+      if (sphere.source) {
+        sphere.source.setRadius(newRadius);
+        sphere.source.modified();
+      }
+    });
+
+    // Render all viewports
+    enabledElements.forEach(({ viewport }) => viewport.render());
   }
 
   // Find sphere at a given world position (for click detection)
@@ -77,7 +145,7 @@ class SphereMarkerTool extends BaseTool {
     const clickThreshold = this.configuration.sphereRadius * 5; // Large threshold for easier clicking on small spheres
     let closestSphere = null;
     let closestDistance = Infinity;
-    
+
     // Find the closest sphere within threshold
     for (const sphere of this.spheres) {
       const distance = Math.sqrt(
@@ -85,19 +153,86 @@ class SphereMarkerTool extends BaseTool {
         Math.pow(sphere.pos[1] - worldPos[1], 2) +
         Math.pow(sphere.pos[2] - worldPos[2], 2)
       );
-      
+
       if (distance <= clickThreshold && distance < closestDistance) {
         closestDistance = distance;
         closestSphere = sphere;
       }
     }
-    
+
     if (closestSphere) {
-      
+
       return closestSphere;
     }
-    
+
     return null;
+  }
+
+  // Find the closest line segment to insert a new sphere for centerline refinement
+  _findClosestSegmentForInsertion(newPos: Vector3): number {
+    let minDistance = Infinity;
+    let insertIndex = this.spheres.length; // Default: append to end
+
+    console.log(`🔍 Finding closest segment for insertion at position [${newPos[0].toFixed(2)}, ${newPos[1].toFixed(2)}, ${newPos[2].toFixed(2)}]`);
+
+    // Check distance to each segment between consecutive spheres
+    for (let i = 0; i < this.spheres.length - 1; i++) {
+      const p1 = this.spheres[i].pos;
+      const p2 = this.spheres[i + 1].pos;
+
+      // Calculate segment vector
+      const segmentVec = [
+        p2[0] - p1[0],
+        p2[1] - p1[1],
+        p2[2] - p1[2]
+      ];
+
+      // Calculate segment length squared
+      const segmentLengthSq =
+        segmentVec[0] * segmentVec[0] +
+        segmentVec[1] * segmentVec[1] +
+        segmentVec[2] * segmentVec[2];
+
+      // Vector from p1 to newPos
+      const toNewPos = [
+        newPos[0] - p1[0],
+        newPos[1] - p1[1],
+        newPos[2] - p1[2]
+      ];
+
+      // Project newPos onto line segment (clamp t to [0, 1] to stay on segment)
+      const t = Math.max(0, Math.min(1, (
+        toNewPos[0] * segmentVec[0] +
+        toNewPos[1] * segmentVec[1] +
+        toNewPos[2] * segmentVec[2]
+      ) / segmentLengthSq));
+
+      // Calculate closest point on segment
+      const closestPoint: Vector3 = [
+        p1[0] + t * segmentVec[0],
+        p1[1] + t * segmentVec[1],
+        p1[2] + t * segmentVec[2]
+      ];
+
+      // Calculate distance from newPos to closest point on segment
+      const distance = Math.sqrt(
+        Math.pow(newPos[0] - closestPoint[0], 2) +
+        Math.pow(newPos[1] - closestPoint[1], 2) +
+        Math.pow(newPos[2] - closestPoint[2], 2)
+      );
+
+      console.log(`  Segment ${i}→${i+1}: t=${t.toFixed(3)}, distance=${distance.toFixed(2)}mm`);
+
+      // Track segment with minimum distance
+      if (distance < minDistance) {
+        minDistance = distance;
+        insertIndex = i + 1; // Insert after segment start (between i and i+1)
+      }
+    }
+
+    console.log(`✅ Closest segment found: inserting at index ${insertIndex} (distance: ${minDistance.toFixed(2)}mm)`);
+
+    return insertIndex;
   }
 
   // Center all viewports on a specific 3D point
@@ -377,6 +512,7 @@ class SphereMarkerTool extends BaseTool {
         if (!this.visibilityUpdatesDisabled) {
           this.updateVisibilityForSingleViewport(viewport, index);
         }
+        // Zoom-responsive sizing removed - spheres now use fixed size
       }, 10);
     };
     viewport.element.addEventListener(CornerstoneEnums.Events.CAMERA_MODIFIED, cameraChangeHandler);
@@ -510,10 +646,11 @@ class SphereMarkerTool extends BaseTool {
           Math.pow(closestSphere.pos[2] - cameraPos[2], 2)
         );
 
-        // Set active drag sphere
+        // Set active drag sphere with starting position
         this.activeSphereDrag = {
           id: closestSphere.id,
-          distanceFromCamera
+          distanceFromCamera,
+          startPos: [...closestSphere.pos] as Vector3
         };
 
 
@@ -653,15 +790,15 @@ class SphereMarkerTool extends BaseTool {
 
 
 
-    // Allow more than 3 spheres for extended centerline definition
+    // First 3 spheres: key anatomical points (LV outflow → valve → aorta)
+    // Additional spheres after 3: refinement points inserted on the centerline
     if (this.spheres.length >= 10) {
       console.warn('Maximum of 10 spheres allowed for centerline definition.');
       return;
     }
 
     const sphereId = `sphere-${Date.now()}`;
-    // Color sequence for extended centerline: cycle through colors
-    // All spheres are yellow (centerline points), except one will be the valve
+    // Color: yellow for all spheres initially (valve will be colored red after 3 spheres)
     const color = 'yellow';
 
     // Use worldPos directly - canvasToWorld already gives us the correct position
@@ -671,26 +808,43 @@ class SphereMarkerTool extends BaseTool {
 
     const sphereData = {
       id: sphereId,
-      pos: finalPos, 
-      actors: new Map(), 
+      pos: finalPos,
+      actors: new Map(),
       source: null,
-      color 
+      color
     };
-    
-    this.spheres.push(sphereData);
+
+    // If we have 3+ spheres, insert the new sphere at the closest position on the centerline
+    // Otherwise, just append to the end
+    if (this.spheres.length >= 3) {
+      // Find the closest segment and insert the sphere there
+      const insertIndex = this._findClosestSegmentForInsertion(finalPos);
+      console.log(`📍 Inserting sphere at index ${insertIndex} (between existing dots)`);
+      this.spheres.splice(insertIndex, 0, sphereData);
+    } else {
+      // First 3 spheres: append normally
+      this.spheres.push(sphereData);
+    }
+
     this._placeSphere(sphereData, canvasPos, viewport);
 
     // Always create lines if we have 2+ spheres
     if (this.spheres.length >= 2) {
       this._createConnectionLines();
     }
-    
+
+    // After 3 spheres, identify the middle one as the valve (annulus)
     if (this.spheres.length === 3) {
+      this._updateSphereColors();
+      console.log('✅ 3 key anatomical points placed. You can now add more dots on the centerline to refine it.');
+    } else if (this.spheres.length > 3) {
+      // Re-color spheres to ensure valve (middle) stays red
       this._updateSphereColors();
     }
 
-    // Don't auto-center camera - let user control the view
-    // Only center when explicitly clicking on existing sphere
+    // CRITICAL: Center all viewports on the newly placed dot
+    console.log('📍 Centering all viewports on newly placed dot...');
+    this._centerAllViewportsOnPoint(finalPos);
 
     this._notifyPositionUpdate();
   };
@@ -727,8 +881,30 @@ class SphereMarkerTool extends BaseTool {
       return;
     }
 
-    // Update sphere position
-    const newPos: Vector3 = [worldPos[0], worldPos[1], worldPos[2]];
+    // Calculate dampened movement from starting position
+    const startPos = this.activeSphereDrag.startPos;
+    const currentSpherePos = this.spheres[sphereIndex].pos;
+
+    // Calculate the raw movement delta from mouse
+    const rawDelta: Vector3 = [
+      worldPos[0] - startPos[0],
+      worldPos[1] - startPos[1],
+      worldPos[2] - startPos[2]
+    ];
+
+    // Apply dampening factor to reduce sensitivity
+    const dampenedDelta: Vector3 = [
+      rawDelta[0] * this.dragSensitivity,
+      rawDelta[1] * this.dragSensitivity,
+      rawDelta[2] * this.dragSensitivity
+    ];
+
+    // Calculate new position from start position + dampened delta
+    const newPos: Vector3 = [
+      startPos[0] + dampenedDelta[0],
+      startPos[1] + dampenedDelta[1],
+      startPos[2] + dampenedDelta[2]
+    ];
 
     // Update the sphere position in our array
     this.spheres[sphereIndex].pos = newPos;
@@ -738,37 +914,45 @@ class SphereMarkerTool extends BaseTool {
       this.spheres[sphereIndex].source.setCenter(newPos[0], newPos[1], newPos[2]);
       this.spheres[sphereIndex].source.modified();
     }
-    
+
     // Update colors if we have all 3 spheres
     if (this.spheres.length === 3) {
       this._updateSphereColors();
     }
-    
+
     // Rate limit line updates to prevent too many during drag
     const now = Date.now();
     if (now - this.lastLineUpdate > 100) { // Only update every 100ms
       this.lastLineUpdate = now;
       this._updateConnectionLines();
     }
-    
+
     // Render all viewports
     const enabledElements2 = getEnabledElements();
     enabledElements2.forEach(({ viewport }) => viewport.render());
-    
+
     // Notify position update
     this._notifyPositionUpdate();
   };
 
   mouseUpCallback = (evt: any) => {
-    
-    
-    
+
+
+
     if (this.activeSphereDrag) {
-      
+      // Get the final position of the dragged sphere
+      const sphereIndex = this.spheres.findIndex(s => s.id === this.activeSphereDrag.id);
+      if (sphereIndex >= 0) {
+        const finalPos = this.spheres[sphereIndex].pos;
+
+        // Center all viewports on the final sphere position now that drag is complete
+        this._centerAllViewportsOnPoint(finalPos);
+      }
+
       this.activeSphereDrag = null;
-      
+
     } else {
-      
+
     }
   };
 
@@ -791,8 +975,10 @@ class SphereMarkerTool extends BaseTool {
     const middleIndex = Math.floor(this.spheres.length / 2);
     const isValveSphere = (this.spheres.indexOf(sphereData) === middleIndex) && this.spheres.length >= 3;
 
-    // Valve sphere is larger for easy dragging, centerline points are smaller and precise
-    const radius = isValveSphere ? 3.0 : this.configuration.sphereRadius; // Valve: 3mm, Others: 1.5mm
+    // Calculate zoom-adaptive radius (or use fixed radius if zoom scaling disabled)
+    const radius = clickedViewport ?
+      this._calculateWorldRadius(clickedViewport, isValveSphere) :
+      (isValveSphere ? 3.0 : this.configuration.sphereRadius);
     sphereSource.setRadius(radius);
     // High resolution for smooth, professional look
     sphereSource.setPhiResolution(32);

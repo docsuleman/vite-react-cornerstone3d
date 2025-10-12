@@ -23,6 +23,8 @@ class FixedCrosshairTool extends BaseTool {
   // Rotation state
   private isDragging: boolean = false;
   private dragStartAngle: number = 0;
+  private minRotationThreshold: number = 0.01; // Minimum angle change (in radians) before applying rotation
+  private rotationSmoothingFactor: number = 0.3; // 0.3 = less sensitive, smoother; 1.0 = direct, more sensitive
 
   // Center dot dragging state
   private isCenterDragging: boolean = false;
@@ -316,9 +318,8 @@ class FixedCrosshairTool extends BaseTool {
           const rightLineStart = clientPoint[0] + gapSize;
           const rightLineEnd = width - this.lineMargin - this.endMarkerBuffer;
 
-          // CRITICAL: Only apply rotation in axial view
-          // Long axis views (sagittal/coronal) should NOT rotate - they stay aligned with image axes
-          const rotationToApply = viewportId === 'axial' ? FixedCrosshairTool.globalRotationAngle : 0;
+          // Apply rotation ONLY to axial view crosshairs, not long axis views
+          const rotationToApply = isLongAxisView ? 0 : FixedCrosshairTool.globalRotationAngle;
 
           // Apply rotation to horizontal line endpoints
           const hLineLeftStart = rotatePoint(leftLineStart, clientPoint[1], clientPoint[0], clientPoint[1], rotationToApply);
@@ -728,11 +729,16 @@ class FixedCrosshairTool extends BaseTool {
 
         // Calculate rotation delta
         const oldRotation = FixedCrosshairTool.globalRotationAngle;
-        FixedCrosshairTool.globalRotationAngle = currentAngle - this.dragStartAngle;
-        const deltaAngle = FixedCrosshairTool.globalRotationAngle - oldRotation;
+        const rawNewRotation = currentAngle - this.dragStartAngle;
+        const rawDeltaAngle = rawNewRotation - oldRotation;
 
-        // Only update if there's a meaningful change
-        if (Math.abs(deltaAngle) > 0.001) {
+        // Apply smoothing: blend between old and new rotation
+        const smoothedDeltaAngle = rawDeltaAngle * this.rotationSmoothingFactor;
+        FixedCrosshairTool.globalRotationAngle = oldRotation + smoothedDeltaAngle;
+        const deltaAngle = smoothedDeltaAngle;
+
+        // Only update if there's a meaningful change (increased threshold for less sensitivity)
+        if (Math.abs(deltaAngle) > this.minRotationThreshold) {
           // Rotate the MPR viewing planes (negate deltaAngle to fix direction)
           this.rotateMPRPlanes(renderingEngine, 'axial', -deltaAngle);
         }
@@ -825,7 +831,7 @@ class FixedCrosshairTool extends BaseTool {
       };
     };
 
-    const rotationToApply = viewportId === 'axial' ? FixedCrosshairTool.globalRotationAngle : 0;
+    const rotationToApply = FixedCrosshairTool.globalRotationAngle;
 
     // Calculate 4 marker positions (rotated if in axial view)
     const hLineLeftStart = rotatePoint(leftLineStart, centerCanvas[1], centerCanvas[0], centerCanvas[1], rotationToApply);
@@ -972,11 +978,16 @@ class FixedCrosshairTool extends BaseTool {
 
     // Calculate rotation delta
     const oldRotation = FixedCrosshairTool.globalRotationAngle;
-    FixedCrosshairTool.globalRotationAngle = currentAngle - this.dragStartAngle;
-    const deltaAngle = FixedCrosshairTool.globalRotationAngle - oldRotation;
+    const rawNewRotation = currentAngle - this.dragStartAngle;
+    const rawDeltaAngle = rawNewRotation - oldRotation;
 
-    // Only update if there's a meaningful change (lower threshold for smoother rotation)
-    if (Math.abs(deltaAngle) > 0.001) {
+    // Apply smoothing: blend between old and new rotation
+    const smoothedDeltaAngle = rawDeltaAngle * this.rotationSmoothingFactor;
+    FixedCrosshairTool.globalRotationAngle = oldRotation + smoothedDeltaAngle;
+    const deltaAngle = smoothedDeltaAngle;
+
+    // Only update if there's a meaningful change (increased threshold for less sensitivity)
+    if (Math.abs(deltaAngle) > this.minRotationThreshold) {
       // Rotate the MPR viewing planes (negate deltaAngle to fix direction)
       this.rotateMPRPlanes(renderingEngine, viewportId, -deltaAngle);
     }
@@ -995,7 +1006,7 @@ class FixedCrosshairTool extends BaseTool {
   private rotateMPRPlanes(renderingEngine: any, activeViewportId: string, deltaAngle: number) {
     if (!this.fixedPosition) return;
 
-    // Only rotate if dragging in axial view
+    // Only allow rotation from axial view
     if (activeViewportId !== 'axial') return;
 
     // If CPR rotation callback is set (check static property), use it instead of standard rotation

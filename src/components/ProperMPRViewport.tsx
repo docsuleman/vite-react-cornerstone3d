@@ -7,13 +7,14 @@ import {
   volumeLoader,
   cornerstoneStreamingImageVolumeLoader,
   eventTarget,
+  getRenderingEngine,
 } from "@cornerstonejs/core";
 import { init as csRenderInit } from "@cornerstonejs/core";
 import { init as csToolsInit } from "@cornerstonejs/tools";
 import { init as dicomImageLoaderInit } from "@cornerstonejs/dicom-image-loader";
 import * as cornerstoneTools from "@cornerstonejs/tools";
 import { initializeCornerstone, isCornerStoneInitialized } from '../utils/cornerstoneInit';
-import { FaCrosshairs, FaSearchPlus, FaArrowsAlt, FaAdjust, FaCircle, FaMousePointer, FaScroll, FaTrash, FaDotCircle, FaPlay, FaPause, FaDrawPolygon, FaRuler, FaTag, FaPen, FaCheck } from "react-icons/fa";
+import { FaCrosshairs, FaSearchPlus, FaArrowsAlt, FaAdjust, FaCircle, FaMousePointer, FaScroll, FaTrash, FaDotCircle, FaPlay, FaPause, FaDrawPolygon, FaRuler, FaTag, FaPen, FaCheck, FaChevronDown } from "react-icons/fa";
 import SphereMarkerTool from '../customTools/Spheremarker';
 import CuspNadirTool from '../customTools/CuspNadirTool';
 import FixedCrosshairTool from '../customTools/FixedCrosshairTool';
@@ -21,7 +22,7 @@ import VerticalDistanceTool from '../customTools/VerticalDistanceTool';
 import VerticalLineTool from '../customTools/VerticalLineTool';
 import CurvedLeafletTool from '../customTools/CurvedLeafletTool';
 import ContextMenu from './ContextMenu';
-import { WorkflowStage } from '../types/WorkflowTypes';
+import { WorkflowStage, RootPointType } from '../types/WorkflowTypes';
 import { CenterlineGenerator } from '../utils/CenterlineGenerator';
 import { MeasurementStep } from '../types/MeasurementWorkflowTypes';
 import { getWorkflowManager } from '../utils/MeasurementWorkflowManager';
@@ -48,7 +49,7 @@ const {
   synchronizers,
 } = cornerstoneTools;
 
-const { createSlabThicknessSynchronizer, createCameraPositionSynchronizer } = synchronizers;
+const { createSlabThicknessSynchronizer, createCameraPositionSynchronizer, createZoomPanSynchronizer } = synchronizers;
 const { MouseBindings } = csToolsEnums;
 
 // Register volume loader
@@ -110,7 +111,11 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTool, setActiveTool] = useState<string>('Zoom');
+  const [activeTool, setActiveTool] = useState<string>(
+    currentStage === WorkflowStage.ROOT_DEFINITION ? 'SphereMarker' :
+    currentStage === WorkflowStage.ANNULUS_DEFINITION ? 'CuspNadir' :
+    'Zoom'
+  );
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
@@ -180,6 +185,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   } | null>(null);
 
   const [windowLevel, setWindowLevel] = useState({ window: 900, level: 350 }); // Cardiac CTA default
+  const [wlDropdownOpen, setWlDropdownOpen] = useState(false); // W/L dropdown state
   const [phaseInfo, setPhaseInfo] = useState<any>(null); // Cardiac phase information
   const [selectedPhase, setSelectedPhase] = useState<number | null>(null); // Currently selected phase
   const [isPlayingCine, setIsPlayingCine] = useState(false); // Cine playback state
@@ -199,10 +205,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const renderingEngineId = "mprRenderingEngine";
   const synchronizerId = "MPR_SLAB_THICKNESS_SYNCHRONIZER_ID";
   const cameraPositionSynchronizerId = "MPR_CAMERA_POSITION_SYNCHRONIZER_ID";
+  const zoomSynchronizerId = "MPR_ZOOM_SYNCHRONIZER_ID";
 
   // Store synchronizer refs for cleanup
   const slabSynchronizerRef = useRef<any>(null);
   const cameraSynchronizerRef = useRef<any>(null);
+  const zoomSynchronizerRef = useRef<any>(null);
   const lockedFocalPointRef = useRef<Types.Point3 | null>(null);
   const centerlineDataRef = useRef<any>(null); // Store centerline for scrolling
   const spherePositionsRef = useRef<Types.Point3[]>([]); // Store the 3 sphere positions
@@ -563,6 +571,166 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       cleanup();
     };
   }, [patientInfo, currentStage]);
+
+  // Setup centerline-aligned MPR views when entering ANNULUS_DEFINITION stage
+  useEffect(() => {
+    console.log('🔍 Centerline alignment check:', {
+      currentStage,
+      isAnnulusStage: currentStage === WorkflowStage.ANNULUS_DEFINITION,
+      sphereCount: existingSpheres?.length || 0,
+      hasRenderingEngine: !!renderingEngineRef.current,
+      spheres: existingSpheres
+    });
+
+    if (currentStage !== WorkflowStage.ANNULUS_DEFINITION) return;
+    if (!existingSpheres || existingSpheres.length < 3) {
+      console.warn('⚠️ Cannot setup centerline alignment - insufficient spheres');
+      return;
+    }
+    if (!renderingEngineRef.current) {
+      console.warn('⚠️ Cannot setup centerline alignment - no rendering engine');
+      return;
+    }
+
+    console.log('✅ ANNULUS_DEFINITION stage detected with spheres! Setting up centerline-aligned views...');
+
+    const timer = setTimeout(() => {
+      console.log('🎯 Setting up centerline-aligned axial view at valve position');
+
+      // Generate centerline from root points
+      // CRITICAL: existingSpheres already have proper types from state.rootPoints
+      // Just need to convert to RootPoint format with proper type field
+      const centerlineData = CenterlineGenerator.generateFromRootPoints(
+        existingSpheres.map((sphere, index) => {
+          // Determine type based on position in array
+          let type: any;
+          if (existingSpheres.length === 3) {
+            type = index === 0 ? RootPointType.LV_OUTFLOW :
+                  index === 1 ? RootPointType.AORTIC_VALVE :
+                  RootPointType.ASCENDING_AORTA;
+          } else {
+            const middleIndex = Math.floor(existingSpheres.length / 2);
+            type = index === 0 ? RootPointType.LV_OUTFLOW :
+                  index === middleIndex ? RootPointType.AORTIC_VALVE :
+                  index === existingSpheres.length - 1 ? RootPointType.ASCENDING_AORTA :
+                  RootPointType.EXTENDED;
+          }
+          return {
+            id: sphere.id,
+            position: sphere.pos,
+            type: type,
+            timestamp: Date.now()
+          };
+        })
+      );
+
+      // Store centerline data for scrolling
+      centerlineDataRef.current = centerlineData;
+
+      // Calculate optimal scroll step size
+      const numPoints = centerlineData.position.length / 3;
+      let totalLength = 0;
+      for (let i = 1; i < numPoints; i++) {
+        const dx = centerlineData.position[i * 3] - centerlineData.position[(i - 1) * 3];
+        const dy = centerlineData.position[i * 3 + 1] - centerlineData.position[(i - 1) * 3 + 1];
+        const dz = centerlineData.position[i * 3 + 2] - centerlineData.position[(i - 1) * 3 + 2];
+        totalLength += Math.sqrt(dx * dx + dy * dy + dz * dz);
+      }
+      const avgSegmentLength = totalLength / (numPoints - 1);
+      const targetStepMM = 0.1;
+      cprScrollStepSizeRef.current = targetStepMM / avgSegmentLength;
+
+      console.log(`📏 Centerline: ${numPoints} points, ${totalLength.toFixed(1)}mm total`);
+
+      // Find the RED sphere (valve)
+      const valveSphere = existingSpheres.find(sphere => sphere.color === 'red');
+      if (!valveSphere) {
+        console.error('❌ Could not find red (valve) sphere');
+        return;
+      }
+
+      const valveCenterlinePos = valveSphere.pos;
+
+      // Find closest centerline point to valve
+      let closestIndex = 0;
+      let minDist = Infinity;
+      for (let i = 0; i < numPoints; i++) {
+        const x = centerlineData.position[i * 3];
+        const y = centerlineData.position[i * 3 + 1];
+        const z = centerlineData.position[i * 3 + 2];
+        const dist = Math.sqrt(
+          Math.pow(x - valveCenterlinePos[0], 2) +
+          Math.pow(y - valveCenterlinePos[1], 2) +
+          Math.pow(z - valveCenterlinePos[2], 2)
+        );
+        if (dist < minDist) {
+          minDist = dist;
+          closestIndex = i;
+        }
+      }
+
+      currentCenterlineIndexRef.current = closestIndex;
+
+      // Calculate centerline tangent at valve
+      const prevIdx = Math.max(0, closestIndex - 1);
+      const nextIdx = Math.min(numPoints - 1, closestIndex + 1);
+      const prev = [
+        centerlineData.position[prevIdx * 3],
+        centerlineData.position[prevIdx * 3 + 1],
+        centerlineData.position[prevIdx * 3 + 2]
+      ];
+      const next = [
+        centerlineData.position[nextIdx * 3],
+        centerlineData.position[nextIdx * 3 + 1],
+        centerlineData.position[nextIdx * 3 + 2]
+      ];
+
+      const tangent = [
+        next[0] - prev[0],
+        next[1] - prev[1],
+        next[2] - prev[2]
+      ];
+      const tangentLength = Math.sqrt(tangent[0] ** 2 + tangent[1] ** 2 + tangent[2] ** 2);
+      tangent[0] /= tangentLength;
+      tangent[1] /= tangentLength;
+      tangent[2] /= tangentLength;
+
+      console.log('📐 Centerline tangent at valve:', tangent);
+
+      // Position viewports perpendicular to centerline
+      const renderingEngine = renderingEngineRef.current;
+      const axialViewport = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
+      const sagittalViewport = renderingEngine.getViewport('sagittal') as Types.IVolumeViewport;
+      const coronalViewport = renderingEngine.getViewport('coronal') as Types.IVolumeViewport;
+
+      if (axialViewport && sagittalViewport && coronalViewport) {
+        const cameraDistance = 300;
+
+        // Axial: looks along centerline tangent
+        const axialCamera = axialViewport.getCamera();
+        axialViewport.setCamera({
+          ...axialCamera,
+          position: [
+            valveCenterlinePos[0] + tangent[0] * cameraDistance,
+            valveCenterlinePos[1] + tangent[1] * cameraDistance,
+            valveCenterlinePos[2] + tangent[2] * cameraDistance
+          ] as Types.Point3,
+          focalPoint: valveCenterlinePos as Types.Point3,
+          viewUp: [0, 0, 1] as Types.Point3,
+          parallelScale: 150
+        });
+
+        lockedFocalPointRef.current = valveCenterlinePos as Types.Point3;
+
+        console.log('✅ Axial viewport aligned perpendicular to centerline');
+
+        // Render viewports
+        renderingEngine.renderViewports(['axial', 'sagittal', 'coronal']);
+      }
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [currentStage, existingSpheres]);
 
   // Setup/cleanup CPR actors when render mode changes
   useEffect(() => {
@@ -1968,12 +2136,26 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
           // Generate centerline from root points
           const centerlineData = CenterlineGenerator.generateFromRootPoints(
-            existingSpheres.map((sphere, index) => ({
-              id: sphere.id,
-              position: sphere.pos,
-              type: index === 0 ? 'lv_outflow' : index === 1 ? 'aortic_valve' : 'ascending_aorta',
-              timestamp: Date.now()
-            }))
+            existingSpheres.map((sphere, index) => {
+              let type: any;
+              if (existingSpheres.length === 3) {
+                type = index === 0 ? RootPointType.LV_OUTFLOW :
+                      index === 1 ? RootPointType.AORTIC_VALVE :
+                      RootPointType.ASCENDING_AORTA;
+              } else {
+                const middleIndex = Math.floor(existingSpheres.length / 2);
+                type = index === 0 ? RootPointType.LV_OUTFLOW :
+                      index === middleIndex ? RootPointType.AORTIC_VALVE :
+                      index === existingSpheres.length - 1 ? RootPointType.ASCENDING_AORTA :
+                      RootPointType.EXTENDED;
+              }
+              return {
+                id: sphere.id,
+                position: sphere.pos,
+                type: type,
+                timestamp: Date.now()
+              };
+            })
           );
 
           // Store centerline data for scrolling
@@ -1996,10 +2178,19 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
           // Store the 3 sphere positions for discrete scrolling
           spherePositionsRef.current = existingSpheres.map(sphere => sphere.pos as Types.Point3);
-          currentSphereIndexRef.current = 1; // Start at valve (middle sphere)
 
-          // Use valve sphere position directly (middle sphere)
-          const valveCenterlinePos = existingSpheres[1].pos;
+          // Find the RED sphere (valve) - supports refinement points
+          const valveSphere = existingSpheres.find(sphere => sphere.color === 'red');
+          if (!valveSphere) {
+            console.error('❌ Could not find red (valve) sphere for centerline alignment');
+            return;
+          }
+
+          const valveSphereIndex = existingSpheres.indexOf(valveSphere);
+          currentSphereIndexRef.current = valveSphereIndex;
+
+          // Use valve sphere position
+          const valveCenterlinePos = valveSphere.pos;
 
           // Find closest centerline point to valve to calculate tangent
           let closestIndex = 0;
@@ -2774,7 +2965,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       spherePositionsRef.current.map((pos, index) => ({
         id: `sphere-${index}`,
         position: pos,
-        type: index === 0 ? 'lv_outflow' : index === 1 ? 'aortic_valve' : 'ascending_aorta',
+        type: index === 0 ? RootPointType.LV_OUTFLOW :
+              index === 1 ? RootPointType.AORTIC_VALVE :
+              RootPointType.ASCENDING_AORTA,
         timestamp: Date.now()
       }))
     );
@@ -3264,8 +3457,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       // CRITICAL: Activate CrosshairsTool BEFORE adding viewports (like App.tsx)
       // This is the correct order for proper synchronization
-      // EXCEPT for MEASUREMENTS stage where we use FixedCrosshairTool instead
-      if (currentStage !== WorkflowStage.MEASUREMENTS) {
+      // EXCEPT for MEASUREMENTS and ROOT_DEFINITION stages
+      if (currentStage !== WorkflowStage.MEASUREMENTS && currentStage !== WorkflowStage.ROOT_DEFINITION) {
         console.log('  🎯 Activating CrosshairsTool BEFORE adding viewports...');
         toolGroup.setToolActive(CrosshairsTool.toolName, {
           bindings: [{
@@ -3274,7 +3467,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         });
         console.log('  ✅ CrosshairsTool activated');
       } else {
-        console.log('  ⏭️ Skipping CrosshairsTool activation (MEASUREMENTS stage uses FixedCrosshairTool)');
+        console.log('  ⏭️ Skipping CrosshairsTool activation (stage uses different tool)');
       }
 
       // Add viewports to the tool group AFTER activating CrosshairsTool
@@ -3305,6 +3498,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         synchronizer.setEnabled(true);
         console.log('  ✅ Created and enabled slab synchronizer');
       }
+
+      // Zoom synchronization removed per user request
+      // Spheres now use fixed sizes regardless of zoom level
 
       // CRITICAL: Configure distance measurement for MEASUREMENTS stage
       // This must happen AFTER tools are created and added to the tool group
@@ -4379,19 +4575,23 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       console.log('  ✅ Overlay visibility checker running every 500ms');
 
-      // CRITICAL: Activate default tool after setup
-      // During MEASUREMENTS stage, we need to activate the initial tool explicitly
-      if (currentStage === WorkflowStage.MEASUREMENTS) {
+      // CRITICAL: Activate default tool after setup based on stage
+      if (currentStage === WorkflowStage.ROOT_DEFINITION) {
+        console.log('🎯 Activating SphereMarker tool for ROOT_DEFINITION stage...');
+        toolGroup.setToolActive(SphereMarkerTool.toolName, {
+          bindings: [{ mouseButton: MouseBindings.Primary }],
+        });
+        setActiveTool('SphereMarker');
+        console.log('  ✅ SphereMarker tool activated');
+      } else if (currentStage === WorkflowStage.MEASUREMENTS) {
         console.log('🎯 Activating default tool (Pan) for MEASUREMENTS stage...');
         // Don't call handleToolChange here as it tries to set tools passive
         // Use Pan tool by default so user can scroll CPR views
         toolGroup.setToolActive(PanTool.toolName, {
           bindings: [{ mouseButton: MouseBindings.Primary }],
         });
-        console.log('  ✅ Pan tool activated by default');
-
-        // Set the active tool state
         setActiveTool('Pan');
+        console.log('  ✅ Pan tool activated by default');
       }
 
       console.log('✅✅✅ SETUP TOOLS COMPLETE');
@@ -4719,6 +4919,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           bindings: [{ mouseButton: MouseBindings.Primary }],
         });
 
+        // Set CuspNadir as the active tool in UI
+        setActiveTool('CuspNadir');
+
         // Keep zoom active on right mouse button
         toolGroup.setToolActive(ZoomTool.toolName, {
           bindings: [{ mouseButton: MouseBindings.Secondary }],
@@ -4856,6 +5059,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       toolGroup.setToolActive(SphereMarkerTool.toolName, {
         bindings: [{ mouseButton: MouseBindings.Primary }],
       });
+
+      // Auto-select Sphere tool in UI for Root Definition stage
+      setActiveTool('SphereMarker');
 
       // Force render all viewports
       if (renderingEngineRef.current) {
@@ -6112,7 +6318,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               className={`p-1.5 rounded text-xs flex items-center gap-1 whitespace-nowrap ${activeTool === 'SphereMarker' ? 'bg-green-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
             >
               <FaCircle />
-              <span className="hidden sm:inline">Sphere</span>
+              <span className="hidden sm:inline">Centerline</span>
             </button>
             {/* Show CuspNadir tool only during annulus definition stage */}
             {currentStage === WorkflowStage.ANNULUS_DEFINITION && (
@@ -6170,104 +6376,60 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
             )}
           </div>
           
-          {/* Window/Level Presets - Compact */}
-          <div className="flex items-center gap-1">
-            <span className="text-xs text-slate-300">W/L:</span>
+          {/* Window/Level Presets - Dropdown */}
+          <div className="relative">
             <button
-              onClick={() => handleWindowLevelChange(400, 40)}
-              className="bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded text-white text-xs whitespace-nowrap"
+              onClick={() => setWlDropdownOpen(!wlDropdownOpen)}
+              className="bg-slate-700 hover:bg-slate-600 px-3 py-1.5 rounded text-white text-xs whitespace-nowrap flex items-center gap-2"
             >
-              Soft
+              <FaAdjust />
+              <span>W/L</span>
+              <FaChevronDown className={`text-xs transition-transform ${wlDropdownOpen ? 'rotate-180' : ''}`} />
             </button>
-            <button
-              onClick={() => handleWindowLevelChange(900, 350)}
-              className="bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded text-white text-xs whitespace-nowrap"
-            >
-              Angio
-            </button>
-            <button
-              onClick={() => handleWindowLevelChange(1500, 300)}
-              className="bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded text-white text-xs whitespace-nowrap"
-            >
-              Bone
-            </button>
-            <button
-              onClick={() => handleWindowLevelChange(2000, 0)}
-              className="bg-slate-700 hover:bg-slate-600 px-2 py-1 rounded text-white text-xs whitespace-nowrap"
-            >
-              Lung
-            </button>
+            {wlDropdownOpen && (
+              <div className="absolute top-full right-0 mt-1 bg-slate-800 border border-slate-600 rounded shadow-lg z-50 py-1 min-w-[120px]">
+                <button
+                  onClick={() => {
+                    handleWindowLevelChange(400, 40);
+                    setWlDropdownOpen(false);
+                  }}
+                  className="w-full px-3 py-2 text-left text-white text-xs hover:bg-slate-700 transition-colors"
+                >
+                  Soft Tissue
+                </button>
+                <button
+                  onClick={() => {
+                    handleWindowLevelChange(900, 350);
+                    setWlDropdownOpen(false);
+                  }}
+                  className="w-full px-3 py-2 text-left text-white text-xs hover:bg-slate-700 transition-colors"
+                >
+                  Angio (Default)
+                </button>
+                <button
+                  onClick={() => {
+                    handleWindowLevelChange(1500, 300);
+                    setWlDropdownOpen(false);
+                  }}
+                  className="w-full px-3 py-2 text-left text-white text-xs hover:bg-slate-700 transition-colors"
+                >
+                  Bone
+                </button>
+                <button
+                  onClick={() => {
+                    handleWindowLevelChange(2000, 0);
+                    setWlDropdownOpen(false);
+                  }}
+                  className="w-full px-3 py-2 text-left text-white text-xs hover:bg-slate-700 transition-colors"
+                >
+                  Lung
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Image Info and Phase Controls */}
-      {/* CRITICAL: Use absolute positioning to prevent layout shift that breaks CrosshairsTool */}
-      <div
-        className="px-3 py-2 bg-slate-900 border-b border-slate-700 text-xs text-slate-400 flex items-center justify-between absolute top-[60px] left-0 right-0 z-10"
-        style={{
-          opacity: (!isLoading && imageInfoRef.current) ? 1 : 0,
-          pointerEvents: (!isLoading && imageInfoRef.current) ? 'auto' : 'none'
-        }}
-      >
-          {imageInfoRef.current && (
-            <>
-              <div>
-                <span className="mr-4">
-                  Series: {patientInfo?.seriesInstanceUID}
-                </span>
-                <span className="mr-4">
-                  Images: {imageInfoRef.current.numberOfImages}
-                </span>
-                <span className="mr-4">
-                  Volume: {imageInfoRef.current.volumeId}
-                </span>
-                <span className="text-green-400">
-                  {imageInfoRef.current.status}
-                </span>
-              </div>
-
-              {/* Phase Controls - only show if multi-phase */}
-              {phaseInfo && phaseInfo.isMultiPhase && (
-            <div className="flex items-center gap-3">
-              <span className="text-slate-300">Cardiac Phase:</span>
-              <button
-                onClick={() => setIsPlayingCine(!isPlayingCine)}
-                className={`p-2 rounded ${isPlayingCine ? 'bg-red-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
-                title={isPlayingCine ? 'Pause Cine' : 'Play Cine'}
-              >
-                {isPlayingCine ? <FaPause /> : <FaPlay />}
-              </button>
-              <select
-                value={selectedPhase ?? 0}
-                onChange={(e) => {
-                  setIsPlayingCine(false);
-                  setSelectedPhase(parseInt(e.target.value));
-                }}
-                className="bg-slate-700 text-white px-3 py-1 rounded"
-                disabled={isPreloading}
-              >
-                {phaseInfo.phases.map((phase, index) => (
-                  <option key={index} value={index}>
-                    {phase.phaseName || `Phase ${index + 1}`}
-                  </option>
-                ))}
-              </select>
-              {isPreloading ? (
-                <span className="text-xs text-yellow-400 flex items-center gap-2">
-                  <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-yellow-400"></div>
-                  Loading phases...
-                </span>
-              ) : (
-                <span className="text-xs text-slate-400">
-                  ({phaseInfo.totalPhases} phases, 1.5s loop)
-                </span>
-              )}
-                </div>
-              )}
-            </>
-          )}
-      </div>
 
       {/* MPR Viewports */}
       <div className="flex-1 relative">
@@ -6319,7 +6481,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         {/* Three MPR views in a grid */}
         <div className="grid grid-cols-3 h-full gap-1 bg-slate-900">
           {/* Axial View */}
-          <div className="relative bg-black border border-slate-700">
+          <div className="relative bg-black border border-slate-700" style={{ order: 1 }}>
             <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
               Axial
             </div>
@@ -6738,7 +6900,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           </div>
 
           {/* Sagittal View */}
-          <div className="relative bg-black border border-slate-700">
+          <div className="relative bg-black border border-slate-700" style={{ order: 3 }}>
             <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
               Sagittal
             </div>
@@ -6897,7 +7059,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           </div>
           
           {/* Coronal View */}
-          <div className="relative bg-black border border-slate-700">
+          <div className="relative bg-black border border-slate-700" style={{ order: 2 }}>
             <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
               Coronal
             </div>

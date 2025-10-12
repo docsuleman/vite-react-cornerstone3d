@@ -62,32 +62,38 @@ export class CenterlineGenerator {
   private static sortRootPointsByOrder(rootPoints: RootPoint[]): RootPoint[] {
     // If we have exactly 3 points with anatomical types, use the original sorting
     if (rootPoints.length === 3 && rootPoints.every(p => p.type)) {
+      console.log('🔍 DEBUG: Sorting 3 root points by anatomical order');
+      console.log('   Root points received:', rootPoints.map(p => ({ id: p.id, type: p.type, typeOf: typeof p.type })));
+
       const order = [
         RootPointType.LV_OUTFLOW,
         RootPointType.AORTIC_VALVE,
         RootPointType.ASCENDING_AORTA,
       ];
 
+      console.log('   Looking for types:', order);
+
       return order.map(type => {
-        const point = rootPoints.find(p => p.type === type);
+        console.log(`   Searching for type: "${type}" (${typeof type})`);
+        const point = rootPoints.find(p => {
+          console.log(`     Checking point: type="${p.type}" (${typeof p.type}), match=${p.type === type}`);
+          return p.type === type;
+        });
         if (!point) {
+          console.error(`   ❌ Could not find point with type: "${type}"`);
+          console.error('   Available types:', rootPoints.map(p => p.type));
           throw new Error(`Missing root point of type: ${type}`);
         }
+        console.log(`   ✅ Found point for type "${type}"`);
         return point;
       });
     }
-    
-    // For more than 3 points or points without specific types,
-    // sort by placement order or Z coordinate (inferior to superior)
-    return [...rootPoints].sort((a, b) => {
-      // Primary sort: by Z coordinate (inferior to superior)
-      const zDiff = a.position[2] - b.position[2];
-      if (Math.abs(zDiff) > 1) { // 1mm tolerance
-        return zDiff;
-      }
-      // Secondary sort: by creation order if available
-      return 0; // Keep original order if Z coordinates are similar
-    });
+
+    // For more than 3 points (refinement points added), PRESERVE the array order
+    // The spheres are already in the correct order from the insertion logic
+    // DO NOT re-sort by Z-coordinate as this can reverse the centerline direction
+    console.log(`📍 Using ${rootPoints.length} points in original placement order (no re-sorting)`);
+    return [...rootPoints];
   }
 
   /**
@@ -203,35 +209,101 @@ export class CenterlineGenerator {
   }
 
   /**
-   * Calculate orientation matrices along the spline
+   * Calculate orientation matrices along the spline using rotation-minimizing frame
+   * This prevents the CPR image from flipping when adding more centerline points
    */
   private static calculateOrientations(splinePoints: SplinePoint[]): Float32Array[] {
     const orientations: Float32Array[] = [];
 
-    for (let i = 0; i < splinePoints.length; i++) {
-      const tangent = splinePoints[i].tangent;
-      
-      // Calculate a consistent up vector using the minimum rotation method
-      let upVector = vec3.fromValues(0, 0, 1); // Default up
-      
-      // If tangent is nearly parallel to default up, use a different reference
-      if (Math.abs(vec3.dot(tangent, upVector)) > 0.9) {
-        upVector = vec3.fromValues(0, 1, 0);
+    if (splinePoints.length === 0) {
+      return orientations;
+    }
+
+    // Initialize the first frame with a consistent reference orientation
+    const firstTangent = vec3.clone(splinePoints[0].tangent);
+
+    // Choose an initial up vector that's not parallel to the first tangent
+    let initialUp = vec3.fromValues(0, 0, 1); // Z-up (standard for CT)
+
+    // If tangent is nearly parallel to Z, use Y-up instead
+    if (Math.abs(vec3.dot(firstTangent, initialUp)) > 0.9) {
+      initialUp = vec3.fromValues(0, 1, 0);
+    }
+
+    // Create the initial orthogonal frame
+    let prevRight = vec3.normalize(vec3.create(), vec3.cross(vec3.create(), firstTangent, initialUp));
+    let prevUp = vec3.normalize(vec3.create(), vec3.cross(vec3.create(), prevRight, firstTangent));
+
+    // Store first orientation
+    const firstMatrix = mat4.fromValues(
+      firstTangent[0], firstTangent[1], firstTangent[2], 0,
+      prevUp[0], prevUp[1], prevUp[2], 0,
+      prevRight[0], prevRight[1], prevRight[2], 0,
+      splinePoints[0].position[0], splinePoints[0].position[1], splinePoints[0].position[2], 1
+    );
+    orientations.push(new Float32Array(firstMatrix));
+
+    // Use rotation-minimizing frame (parallel transport) for subsequent frames
+    // This ensures smooth, flip-free transitions along the centerline
+    for (let i = 1; i < splinePoints.length; i++) {
+      const currTangent = vec3.clone(splinePoints[i].tangent);
+      const prevTangent = vec3.clone(splinePoints[i - 1].tangent);
+
+      // Calculate the rotation axis between consecutive tangents
+      const rotationAxis = vec3.cross(vec3.create(), prevTangent, currTangent);
+      const rotationAxisLength = vec3.length(rotationAxis);
+
+      // If tangents are nearly parallel, no rotation needed
+      if (rotationAxisLength < 0.001) {
+        // Tangents are parallel, just use previous frame
+        const matrix = mat4.fromValues(
+          currTangent[0], currTangent[1], currTangent[2], 0,
+          prevUp[0], prevUp[1], prevUp[2], 0,
+          prevRight[0], prevRight[1], prevRight[2], 0,
+          splinePoints[i].position[0], splinePoints[i].position[1], splinePoints[i].position[2], 1
+        );
+        orientations.push(new Float32Array(matrix));
+        continue;
       }
 
-      // Create orthogonal coordinate system
-      const rightVector = vec3.normalize(vec3.create(), vec3.cross(vec3.create(), tangent, upVector));
-      const correctedUpVector = vec3.normalize(vec3.create(), vec3.cross(vec3.create(), rightVector, tangent));
+      // Normalize rotation axis
+      vec3.normalize(rotationAxis, rotationAxis);
 
-      // Create 4x4 transformation matrix
+      // Calculate rotation angle
+      const cosAngle = vec3.dot(prevTangent, currTangent);
+      const angle = Math.acos(Math.max(-1, Math.min(1, cosAngle)));
+
+      // Create rotation quaternion
+      const halfAngle = angle / 2;
+      const sinHalfAngle = Math.sin(halfAngle);
+      const rotation = quat.fromValues(
+        rotationAxis[0] * sinHalfAngle,
+        rotationAxis[1] * sinHalfAngle,
+        rotationAxis[2] * sinHalfAngle,
+        Math.cos(halfAngle)
+      );
+
+      // Rotate the previous frame vectors
+      const currRight = vec3.transformQuat(vec3.create(), prevRight, rotation);
+      const currUp = vec3.transformQuat(vec3.create(), prevUp, rotation);
+
+      // Normalize to prevent accumulated errors
+      vec3.normalize(currRight, currRight);
+      vec3.normalize(currUp, currUp);
+
+      // Create orientation matrix
       const matrix = mat4.fromValues(
-        tangent[0], tangent[1], tangent[2], 0,
-        correctedUpVector[0], correctedUpVector[1], correctedUpVector[2], 0,
-        rightVector[0], rightVector[1], rightVector[2], 0,
+        currTangent[0], currTangent[1], currTangent[2], 0,
+        currUp[0], currUp[1], currUp[2], 0,
+        currRight[0], currRight[1], currRight[2], 0,
         splinePoints[i].position[0], splinePoints[i].position[1], splinePoints[i].position[2], 1
       );
 
       orientations.push(new Float32Array(matrix));
+
+      // Update previous frame for next iteration
+      prevRight = currRight;
+      prevUp = currUp;
     }
 
     return orientations;
