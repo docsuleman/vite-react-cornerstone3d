@@ -44,6 +44,8 @@ import vtkOpenGLRenderWindow from '@kitware/vtk.js/Rendering/OpenGL/RenderWindow
 import vtkRenderWindow from '@kitware/vtk.js/Rendering/Core/RenderWindow';
 import vtkRenderer from '@kitware/vtk.js/Rendering/Core/Renderer';
 import vtkRenderWindowInteractor from '@kitware/vtk.js/Rendering/Core/RenderWindowInteractor';
+import vtkPiecewiseFunction from '@kitware/vtk.js/Common/DataModel/PiecewiseFunction';
+import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction';
 import { mat3, vec3 } from 'gl-matrix';
 import HumanVTP from '../assets/Human.vtp?url';
 
@@ -59,6 +61,8 @@ const {
   LengthTool,
   RectangleROITool,
   TrackballRotateTool,
+  VolumeCroppingTool,
+  VolumeCroppingControlTool,
   synchronizers,
 } = cornerstoneTools;
 
@@ -198,7 +202,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const [volume3DRange, setVolume3DRange] = useState<{
     lower: number; // Lower HU threshold
     upper: number; // Upper HU threshold
-  }>({ lower: 150, upper: 800 }); // Default: show contrast-enhanced vessels, hide bones
+  }>({ lower: 150, upper: 300 }); // Default: show contrast-enhanced vessels, hide bones
+  const [cropRadius, setCropRadius] = useState<number>(50); // Crop radius in mm around centerline
+  const [isCroppingEnabled, setIsCroppingEnabled] = useState<boolean>(true); // Volume cropping enabled by default
 
   // Use refs for imageInfo to avoid re-renders that break CrosshairsTool
   const imageInfoRef = useRef<any>(null);
@@ -2358,6 +2364,38 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
             // Initialize human orientation marker widget
             setTimeout(initializeOrientationWidget, 200);
 
+            // Add and configure VolumeCroppingTool AFTER volume is loaded (like in the example)
+            const toolGroup3DId = `${toolGroupId}_3D`;
+            const toolGroup3D = ToolGroupManager.getToolGroup(toolGroup3DId);
+            if (toolGroup3D) {
+              // STEP 1: Add viewport to tool group FIRST
+              if (!toolGroup3D.getViewportsInfo().find(vp => vp.viewportId === 'volume3D')) {
+                toolGroup3D.addViewport('volume3D', renderingEngineId);
+                console.log('  📌 Added volume3D to 3D tool group');
+              }
+
+              // STEP 2: Add VolumeCroppingTool with configuration (now that viewport is in the group)
+              toolGroup3D.addTool(VolumeCroppingTool.toolName, {
+                sphereRadius: 7,
+                sphereColors: {
+                  x: [1, 1, 0], // Yellow for X-axis
+                  y: [0, 1, 0], // Green for Y-axis
+                  z: [1, 0, 0], // Red for Z-axis
+                  corners: [0, 0, 1], // Blue for corners
+                },
+                showCornerSpheres: true,
+                initialCropFactor: 0.2, // Start with 20% crop on all sides
+              });
+
+              // STEP 3: Activate VolumeCroppingTool
+              toolGroup3D.setToolActive(VolumeCroppingTool.toolName, {
+                bindings: [{ mouseButton: MouseBindings.Primary }],
+              });
+
+              viewport.render();
+              console.log('✅ Volume cropping tool configured and activated for 3D viewport');
+            }
+
             console.log('🎨 Applied CT-Cardiac preset with front view to 3D viewport');
           });
         } else {
@@ -3887,6 +3925,10 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       cornerstoneTools.addTool(FixedCrosshairTool);
       cornerstoneTools.addTool(TrackballRotateTool); // For 3D viewport rotation
 
+      // Add volume cropping tools (available in v4.5.6+)
+      cornerstoneTools.addTool(VolumeCroppingTool);
+      cornerstoneTools.addTool(VolumeCroppingControlTool);
+
       // Add measurement tools
       cornerstoneTools.addTool(SplineROITool);
       cornerstoneTools.addTool(LengthTool);
@@ -3962,13 +4004,34 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       // Add RectangleROI tool for volume cropping in ROOT_DEFINITION stage
       toolGroup.addTool(RectangleROITool.toolName);
 
-      toolGroup.addTool(StackScrollTool.toolName, {
+      // Add VolumeCroppingControlTool for interactive cropping in MPR viewports
+      toolGroup.addTool(VolumeCroppingControlTool.toolName, {
+        getReferenceLineColor: (viewportId) => {
+          const colors = {
+            axial: "rgb(200, 0, 0)",
+            sagittal: "rgb(200, 200, 0)",
+            coronal: "rgb(0, 200, 0)",
+          };
+          return colors[viewportId];
+        },
+        viewportIndicators: true,
+      });
+
+      // Activate VolumeCroppingControlTool for dragging crop lines in MPR views
+      toolGroup.setToolActive(VolumeCroppingControlTool.toolName, {
         bindings: [{ mouseButton: MouseBindings.Primary }],
+      });
+
+      toolGroup.addTool(StackScrollTool.toolName, {
+        viewportIndicators: true,
       });
       toolGroup.setToolActive(StackScrollTool.toolName, {
         bindings: [
           {
             mouseButton: MouseBindings.Wheel,
+          },
+          {
+            mouseButton: MouseBindings.Secondary,
           }
         ]
       });
@@ -4085,13 +4148,14 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         toolGroup3D = ToolGroupManager.createToolGroup(toolGroup3DId);
 
         // Add only TrackballRotateTool, Zoom, and Pan to 3D tool group
+        // Note: VolumeCroppingTool is added AFTER the volume is loaded (see volume loading callback)
         toolGroup3D.addTool(TrackballRotateTool.toolName);
         toolGroup3D.addTool(ZoomTool.toolName);
         toolGroup3D.addTool(PanTool.toolName);
 
-        // Activate TrackballRotateTool with left mouse button
+        // Activate TrackballRotateTool with shift+left mouse button
         toolGroup3D.setToolActive(TrackballRotateTool.toolName, {
-          bindings: [{ mouseButton: MouseBindings.Primary }],
+          bindings: [{ mouseButton: MouseBindings.Primary, modifierKey: 'Shift' }],
         });
 
         // Activate Zoom with right mouse button
@@ -4104,10 +4168,10 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           bindings: [{ mouseButton: MouseBindings.Auxiliary }],
         });
 
-        // Add volume3D viewport to this separate tool group
-        toolGroup3D.addViewport('volume3D', renderingEngineId);
+        // Note: volume3D viewport will be added to tool group AFTER volume is loaded
+        // This ensures proper initialization order for VolumeCroppingTool
 
-        console.log('  ✅ TrackballRotateTool activated for 3D viewport only (separate tool group)');
+        console.log('  ✅ 3D tool group created, viewport will be added after volume loads');
       }
 
       // CRITICAL: Force render ALL viewports AFTER CrosshairsTool activation
@@ -7067,6 +7131,92 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     }
   };
 
+  // State to track if cropped volume is shown
+  const [showCroppedVolume, setShowCroppedVolume] = useState(false);
+
+  // Simple message: crop not yet implemented
+  const cropVolumeByCenterline = async (radius: number) => {
+    alert('Centerline-based cropping is complex and requires VTK clipping planes or custom shaders. For now, use the "Vessels Only" preset to focus on vessels.');
+    console.log('⚠️ Cropping not yet fully implemented - consider using VolumeCroppingTool from Cornerstone3D');
+  };
+
+  // Restore original volume (placeholder)
+  const restoreOriginalVolume = async () => {
+    console.log('Restore not needed - crop not implemented');
+  };
+
+  // Apply HU range to 3D viewport for vessel/tissue visualization
+  const apply3DVolumeRange = (lower: number, upper: number, mode: 'vessels' | 'all' | 'soft') => {
+    if (!renderingEngineRef.current) return;
+
+    const viewport = renderingEngineRef.current.getViewport('volume3D') as Types.IVolumeViewport;
+    if (!viewport) return;
+
+    setVolume3DRange({ lower, upper });
+
+    try {
+      if (mode === 'vessels') {
+        // Use MIP preset for vessel visualization
+        console.log('🎨 Applying MIP preset for vessels...');
+
+        viewport.setProperties({
+          preset: 'MIP',
+        });
+
+        viewport.render();
+        console.log(`✅ Applied MIP preset for vessel visualization`);
+
+      } else if (mode === 'all') {
+        // Use CT-Cardiac preset which shows everything
+        viewport.setProperties({
+          preset: 'CT-Cardiac',
+        });
+        viewport.render();
+        console.log('✅ Applied CT-Cardiac preset');
+      } else {
+        // Soft tissue mode using opacity transfer functions
+        const actors = (viewport as any).getActors();
+        if (!actors || actors.length === 0) {
+          console.error('❌ No actors found in viewport');
+          return;
+        }
+
+        const actorEntry = actors[0];
+        const volumeActor = actorEntry.actor || actorEntry;
+
+        if (!volumeActor.getProperty) {
+          console.error('❌ Actor does not have getProperty method');
+          return;
+        }
+
+        const property = volumeActor.getProperty();
+
+        const opacityFunction = vtkPiecewiseFunction.newInstance();
+        opacityFunction.addPoint(-1000, 0.0);
+        opacityFunction.addPoint(lower, 0.0);
+        opacityFunction.addPoint(lower + 50, 0.5);
+        opacityFunction.addPoint(upper - 50, 0.8);
+        opacityFunction.addPoint(upper, 0.0);
+        opacityFunction.addPoint(3000, 0.0);
+
+        const colorFunction = vtkColorTransferFunction.newInstance();
+        colorFunction.addRGBPoint(lower, 0.3, 0.3, 0.3);
+        colorFunction.addRGBPoint((lower + upper) / 2, 0.8, 0.7, 0.6);
+        colorFunction.addRGBPoint(upper, 0.9, 0.8, 0.7);
+
+        property.setRGBTransferFunction(0, colorFunction);
+        property.setScalarOpacity(0, opacityFunction);
+        viewport.render();
+
+        console.log('✅ Applied soft tissue transfer function');
+      }
+
+      console.log(`🎨 Applied 3D volume range: ${lower} to ${upper} HU (mode: ${mode})`);
+    } catch (error) {
+      console.error('❌ Failed to apply volume range:', error);
+    }
+  };
+
   // Apply LAO/RAO projection angle to 3D viewport
   const applyProjectionAngle = (angle: number) => {
     setProjectionAngle(angle);
@@ -8017,8 +8167,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               </div>
 
 
-              {/* Reset to AP View - Top Right */}
-              <div className="absolute top-2 right-2 z-20">
+              {/* 3D Visualization Controls - Top Right */}
+              <div className="absolute top-2 right-2 z-20 flex flex-col gap-2">
+                {/* Reset to AP View */}
                 <button
                   onClick={() => applyProjectionAngle(0)}
                   className="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 text-xs rounded shadow-lg font-semibold"
@@ -8026,6 +8177,133 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 >
                   Reset to AP
                 </button>
+
+                {/* Toggle Volume Cropping */}
+                <button
+                  onClick={() => {
+                    const newState = !isCroppingEnabled;
+                    setIsCroppingEnabled(newState);
+
+                    // Toggle cropping tool in 3D viewport
+                    const toolGroup3D = ToolGroupManager.getToolGroup(`${toolGroupId}_3D`);
+                    if (toolGroup3D) {
+                      try {
+                        const croppingTool = toolGroup3D.getToolInstance(VolumeCroppingTool.toolName) as any;
+
+                        if (newState) {
+                          // Enable cropping in 3D - set tool to active
+                          toolGroup3D.setToolActive(VolumeCroppingTool.toolName, {
+                            bindings: [{ mouseButton: MouseBindings.Primary }],
+                          });
+                          // Show handles and planes
+                          if (croppingTool) {
+                            if (typeof croppingTool.setHandlesVisible === 'function') {
+                              croppingTool.setHandlesVisible(true);
+                            }
+                            if (typeof croppingTool.setClippingPlanesVisible === 'function') {
+                              croppingTool.setClippingPlanesVisible(true);
+                            }
+                          }
+                          // Also need to set TrackballRotateTool to shift+primary
+                          toolGroup3D.setToolActive(TrackballRotateTool.toolName, {
+                            bindings: [{ mouseButton: MouseBindings.Primary, modifierKey: 'Shift' }],
+                          });
+                        } else {
+                          // Reset clipping planes to show full volume
+                          const viewport3D = renderingEngineRef.current?.getViewport('volume3D');
+                          if (viewport3D) {
+                            const actors = viewport3D.getActors();
+                            actors.forEach((actorEntry) => {
+                              const actor = actorEntry.actor;
+                              const mapper = actor?.getMapper();
+                              if (mapper && typeof mapper.removeAllClippingPlanes === 'function') {
+                                mapper.removeAllClippingPlanes();
+                              }
+                            });
+                          }
+
+                          // Hide handles and planes before disabling
+                          if (croppingTool) {
+                            if (typeof croppingTool.setHandlesVisible === 'function') {
+                              croppingTool.setHandlesVisible(false);
+                            }
+                            if (typeof croppingTool.setClippingPlanesVisible === 'function') {
+                              croppingTool.setClippingPlanesVisible(false);
+                            }
+                          }
+                          // Disable cropping in 3D - set tool to disabled (not just passive)
+                          toolGroup3D.setToolDisabled(VolumeCroppingTool.toolName);
+                          // Make TrackballRotateTool primary without shift
+                          toolGroup3D.setToolActive(TrackballRotateTool.toolName, {
+                            bindings: [{ mouseButton: MouseBindings.Primary }],
+                          });
+                        }
+                      } catch (error) {
+                        console.error('Error toggling 3D cropping tool:', error);
+                      }
+                    }
+
+                    // Toggle cropping control tool in MPR viewports
+                    const toolGroupMPR = ToolGroupManager.getToolGroup(toolGroupId);
+                    if (toolGroupMPR) {
+                      try {
+                        if (newState) {
+                          // Enable cropping control in MPR - set tool to active
+                          toolGroupMPR.setToolActive(VolumeCroppingControlTool.toolName, {
+                            bindings: [{ mouseButton: MouseBindings.Primary }],
+                          });
+                        } else {
+                          // Disable cropping control in MPR - set tool to disabled
+                          toolGroupMPR.setToolDisabled(VolumeCroppingControlTool.toolName);
+                        }
+                      } catch (error) {
+                        console.error('Error toggling MPR cropping tool:', error);
+                      }
+                    }
+
+                    console.log(newState ? '✅ Volume cropping enabled' : '⏸️ Volume cropping disabled');
+                    renderingEngineRef.current?.render();
+                  }}
+                  className={`px-3 py-1.5 text-xs rounded shadow-lg font-semibold ${
+                    isCroppingEnabled
+                      ? 'bg-green-600 hover:bg-green-700 text-white'
+                      : 'bg-gray-600 hover:bg-gray-700 text-white'
+                  }`}
+                  title={isCroppingEnabled ? "Click to disable volume cropping" : "Click to enable volume cropping"}
+                >
+                  {isCroppingEnabled ? '✓ Cropping ON' : 'Cropping OFF'}
+                </button>
+
+                {/* HU Range Presets */}
+                <div className="bg-black bg-opacity-80 rounded p-2 border border-gray-600">
+                  <div className="text-white text-xs font-bold mb-2">Visibility</div>
+                  <div className="flex flex-col gap-1">
+                    <button
+                      onClick={() => apply3DVolumeRange(150, 300, 'vessels')}
+                      className={`px-2 py-1 text-xs rounded ${volume3DRange.lower === 150 && volume3DRange.upper === 300 ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
+                      title="MIP preset - Show contrast-enhanced vessels only (150-300 HU)"
+                    >
+                      Vessels Only
+                    </button>
+                    <button
+                      onClick={() => apply3DVolumeRange(200, 3000, 'all')}
+                      className={`px-2 py-1 text-xs rounded ${volume3DRange.lower === 200 && volume3DRange.upper === 3000 ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
+                      title="CT-Cardiac preset - Show all including bones"
+                    >
+                      All + Bones
+                    </button>
+                    <button
+                      onClick={() => apply3DVolumeRange(-100, 300, 'soft')}
+                      className={`px-2 py-1 text-xs rounded ${volume3DRange.lower === -100 && volume3DRange.upper === 300 ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
+                      title="Show soft tissue only (-100 to 300 HU)"
+                    >
+                      Soft Tissue
+                    </button>
+                  </div>
+                  <div className="text-gray-400 text-xs mt-2">
+                    {volume3DRange.lower} - {volume3DRange.upper} HU
+                  </div>
+                </div>
               </div>
 
               <div
