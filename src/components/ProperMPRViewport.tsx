@@ -29,6 +29,7 @@ import { CenterlineGenerator } from '../utils/CenterlineGenerator';
 import { MeasurementStep } from '../types/MeasurementWorkflowTypes';
 import { getWorkflowManager } from '../utils/MeasurementWorkflowManager';
 import { calculateSplineAxes, formatAxisMeasurement } from '../utils/SplineStatistics';
+import { manualResize } from '../utils/viewportResize';
 import vtkImageData from '@kitware/vtk.js/Common/DataModel/ImageData';
 import vtkImageCPRMapper from '@kitware/vtk.js/Rendering/Core/ImageCPRMapper';
 import vtkImageSlice from '@kitware/vtk.js/Rendering/Core/ImageSlice';
@@ -36,6 +37,7 @@ import vtkPolyData from '@kitware/vtk.js/Common/DataModel/PolyData';
 import vtkPoints from '@kitware/vtk.js/Common/Core/Points';
 import vtkCellArray from '@kitware/vtk.js/Common/Core/CellArray';
 import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray';
+import vtkPlane from '@kitware/vtk.js/Common/DataModel/Plane';
 import vtkXMLPolyDataReader from '@kitware/vtk.js/IO/XML/XMLPolyDataReader';
 import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
 import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
@@ -63,6 +65,7 @@ const {
   TrackballRotateTool,
   VolumeCroppingTool,
   VolumeCroppingControlTool,
+  OrientationMarkerTool,
   synchronizers,
 } = cornerstoneTools;
 
@@ -268,6 +271,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const cprAnnulusRatioRef = useRef<number | undefined>(undefined); // Store annulus position ratio for reference line
   const cprActorsRef = useRef<{ actor: any; mapper: any; viewportId: string; config: any }[]>([]); // Store CPR actors and mappers when in CPR mode
   const initialViewUpRef = useRef<Types.Point3 | null>(null); // Store initial viewUp from first centerline alignment (ANNULUS_DEFINITION)
+  const firstAdjustmentDoneRef = useRef<boolean>(false); // Track whether first adjustment has been completed (prevent re-running on tool change)
   const lockedAxialCameraRef = useRef<{ position: Types.Point3; viewUp: Types.Point3; parallelScale: number } | null>(null); // Store locked camera orientation for annular plane
   const currentVolumeRef = useRef<any>(null); // Store current volume for CPR conversion
   const centerlinePolyDataRef = useRef<any>(null); // Store VTK centerline polydata for CPR rotation
@@ -697,10 +701,15 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       isAnnulusStage: currentStage === WorkflowStage.ANNULUS_DEFINITION,
       sphereCount: existingSpheres?.length || 0,
       hasRenderingEngine: !!renderingEngineRef.current,
+      firstAdjustmentDone: firstAdjustmentDoneRef.current,
       spheres: existingSpheres
     });
 
-    if (currentStage !== WorkflowStage.ANNULUS_DEFINITION) return;
+    if (currentStage !== WorkflowStage.ANNULUS_DEFINITION) {
+      // Reset flag when leaving annulus definition stage
+      firstAdjustmentDoneRef.current = false;
+      return;
+    }
     if (!existingSpheres || existingSpheres.length < 3) {
       console.warn('⚠️ Cannot setup centerline alignment - insufficient spheres');
       return;
@@ -710,7 +719,15 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       return;
     }
 
+    // CRITICAL: Only run first adjustment once per annulus definition session
+    // This prevents camera reset when switching tools or updating state
+    if (firstAdjustmentDoneRef.current) {
+      console.log('⏭️ First adjustment already done, skipping camera reset');
+      return;
+    }
+
     console.log('✅ ANNULUS_DEFINITION stage: Setting up initial centerline-aligned view at valve (FIRST ADJUSTMENT)...');
+    firstAdjustmentDoneRef.current = true;
 
     const timer = setTimeout(() => {
       console.log('🎯 Setting up centerline-aligned axial view at valve position');
@@ -847,12 +864,25 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           closestCenterlinePoint[2] + tangent[2] * cameraDistance
         ];
 
-        const initialViewUp: Types.Point3 = [0, 0, 1];
+        // CRITICAL: Calculate viewUp using SAME method as scroll handler (lines 6086-6100)
+        // This ensures correct orientation from the start (anterior at 12 o'clock)
+        const reference = Math.abs(tangent[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+        const cross = [
+          tangent[1] * reference[2] - tangent[2] * reference[1],
+          tangent[2] * reference[0] - tangent[0] * reference[2],
+          tangent[0] * reference[1] - tangent[1] * reference[0]
+        ];
+        const crossLen = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
+        const initialViewUp: Types.Point3 = crossLen > 0
+          ? [cross[0] / crossLen, cross[1] / crossLen, cross[2] / crossLen] as Types.Point3
+          : [0, 0, 1] as Types.Point3;
 
         console.log('📐 Setting axial viewport camera perpendicular to centerline (FIRST ADJUSTMENT):');
         console.log('   Camera position:', newCameraPos);
         console.log('   Focal point (centerline):', closestCenterlinePoint);
-        console.log('   ViewUp:', initialViewUp);
+        console.log('   ViewUp (calculated from tangent):', initialViewUp);
+        console.log('   Tangent:', tangent);
+        console.log('   Reference:', reference);
         console.log('   Preserved parallelScale:', currentParallelScale);
 
         // Set camera - spread existing camera to preserve clippingRange and other properties
@@ -2276,39 +2306,41 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         });
       }
 
-      // Add 4th and 5th viewports for MEASUREMENTS stage
-      if (currentStage === WorkflowStage.MEASUREMENTS) {
-        if (elementRefs.measurement1?.current) {
-          viewports.push({
-            id: "measurement1",
-            orientation: Enums.OrientationAxis.AXIAL // Additional axial view
-          });
-        }
-        if (elementRefs.measurement2?.current) {
-          viewports.push({
-            id: "measurement2",
-            orientation: Enums.OrientationAxis.SAGITTAL // Additional sagittal view
-          });
-        }
-      }
+      // MEASUREMENTS stage: Use same 3 viewports (axial, sagittal, coronal) - no extra viewports
+      // measurement1 and measurement2 are hidden for now
 
       // Enable viewports and set volumes (check if already enabled first)
       // CRITICAL: Don't await setVolumes - let it stream in background like App.tsx
+      console.log(`📊 Setting up viewports for stage: ${currentStage}`);
+      console.log(`📊 Viewport list:`, viewports.map(v => v.id));
+
       viewports.forEach(({ id, orientation }) => {
+        // Check if this is a 3D viewport (needed for both new and reused viewports)
+        const is3DViewport = id === 'volume3D' || (id === 'measurement1' && currentStage === WorkflowStage.MEASUREMENTS);
+        console.log(`🔍 Viewport ${id}: is3DViewport=${is3DViewport}, currentStage=${currentStage}`);
+
         // Check if viewport already exists
         let viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
 
         if (!viewport) {
           // Viewport doesn't exist, enable it
-          console.log(`  🆕 ${id}: Creating NEW viewport`);
+          console.log(`  🆕 ${id}: Creating NEW viewport (3D=${is3DViewport})`);
 
-          // Use VOLUME_3D type for the 3D viewport, ORTHOGRAPHIC for MPR views
-          const viewportType = id === 'volume3D'
+          // Use VOLUME_3D type for the 3D viewport
+          const viewportType = is3DViewport
             ? Enums.ViewportType.VOLUME_3D
             : Enums.ViewportType.ORTHOGRAPHIC;
 
+          console.log(`  🎨 ${id}: Type=${viewportType === Enums.ViewportType.VOLUME_3D ? 'VOLUME_3D' : 'ORTHOGRAPHIC'}`);
+
+          // Check if element ref exists
+          if (!elementRefs[id]?.current) {
+            console.error(`❌ ${id}: Element ref is null or undefined!`);
+            return;
+          }
+
           // VOLUME_3D viewports don't use orientation, use darker background
-          const viewportOptions = id === 'volume3D'
+          const viewportOptions = is3DViewport
             ? { background: [0.1, 0.1, 0.15] as Types.Point3 } // Darker blue-ish for 3D
             : { orientation, background: [0, 0, 0] as Types.Point3 };
 
@@ -2319,21 +2351,64 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
             defaultOptions: viewportOptions,
           });
           viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
+          console.log(`  ✅ ${id}: Viewport created successfully`);
         } else {
-          console.log(`  ♻️ ${id}: REUSING existing viewport`);
+          console.log(`  ♻️ ${id}: REUSING existing viewport (type=${viewport.type})`);
+
+          // CRITICAL: Just reuse existing viewport - same 2x2 layout for all stages
+          console.log(`  ♻️ ${id}: Reusing existing viewport (same layout, no rebinding needed)`);
         }
 
-        // For 3D viewport, use setVolumesForViewports with preset in callback
-        if (id === 'volume3D') {
+        // For 3D viewport (volume3D or measurement1 in MEASUREMENTS stage)
+        if (is3DViewport) {
+          console.log(`  📦 ${id}: Setting volumes for 3D viewport...`);
           setVolumesForViewports(
             renderingEngine,
             [{ volumeId }],
             [id]
           ).then(() => {
-            viewport.setProperties({
-              preset: 'CT-Cardiac',
-              sampleDistanceMultiplier: 4,
-            });
+            console.log(`  ✅ ${id}: Volumes set successfully for 3D viewport`);
+
+            // Apply custom VTK color transfer function
+            const actors = (viewport as any).getActors();
+            if (actors && actors.length > 0) {
+              const volumeActor = actors[0].actor;
+              const property = volumeActor.getProperty();
+
+              // Custom color transfer function
+              const ctfun = vtkColorTransferFunction.newInstance();
+              ctfun.addRGBPoint(0, 85 / 255.0, 0, 0);
+              ctfun.addRGBPoint(95, 1.0, 1.0, 1.0);
+              ctfun.addRGBPoint(225, 0.66, 0.66, 0.5);
+              ctfun.addRGBPoint(255, 0.3, 1.0, 0.5);
+
+              // Custom opacity function
+              const ofun = vtkPiecewiseFunction.newInstance();
+              ofun.addPoint(0.0, 0.0);
+              ofun.addPoint(255.0, 1.0);
+
+              // Apply transfer functions
+              property.setRGBTransferFunction(0, ctfun);
+              property.setScalarOpacity(0, ofun);
+              property.setScalarOpacityUnitDistance(0, 3.0);
+              property.setInterpolationTypeToLinear();
+
+              // Gradient opacity settings
+              property.setUseGradientOpacity(0, true);
+              property.setGradientOpacityMinimumValue(0, 2);
+              property.setGradientOpacityMinimumOpacity(0, 0.0);
+              property.setGradientOpacityMaximumValue(0, 20);
+              property.setGradientOpacityMaximumOpacity(0, 1.0);
+
+              // Shading settings
+              property.setShade(true);
+              property.setAmbient(0.2);
+              property.setDiffuse(0.7);
+              property.setSpecular(0.3);
+              property.setSpecularPower(8.0);
+
+              console.log('🎨 Applied custom VTK color transfer function to 3D viewport');
+            }
 
             // Set default front view (AP - Anterior-Posterior view)
             // Camera at back (posterior), looking towards front (anterior/chest)
@@ -2361,47 +2436,35 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
             // Initialize orientation display
             setTimeout(updateCameraOrientation, 100);
 
-            // Initialize human orientation marker widget
-            setTimeout(initializeOrientationWidget, 200);
+            // DISABLED - VTK OrientationMarkerWidget appears in all views due to shared interactor
+            // The parentRenderer parameter doesn't isolate it properly in Cornerstone3D
+            // TODO: Implement viewport-specific orientation indicator later
+            // setTimeout(initializeOrientationWidget, 200);
 
-            // Add and configure VolumeCroppingTool AFTER volume is loaded (like in the example)
+            // Add 3D viewport to 3D tool group for rotation to work
             const toolGroup3DId = `${toolGroupId}_3D`;
             const toolGroup3D = ToolGroupManager.getToolGroup(toolGroup3DId);
             if (toolGroup3D) {
-              // STEP 1: Add viewport to tool group FIRST
-              if (!toolGroup3D.getViewportsInfo().find(vp => vp.viewportId === 'volume3D')) {
-                toolGroup3D.addViewport('volume3D', renderingEngineId);
-                console.log('  📌 Added volume3D to 3D tool group');
+              if (!toolGroup3D.getViewportsInfo().find(vp => vp.viewportId === id)) {
+                toolGroup3D.addViewport(id, renderingEngineId);
+                console.log(`  📌 Added ${id} to 3D tool group for rotation`);
               }
 
-              // STEP 2: Add VolumeCroppingTool with configuration (now that viewport is in the group)
-              toolGroup3D.addTool(VolumeCroppingTool.toolName, {
-                sphereRadius: 7,
-                sphereColors: {
-                  x: [1, 1, 0], // Yellow for X-axis
-                  y: [0, 1, 0], // Green for Y-axis
-                  z: [1, 0, 0], // Red for Z-axis
-                  corners: [0, 0, 1], // Blue for corners
-                },
-                showCornerSpheres: true,
-                initialCropFactor: 0.2, // Start with 20% crop on all sides
-              });
-
-              // STEP 3: Activate VolumeCroppingTool
-              toolGroup3D.setToolActive(VolumeCroppingTool.toolName, {
-                bindings: [{ mouseButton: MouseBindings.Primary }],
-              });
+              // Activate OrientationMarkerTool AFTER viewport is added
+              toolGroup3D.setToolActive(OrientationMarkerTool.toolName);
+              console.log(`  ✅ OrientationMarkerTool activated for ${id} viewport`);
 
               viewport.render();
-              console.log('✅ Volume cropping tool configured and activated for 3D viewport');
             }
+            console.log('ℹ️ Volume cropping tool is DISABLED, rotation enabled');
 
-            console.log('🎨 Applied CT-Cardiac preset with front view to 3D viewport');
           });
         } else {
           // For MPR viewports, use regular setVolumes
+          console.log(`  📦 ${id}: Setting volumes for MPR viewport...`);
           viewport.setVolumes([{ volumeId }]);
           viewport.render();
+          console.log(`  ✅ ${id}: Volumes set and rendered for MPR viewport`);
         }
       });
 
@@ -2431,9 +2494,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         let viewportIds = ["axial", "sagittal", "coronal"];
         if (currentStage === WorkflowStage.ROOT_DEFINITION) {
           viewportIds.push("volume3D");
-        } else if (currentStage === WorkflowStage.MEASUREMENTS) {
-          viewportIds.push("measurement1", "measurement2");
         }
+        // MEASUREMENTS stage: no extra viewports, using same 3 viewports
         viewportIds.forEach((id) => {
           const viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
           if (viewport) {
@@ -2915,8 +2977,130 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       // For MEASUREMENTS stage, position cameras at annular plane
       if (currentStage === WorkflowStage.MEASUREMENTS && lockedFocalPointRef.current && centerlineDataRef.current) {
         console.log('✅ MEASUREMENTS stage - Positioning cameras at annular plane');
+
+        // CRITICAL: Remove old volume3D viewport from previous stage
+        // It's no longer displayed but still in the rendering engine, causing resize warnings
+        setTimeout(() => {
+          const renderingEngine = renderingEngineRef.current;
+          if (renderingEngine) {
+            // Check if old volume3D viewport exists and remove it
+            try {
+              const oldVolume3D = renderingEngine.getViewport('volume3D');
+              if (oldVolume3D) {
+                console.log('🧹 Removing old volume3D viewport from ROOT_DEFINITION stage...');
+                renderingEngine.disableElement('volume3D');
+                console.log('  ✅ Old volume3D viewport removed');
+              }
+            } catch (e) {
+              console.log('  ℹ️ No old volume3D viewport to remove');
+            }
+          }
+        }, 100);
+
+        // CRITICAL: Force viewport resize and crosshair recalculation after layout change
+        // Viewports have been rebound to new elements, now ensure everything is sized correctly
+        setTimeout(() => {
+          const renderingEngine = renderingEngineRef.current;
+          if (renderingEngine) {
+            console.log('📐 Verifying viewport sizes after rebinding...');
+            const viewportIds = ['axial', 'sagittal', 'coronal'];
+
+            let allValid = true;
+
+            // Use for loop instead of forEach to ensure better error handling
+            for (let i = 0; i < viewportIds.length; i++) {
+              const id = viewportIds[i];
+
+              try {
+                console.log(`  🔍 Processing viewport ${i + 1}/${viewportIds.length}: ${id}`);
+
+                const viewport = renderingEngine.getViewport(id);
+                if (!viewport) {
+                  console.warn(`  ⚠️ ${id}: Viewport not found in rendering engine`);
+                  allValid = false;
+                  continue;
+                }
+
+                const element = elementRefs[id]?.current;
+                if (!element) {
+                  console.warn(`  ⚠️ ${id}: Element ref not found`);
+                  allValid = false;
+                  continue;
+                }
+
+                const width = element.clientWidth;
+                const height = element.clientHeight;
+                console.log(`  📏 ${id}: ${width}x${height}`);
+
+                if (width === 0 || height === 0) {
+                  console.warn(`  ⚠️ ${id}: Zero dimension detected!`);
+                  allValid = false;
+                }
+
+                // CRITICAL: Ensure volumes are set for all orthographic viewports
+                if (viewport.type === 'orthographic') {
+                  try {
+                    const actors = (viewport as any).getActors?.();
+                    const hasVolumes = actors && actors.length > 0;
+                    console.log(`  📦 ${id}: Has volumes: ${hasVolumes}, actors: ${actors?.length || 0}`);
+
+                    if (!hasVolumes) {
+                      console.log(`  🔄 ${id}: Re-setting volumes for empty viewport...`);
+                      viewport.setVolumes([{ volumeId }]);
+                      viewport.render();
+                      console.log(`  ✅ ${id}: Volumes set and rendered successfully`);
+                    }
+                  } catch (volError) {
+                    console.error(`  ❌ ${id}: Error during volume check:`, volError);
+                    // Continue to next viewport even if volume check fails
+                  }
+                } else {
+                  console.log(`  📦 ${id}: 3D viewport, skipping volume check`);
+                }
+
+                console.log(`  ✅ ${id}: Processing complete`);
+
+              } catch (error) {
+                console.error(`  ❌ ${id}: Unexpected error during processing:`, error);
+                // Continue to next viewport even if this one fails
+              }
+            }
+
+            console.log(`  📊 Processed ${viewportIds.length} viewports, allValid=${allValid}`);
+
+            // CRITICAL: Use manualResize() utility for proper viewport resizing
+            // This preserves view presentation (zoom, pan, rotation, displayArea)
+            console.log('  🔄 Using manualResize() utility to resize with presentation preservation...');
+            manualResize(renderingEngineId, viewportIds);
+            console.log('  ✅ Viewports resized with presentation preservation');
+
+            // CRITICAL: Reset FixedCrosshairTool viewport cache AFTER viewports are resized
+            // This ensures crosshair positions are recalculated with correct dimensions
+            const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+            if (toolGroup) {
+              const fixedCrosshairTool = toolGroup.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
+              if (fixedCrosshairTool && typeof fixedCrosshairTool.resetViewportSizes === 'function') {
+                fixedCrosshairTool.resetViewportSizes();
+                console.log('  🔄 FixedCrosshairTool cache reset after viewport resize');
+                // Force a render to recalculate crosshair positions
+                setTimeout(() => {
+                  if (allValid) {
+                    renderingEngine.render();
+                    console.log('  ✅ Crosshairs recalculated with new viewport dimensions');
+                  } else {
+                    console.warn('  ⚠️ Some viewports have invalid dimensions, skipping crosshair recalculation');
+                  }
+                }, 150);
+              }
+            }
+          }
+        }, 500); // Increased delay to ensure rebinding and volume loading complete
+
+        // Wait longer to ensure volumes are fully loaded before positioning cameras
         setTimeout(() => {
           console.log('🎯 Setting up cameras at annular plane for measurements');
+          console.log('  📍 Annulus position:', lockedFocalPointRef.current);
+          console.log('  🔗 Centerline data available:', !!centerlineDataRef.current);
 
           const annulusCenter = lockedFocalPointRef.current!;
           const centerlineData = centerlineDataRef.current;
@@ -2935,11 +3119,15 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           console.log('📐 Centerline tangent:', tangent);
 
           const renderingEngine = renderingEngineRef.current;
-          if (!renderingEngine) return;
+          if (!renderingEngine) {
+            console.error('❌ Rendering engine not available');
+            return;
+          }
 
           // Position axial viewport perpendicular to centerline at annulus
           const axialViewport = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
           if (axialViewport) {
+            console.log('  ✅ Axial viewport found, positioning camera...');
             const cameraDistance = 200;
 
             const cameraPos = [
@@ -3156,7 +3344,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
             renderingEngine.renderViewports(['axial', 'sagittal', 'coronal']);
             console.log('🔄 All viewports positioned at annular plane for measurements');
           }
-        }, 500); // Delay after tools are set up
+        }, 1000); // Increased delay to ensure rebinding, volume loading, and resize complete before camera positioning
       }
 
     } catch (err) {
@@ -3231,6 +3419,46 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       planeNormal[0] /= normalLen;
       planeNormal[1] /= normalLen;
       planeNormal[2] /= normalLen;
+    }
+
+    // CRITICAL: Ensure normal points in correct direction (towards ascending aorta, away from LV)
+    // Use centerline direction to determine correct orientation
+    // The normal should point generally in the same direction as the centerline at the valve
+    if (centerlineDataRef.current && spherePositionsRef.current.length >= 2) {
+      const lvPos = spherePositionsRef.current[0]; // LV outflow
+      const ascendingPos = spherePositionsRef.current[2]; // Ascending aorta
+
+      // Calculate expected direction (from LV towards ascending aorta)
+      const expectedDir = [
+        ascendingPos[0] - lvPos[0],
+        ascendingPos[1] - lvPos[1],
+        ascendingPos[2] - lvPos[2]
+      ];
+
+      // Normalize expected direction
+      const expectedLen = Math.sqrt(expectedDir[0] ** 2 + expectedDir[1] ** 2 + expectedDir[2] ** 2);
+      if (expectedLen > 0) {
+        expectedDir[0] /= expectedLen;
+        expectedDir[1] /= expectedLen;
+        expectedDir[2] /= expectedLen;
+      }
+
+      // Dot product to check alignment
+      const alignment = planeNormal[0] * expectedDir[0] +
+                       planeNormal[1] * expectedDir[1] +
+                       planeNormal[2] * expectedDir[2];
+
+      // If normal points opposite to expected direction, flip it
+      if (alignment < 0) {
+        console.log('⚠️ Plane normal pointing wrong direction, flipping...');
+        console.log('   Original normal:', planeNormal);
+        planeNormal[0] = -planeNormal[0];
+        planeNormal[1] = -planeNormal[1];
+        planeNormal[2] = -planeNormal[2];
+        console.log('   Flipped normal:', planeNormal);
+      } else {
+        console.log('✅ Plane normal direction correct (alignment:', alignment.toFixed(3), ')');
+      }
     }
 
     // Calculate center of the 3 points (annulus center - centroid)
@@ -3376,7 +3604,18 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
     console.log('📍 Annulus center (centroid):', annulusCenter);
     console.log('📍 Closest centerline point (focal point):', newFocalPoint);
+    console.log('📍 Closest centerline index:', closestIndex);
     console.log('📏 Distance from centroid to centerline:', minDist.toFixed(2), 'mm');
+
+    // Get the centerline tangent at this point (CRITICAL: use tangent, not plane normal!)
+    const tangent = getCenterlineTangentAtIndex(closestIndex);
+    if (!tangent) {
+      console.error('❌ Failed to get centerline tangent at index', closestIndex);
+      return;
+    }
+
+    console.log('📐 Centerline tangent at annulus:', tangent);
+    console.log('📐 Plane normal:', planeNormal);
 
     // Position axial camera perpendicular to the annular plane
     const axialVp = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
@@ -3391,81 +3630,25 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       newFocalPoint[2] + planeNormal[2] * cameraDistance
     ];
 
-    // CRITICAL: Preserve the viewUp from first adjustment (anterior-posterior orientation)
-    // BUT: viewUp must be perpendicular to the viewing direction (plane normal)
-    // So we need to project the initial viewUp onto the plane to make it orthogonal
+    // CRITICAL: Calculate viewUp using EXACT same method as scroll handler (lines 6086-6100)
+    // Use tangent × reference where reference depends on tangent[2]
     let viewUp: Types.Point3;
+    const reference = Math.abs(tangent[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+    const cross = [
+      tangent[1] * reference[2] - tangent[2] * reference[1],
+      tangent[2] * reference[0] - tangent[0] * reference[2],
+      tangent[0] * reference[1] - tangent[1] * reference[0]
+    ];
 
-    if (initialViewUpRef.current) {
-      const initialViewUp = initialViewUpRef.current;
-
-      // Calculate dot product of initialViewUp and plane normal
-      const dotProduct =
-        initialViewUp[0] * planeNormal[0] +
-        initialViewUp[1] * planeNormal[1] +
-        initialViewUp[2] * planeNormal[2];
-
-      console.log('📐 Dot product of initialViewUp and planeNormal:', dotProduct.toFixed(3));
-
-      // If they're nearly perpendicular (dot product close to 0), we can use initialViewUp directly
-      if (Math.abs(dotProduct) < 0.1) {
-        viewUp = initialViewUp;
-        console.log('✅ Using initial viewUp directly (already perpendicular to plane normal):', viewUp);
-      } else {
-        // Project initialViewUp onto the plane (remove component along plane normal)
-        // projectedViewUp = initialViewUp - (initialViewUp · planeNormal) * planeNormal
-        const projectedViewUp = [
-          initialViewUp[0] - dotProduct * planeNormal[0],
-          initialViewUp[1] - dotProduct * planeNormal[1],
-          initialViewUp[2] - dotProduct * planeNormal[2]
-        ];
-
-        // Normalize the projected vector
-        const projLen = Math.sqrt(
-          projectedViewUp[0] ** 2 +
-          projectedViewUp[1] ** 2 +
-          projectedViewUp[2] ** 2
-        );
-
-        if (projLen > 0.01) {
-          viewUp = [
-            projectedViewUp[0] / projLen,
-            projectedViewUp[1] / projLen,
-            projectedViewUp[2] / projLen
-          ] as Types.Point3;
-          console.log('✅ Using projected viewUp (orthogonalized to plane normal):', viewUp);
-        } else {
-          // If projection is too small, use cross product fallback
-          console.warn('⚠️ Projected viewUp too small, using cross product fallback');
-          const reference = Math.abs(planeNormal[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
-          const cross = [
-            planeNormal[1] * reference[2] - planeNormal[2] * reference[1],
-            planeNormal[2] * reference[0] - planeNormal[0] * reference[2],
-            planeNormal[0] * reference[1] - planeNormal[1] * reference[0]
-          ];
-
-          const crossLen = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
-          viewUp = crossLen > 0
-            ? [cross[0] / crossLen, cross[1] / crossLen, cross[2] / crossLen] as Types.Point3
-            : [0, 0, 1] as Types.Point3;
-        }
-      }
+    const crossLen = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
+    if (crossLen > 0) {
+      viewUp = [cross[0] / crossLen, cross[1] / crossLen, cross[2] / crossLen] as Types.Point3;
+      console.log('✅ ViewUp calculated using EXACT scroll handler method:', viewUp);
+      console.log('   tangent:', tangent);
+      console.log('   reference:', reference);
     } else {
-      // Fallback: Calculate viewUp perpendicular to plane normal (old logic)
-      console.warn('⚠️ No stored viewUp - calculating new one (this should not happen in ANNULUS_DEFINITION)');
-      const reference = Math.abs(planeNormal[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
-      const cross = [
-        planeNormal[1] * reference[2] - planeNormal[2] * reference[1],
-        planeNormal[2] * reference[0] - planeNormal[0] * reference[2],
-        planeNormal[0] * reference[1] - planeNormal[1] * reference[0]
-      ];
-
-      const crossLen = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
-      if (crossLen > 0) {
-        viewUp = [cross[0] / crossLen, cross[1] / crossLen, cross[2] / crossLen] as Types.Point3;
-      } else {
-        viewUp = [0, 0, 1] as Types.Point3;
-      }
+      viewUp = [0, 0, 1] as Types.Point3;
+      console.warn('⚠️ Cross product too small, using fallback [0,0,1]');
     }
 
     // Preserve current zoom level
@@ -3475,7 +3658,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     console.log('🎥 Setting axial camera perpendicular to annular plane (SECOND ADJUSTMENT):');
     console.log('   Camera position:', cameraPos);
     console.log('   Focal point (centerline):', newFocalPoint);
-    console.log('   ViewUp (preserved from first adjustment):', viewUp);
+    console.log('   ViewUp (using same cross product as scroll):', viewUp);
     console.log('   Preserving parallelScale:', currentParallelScale);
 
     // Set camera - spread existing camera to preserve clippingRange and other properties
@@ -3924,10 +4107,11 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       cornerstoneTools.addTool(CuspNadirTool);
       cornerstoneTools.addTool(FixedCrosshairTool);
       cornerstoneTools.addTool(TrackballRotateTool); // For 3D viewport rotation
+      cornerstoneTools.addTool(OrientationMarkerTool); // For orientation markers
 
-      // Add volume cropping tools (available in v4.5.6+)
-      cornerstoneTools.addTool(VolumeCroppingTool);
-      cornerstoneTools.addTool(VolumeCroppingControlTool);
+      // CROPPING DISABLED - Volume cropping tools disabled
+      // cornerstoneTools.addTool(VolumeCroppingTool);
+      // cornerstoneTools.addTool(VolumeCroppingControlTool);
 
       // Add measurement tools
       cornerstoneTools.addTool(SplineROITool);
@@ -4004,23 +4188,24 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       // Add RectangleROI tool for volume cropping in ROOT_DEFINITION stage
       toolGroup.addTool(RectangleROITool.toolName);
 
-      // Add VolumeCroppingControlTool for interactive cropping in MPR viewports
-      toolGroup.addTool(VolumeCroppingControlTool.toolName, {
-        getReferenceLineColor: (viewportId) => {
-          const colors = {
-            axial: "rgb(200, 0, 0)",
-            sagittal: "rgb(200, 200, 0)",
-            coronal: "rgb(0, 200, 0)",
-          };
-          return colors[viewportId];
-        },
-        viewportIndicators: true,
-      });
+      // CROPPING DISABLED - VolumeCroppingControlTool disabled
+      // toolGroup.addTool(VolumeCroppingControlTool.toolName, {
+      //   getReferenceLineColor: (viewportId) => {
+      //     const colors = {
+      //       axial: "rgb(200, 0, 0)",
+      //       sagittal: "rgb(200, 200, 0)",
+      //       coronal: "rgb(0, 200, 0)",
+      //     };
+      //     return colors[viewportId];
+      //   },
+      //   viewportIndicators: true,
+      // });
 
-      // Activate VolumeCroppingControlTool for dragging crop lines in MPR views
-      toolGroup.setToolActive(VolumeCroppingControlTool.toolName, {
-        bindings: [{ mouseButton: MouseBindings.Primary }],
-      });
+      // CROPPING DISABLED - VolumeCroppingControlTool activation disabled
+      // toolGroup.setToolActive(VolumeCroppingControlTool.toolName, {
+      //   bindings: [{ mouseButton: MouseBindings.Primary }],
+      // });
+      console.log('ℹ️ VolumeCroppingControlTool is DISABLED in MPR viewports');
 
       toolGroup.addTool(StackScrollTool.toolName, {
         viewportIndicators: true,
@@ -4120,12 +4305,23 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       }
 
       // Add viewports to the tool group AFTER activating CrosshairsTool
+      // NOTE: Don't add 3D viewports here - they get their own tool group
       const viewportIds = ["axial", "sagittal", "coronal"];
-      console.log('  📌 Adding viewports to tool group:', viewportIds);
-      viewportIds.forEach((id) => {
-        toolGroup.addViewport(id, renderingEngineId);
-        console.log(`    - Added ${id} to tool group`);
-      });
+
+      console.log('  📌 Adding 2D viewports to main tool group:', viewportIds);
+      const renderingEngine = renderingEngineRef.current;
+      if (renderingEngine) {
+        viewportIds.forEach((id) => {
+          // Skip if viewport doesn't exist yet
+          const viewport = renderingEngine.getViewport(id);
+          if (!viewport) {
+            console.log(`    - Skipping ${id} (not yet created)`);
+            return;
+          }
+          toolGroup.addViewport(id, renderingEngineId);
+          console.log(`    - Added ${id} to tool group`);
+        });
+      }
 
       // Add volume3D viewport to tool group for ROOT_DEFINITION stage
       // Configure it with TrackballRotateTool for 3D manipulation
@@ -4147,23 +4343,32 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
         toolGroup3D = ToolGroupManager.createToolGroup(toolGroup3DId);
 
-        // Add only TrackballRotateTool, Zoom, and Pan to 3D tool group
-        // Note: VolumeCroppingTool is added AFTER the volume is loaded (see volume loading callback)
+        // Add TrackballRotateTool, Zoom, Pan, and OrientationMarker to 3D tool group
         toolGroup3D.addTool(TrackballRotateTool.toolName);
         toolGroup3D.addTool(ZoomTool.toolName);
         toolGroup3D.addTool(PanTool.toolName);
+        toolGroup3D.addTool(OrientationMarkerTool.toolName);
 
-        // Activate TrackballRotateTool with shift+left mouse button
+        // Configure OrientationMarkerTool with Human.vtp
+        toolGroup3D.setToolConfiguration(OrientationMarkerTool.toolName, {
+          overlayMarkerType: 3, // CUSTOM type for VTP file
+          overlayConfiguration: {
+            3: {
+              polyDataURL: HumanVTP,
+            },
+          },
+        });
+        console.log('🧑 Configured OrientationMarkerTool with Human.vtp:', HumanVTP);
+
+        // Activate tools
         toolGroup3D.setToolActive(TrackballRotateTool.toolName, {
-          bindings: [{ mouseButton: MouseBindings.Primary, modifierKey: 'Shift' }],
+          bindings: [{ mouseButton: MouseBindings.Primary }],
         });
 
-        // Activate Zoom with right mouse button
         toolGroup3D.setToolActive(ZoomTool.toolName, {
           bindings: [{ mouseButton: MouseBindings.Secondary }],
         });
 
-        // Activate Pan with middle mouse button
         toolGroup3D.setToolActive(PanTool.toolName, {
           bindings: [{ mouseButton: MouseBindings.Auxiliary }],
         });
@@ -4174,9 +4379,10 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         console.log('  ✅ 3D tool group created, viewport will be added after volume loads');
       }
 
+      // MEASUREMENTS stage: No extra 3D viewport, using same 2x2 grid
+
       // CRITICAL: Force render ALL viewports AFTER CrosshairsTool activation
       // This ensures CrosshairsTool's initial state is rendered correctly
-      const renderingEngine = renderingEngineRef.current;
       if (renderingEngine) {
         console.log('  🎨 Force rendering all viewports...');
         renderingEngine.renderViewports(viewportIds);
@@ -4204,6 +4410,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         console.log('📏 Configuring distance measurement for MEASUREMENTS stage...');
 
         const fixedCrosshairTool = toolGroup.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
+
+        // NOTE: Viewport size cache reset moved to after viewport resize (line 3023)
+        // to ensure correct dimensions are used for crosshair calculations
 
         if (lockedFocalPointRef.current && fixedCrosshairTool) {
           // Disable center dragging during measurements
@@ -6998,6 +7207,19 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     };
   }, [currentStage, elementRefs.volume3D]);
 
+  // Trigger resize when entering annulus definition or measurements stage to adapt to 1x3 layout
+  useEffect(() => {
+    if ((currentStage === WorkflowStage.ANNULUS_DEFINITION || currentStage === WorkflowStage.MEASUREMENTS) && renderingEngineRef.current) {
+      console.log(`📐 ${currentStage} stage: Triggering resize for 1x3 layout`);
+      setTimeout(() => {
+        if (renderingEngineRef.current) {
+          manualResize(renderingEngineId, ['axial', 'sagittal', 'coronal']);
+          console.log('✅ Resize complete for 1x3 layout');
+        }
+      }, 100);
+    }
+  }, [currentStage]);
+
   // Double-click handler for viewport maximize/restore
   const handleViewportDoubleClick = (viewportId: string) => {
     if (maximizedViewport === viewportId) {
@@ -7085,11 +7307,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       // Debug: log available properties
       console.log('🔍 Rendering engine properties:', Object.keys(renderingEngine));
 
-      // Try different methods to access the render window
+      // Get the viewport-specific render window for volume3D only
       let renderWindow;
       if (renderingEngine.getOffscreenMultiRenderWindow) {
-        console.log('✅ Using getOffscreenMultiRenderWindow method');
-        renderWindow = renderingEngine.getOffscreenMultiRenderWindow('volume3D').getRenderWindow();
+        console.log('✅ Using getOffscreenMultiRenderWindow method for volume3D');
+        const multiRenderWindow = renderingEngine.getOffscreenMultiRenderWindow('volume3D');
+        renderWindow = multiRenderWindow.getRenderWindow();
       } else if (renderingEngine.offscreenMultiRenderWindow) {
         console.log('✅ Using offscreenMultiRenderWindow property');
         renderWindow = renderingEngine.offscreenMultiRenderWindow.getRenderWindow();
@@ -7100,19 +7323,20 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       }
 
       if (!renderWindow) {
-        console.error('❌ Failed to get render window');
+        console.error('❌ Failed to get render window for volume3D');
         return;
       }
 
       // Get the renderer for the volume3D viewport specifically
       const renderer = (viewport as any).getRenderer();
-      console.log('🎨 Got renderer for volume3D viewport');
+      console.log('🎨 Got renderer for volume3D viewport only');
 
-      // Create orientation marker widget with parentRenderer to bind to specific viewport
+      // Create orientation marker widget bound ONLY to volume3D viewport
+      // Using parentRenderer ensures it renders only in that specific viewport's renderer
       const orientationWidget = vtkOrientationMarkerWidget.newInstance({
         actor: actor,
         interactor: renderWindow.getInteractor(),
-        parentRenderer: renderer, // This ensures it only appears in volume3D viewport
+        parentRenderer: renderer, // CRITICAL: This binds it to volume3D renderer only
       });
 
       orientationWidget.setEnabled(true);
@@ -7136,13 +7360,299 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
   // Simple message: crop not yet implemented
   const cropVolumeByCenterline = async (radius: number) => {
-    alert('Centerline-based cropping is complex and requires VTK clipping planes or custom shaders. For now, use the "Vessels Only" preset to focus on vessels.');
-    console.log('⚠️ Cropping not yet fully implemented - consider using VolumeCroppingTool from Cornerstone3D');
+    console.log('🔪 cropVolumeByCenterline called with radius:', radius);
+    console.log('📊 centerlineDataRef.current:', centerlineDataRef.current);
+
+    if (!centerlineDataRef.current?.position || centerlineDataRef.current.position.length < 2) {
+      console.warn('⚠️ No centerline data available for cropping');
+      alert('No centerline data available. Please complete steps 1-2 of the workflow first.');
+      return;
+    }
+
+    const renderingEngine = renderingEngineRef.current;
+    if (!renderingEngine) {
+      console.error('❌ No rendering engine');
+      return;
+    }
+
+    const viewport3D = renderingEngine.getViewport('volume3D');
+    if (!viewport3D) {
+      console.error('❌ No 3D viewport found');
+      return;
+    }
+
+    console.log(`🔪 Applying centerline-based crop with ${radius}mm radius using VolumeCroppingTool`);
+    console.log(`📍 Centerline has ${centerlineDataRef.current.position.length} points`);
+
+    try {
+      const centerlineFlat = centerlineDataRef.current.position;
+
+      // Convert flat array to array of [x,y,z] points
+      const centerlinePoints = [];
+      for (let i = 0; i < centerlineFlat.length; i += 3) {
+        centerlinePoints.push([
+          centerlineFlat[i],
+          centerlineFlat[i + 1],
+          centerlineFlat[i + 2]
+        ]);
+      }
+
+      console.log(`📍 Converted to ${centerlinePoints.length} 3D points`);
+
+      // Calculate bounding box of centerline with radius padding
+      let minX = Infinity, minY = Infinity, minZ = Infinity;
+      let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+
+      for (const point of centerlinePoints) {
+        minX = Math.min(minX, point[0]);
+        minY = Math.min(minY, point[1]);
+        minZ = Math.min(minZ, point[2]);
+        maxX = Math.max(maxX, point[0]);
+        maxY = Math.max(maxY, point[1]);
+        maxZ = Math.max(maxZ, point[2]);
+      }
+
+      // Add padding based on radius
+      minX -= radius;
+      minY -= radius;
+      minZ -= radius;
+      maxX += radius;
+      maxY += radius;
+      maxZ += radius;
+
+      console.log(`📦 Bounding box: X[${minX.toFixed(1)}, ${maxX.toFixed(1)}] Y[${minY.toFixed(1)}, ${maxY.toFixed(1)}] Z[${minZ.toFixed(1)}, ${maxZ.toFixed(1)}]`);
+
+      // Use VolumeCroppingTool to set the crop box programmatically
+      const toolGroup3D = ToolGroupManager.getToolGroup(`${toolGroupId}_3D`);
+      if (toolGroup3D) {
+        const croppingTool = toolGroup3D.getToolInstance(VolumeCroppingTool.toolName) as any;
+
+        if (croppingTool) {
+          console.log('🔍 Inspecting VolumeCroppingTool API:');
+          console.log('  Available methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(croppingTool)));
+          console.log('  Tool instance keys:', Object.keys(croppingTool));
+
+          // Set the bounding box on the cropping tool
+          // The tool uses the volume's bounding box and crop factors
+          const volumeViewport = viewport3D as any;
+          const volume = volumeViewport.getDefaultActor()?.actor;
+
+          if (volume) {
+            const volumeBounds = volume.getBounds();
+            console.log('📦 Volume bounds:', volumeBounds);
+            console.log(`   [${volumeBounds[0].toFixed(1)}, ${volumeBounds[1].toFixed(1)}] [${volumeBounds[2].toFixed(1)}, ${volumeBounds[3].toFixed(1)}] [${volumeBounds[4].toFixed(1)}, ${volumeBounds[5].toFixed(1)}]`);
+
+            // Calculate crop box in world coordinates
+            const cropBox = {
+              xMin: minX, xMax: maxX,
+              yMin: minY, yMax: maxY,
+              zMin: minZ, zMax: maxZ
+            };
+            console.log('🎯 Target crop box:', cropBox);
+
+            // Try different approaches to set the crop box
+
+            // Approach 1: Direct method call if it exists
+            if (typeof croppingTool.setCropBox === 'function') {
+              console.log('📝 Trying setCropBox() method...');
+              croppingTool.setCropBox(cropBox);
+            }
+
+            // Approach 2: Access annotation data
+            else if (typeof croppingTool.getAnnotations === 'function') {
+              console.log('📝 Trying annotation manipulation...');
+              const annotations = croppingTool.getAnnotations();
+              console.log('  Annotations:', annotations);
+
+              if (annotations && annotations.length > 0) {
+                const annotation = annotations[0];
+                console.log('  Annotation data:', annotation.data);
+                console.log('  Current handles:', annotation.data.handles);
+
+                // Update handle positions to match our crop box
+                annotation.data.handles = {
+                  ...annotation.data.handles,
+                  xMin: { worldPosition: [minX, (minY + maxY) / 2, (minZ + maxZ) / 2] },
+                  xMax: { worldPosition: [maxX, (minY + maxY) / 2, (minZ + maxZ) / 2] },
+                  yMin: { worldPosition: [(minX + maxX) / 2, minY, (minZ + maxZ) / 2] },
+                  yMax: { worldPosition: [(minX + maxX) / 2, maxY, (minZ + maxZ) / 2] },
+                  zMin: { worldPosition: [(minX + maxX) / 2, (minY + maxY) / 2, minZ] },
+                  zMax: { worldPosition: [(minX + maxX) / 2, (minY + maxY) / 2, maxZ] },
+                };
+                console.log('  Updated handles:', annotation.data.handles);
+              }
+            }
+
+            // Approach 3: Try to access internal crop data or mapper
+            else {
+              console.log('📝 Trying alternative approaches...');
+              console.log('  Tool configuration:', croppingTool.configuration);
+
+              // Try to access the volume actor and its mapper
+              const actors = volumeViewport.getActors();
+              console.log('  Viewport actors:', actors.length);
+
+              if (actors.length > 0) {
+                const volumeActor = actors[0].actor;
+                const mapper = volumeActor.getMapper();
+                console.log('  Mapper type:', mapper.getClassName());
+                console.log('  Mapper methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(mapper)).filter(m => m.includes('Clip') || m.includes('Crop')));
+              }
+            }
+
+            console.log('✅ Attempted to set VolumeCroppingTool crop box');
+          }
+        } else {
+          console.warn('⚠️ VolumeCroppingTool not found in tool group');
+        }
+      }
+
+      // Note: Vessel-only filter (150-300 HU) is already applied by default at viewport initialization
+
+      /* OLD COMPLEX CYLINDRICAL CODE - commented out, using simple box instead
+      for (let i = 0; i < centerlinePoints.length - 1; i += step) {
+        const p1 = centerlinePoints[i];
+        const p2 = centerlinePoints[Math.min(i + step, centerlinePoints.length - 1)];
+
+        // Calculate direction vector
+        const direction = [
+          p2[0] - p1[0],
+          p2[1] - p1[1],
+          p2[2] - p1[2]
+        ];
+
+        // Normalize direction
+        const length = Math.sqrt(direction[0] ** 2 + direction[1] ** 2 + direction[2] ** 2);
+        if (length < 0.001) continue;
+
+        const normalizedDir = direction.map(d => d / length);
+
+        // Create perpendicular vectors for the cylindrical sides
+        // We'll create 6 planes around each segment (hexagonal approximation)
+        const angles = [0, 60, 120, 180, 240, 300];
+
+        for (const angle of angles) {
+          const rad = (angle * Math.PI) / 180;
+
+          // Create perpendicular vector in the plane perpendicular to centerline
+          let perpX = Math.cos(rad);
+          let perpY = Math.sin(rad);
+          let perpZ = 0;
+
+          // Rotate to be perpendicular to direction vector
+          // Use cross product to get perpendicular vectors
+          const up = [0, 0, 1];
+          const cross = [
+            normalizedDir[1] * up[2] - normalizedDir[2] * up[1],
+            normalizedDir[2] * up[0] - normalizedDir[0] * up[2],
+            normalizedDir[0] * up[1] - normalizedDir[1] * up[0]
+          ];
+
+          const crossLength = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
+          if (crossLength > 0.001) {
+            const normalizedCross = cross.map(c => c / crossLength);
+
+            // Position on the cylinder surface
+            const pointOnCylinder = [
+              p1[0] + normalizedCross[0] * radius * Math.cos(rad),
+              p1[1] + normalizedCross[1] * radius * Math.cos(rad),
+              p1[2] + normalizedCross[2] * radius * Math.sin(rad)
+            ];
+
+            // Normal pointing OUTWARD (away from centerline) to clip outside
+            const normal = [
+              pointOnCylinder[0] - p1[0],
+              pointOnCylinder[1] - p1[1],
+              pointOnCylinder[2] - p1[2]
+            ];
+
+            const normalLength = Math.sqrt(normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2);
+            if (normalLength > 0.001) {
+              const normalizedNormal = normal.map(n => n / normalLength);
+
+              // Create VTK plane
+              const plane = vtkPlane.newInstance();
+              plane.setOrigin(pointOnCylinder);
+              plane.setNormal(normalizedNormal);
+
+              // Add plane to mapper
+              if (typeof mapper.addClippingPlane === 'function') {
+                mapper.addClippingPlane(plane);
+              }
+            }
+          }
+        }
+      }
+
+      // Add end cap planes (at start and end of centerline)
+      const startPoint = centerlinePoints[0];
+      const endPoint = centerlinePoints[centerlinePoints.length - 1];
+
+      // Start cap
+      const startDir = [
+        centerlinePoints[1][0] - startPoint[0],
+        centerlinePoints[1][1] - startPoint[1],
+        centerlinePoints[1][2] - startPoint[2]
+      ];
+      const startDirLength = Math.sqrt(startDir[0] ** 2 + startDir[1] ** 2 + startDir[2] ** 2);
+      if (startDirLength > 0.001) {
+        const startPlane = vtkPlane.newInstance();
+        startPlane.setOrigin(startPoint);
+        startPlane.setNormal(startDir.map(d => d / startDirLength));
+        if (typeof mapper.addClippingPlane === 'function') {
+          mapper.addClippingPlane(startPlane);
+        }
+      }
+
+      // End cap
+      const endIdx = centerlinePoints.length - 2;
+      const endDir = [
+        endPoint[0] - centerlinePoints[endIdx][0],
+        endPoint[1] - centerlinePoints[endIdx][1],
+        endPoint[2] - centerlinePoints[endIdx][2]
+      ];
+      const endDirLength = Math.sqrt(endDir[0] ** 2 + endDir[1] ** 2 + endDir[2] ** 2);
+      if (endDirLength > 0.001) {
+        const endPlane = vtkPlane.newInstance();
+        endPlane.setOrigin(endPoint);
+        endPlane.setNormal(endDir.map(d => d / endDirLength));
+        if (typeof mapper.addClippingPlane === 'function') {
+          mapper.addClippingPlane(endPlane);
+        }
+      }
+      */
+
+      viewport3D.render();
+      console.log('✅ Centerline-based box crop applied');
+    } catch (error) {
+      console.error('❌ Error applying centerline crop:', error);
+    }
   };
 
-  // Restore original volume (placeholder)
+  // Restore original volume - remove clipping planes
   const restoreOriginalVolume = async () => {
-    console.log('Restore not needed - crop not implemented');
+    const renderingEngine = renderingEngineRef.current;
+    if (!renderingEngine) return;
+
+    const viewport3D = renderingEngine.getViewport('volume3D');
+    if (!viewport3D) return;
+
+    try {
+      // Get the volume actor and remove all clipping planes
+      const actors = viewport3D.getActors();
+      if (actors.length > 0) {
+        const volumeActor = actors[0].actor;
+        const mapper = volumeActor.getMapper();
+
+        if (typeof mapper.removeAllClippingPlanes === 'function') {
+          mapper.removeAllClippingPlanes();
+          viewport3D.render();
+          console.log('✅ Removed all clipping planes - full volume restored');
+        }
+      }
+    } catch (error) {
+      console.error('❌ Error restoring volume:', error);
+    }
   };
 
   // Apply HU range to 3D viewport for vessel/tissue visualization
@@ -7156,23 +7666,80 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
     try {
       if (mode === 'vessels') {
-        // Use MIP preset for vessel visualization
-        console.log('🎨 Applying MIP preset for vessels...');
+        // Use MAXIMUM_INTENSITY_BLEND mode for vessel visualization
+        console.log('🎨 Applying MAXIMUM_INTENSITY_BLEND mode for vessels...');
 
-        viewport.setProperties({
-          preset: 'MIP',
-        });
+        const actors = (viewport as any).getActors();
+        if (actors && actors.length > 0) {
+          const actorEntry = actors[0];
+          const volumeActor = actorEntry.actor || actorEntry;
+          const mapper = volumeActor.getMapper();
+
+          if (mapper && typeof mapper.setBlendMode === 'function') {
+            // VTK BlendMode constants from the link:
+            // COMPOSITE_BLEND: 0
+            // MAXIMUM_INTENSITY_BLEND: 1
+            // MINIMUM_INTENSITY_BLEND: 2
+            // AVERAGE_INTENSITY_BLEND: 3
+            // ADDITIVE_INTENSITY_BLEND: 4
+            // RADON_TRANSFORM_BLEND: 5
+
+            mapper.setBlendMode(1); // MAXIMUM_INTENSITY_BLEND
+            console.log('✅ Set blend mode to MAXIMUM_INTENSITY_BLEND (1)');
+          }
+
+          // Apply MIP with transparency (like original example)
+          const property = volumeActor.getProperty();
+
+          // Opacity: Less transparent, vessels more solid/visible
+          const opacityFunction = vtkPiecewiseFunction.newInstance();
+          opacityFunction.addPoint(-3024, 0.0);        // Air - transparent
+          opacityFunction.addPoint(lower - 50, 0.0);   // Below vessels - transparent
+          opacityFunction.addPoint(lower, 0.3);        // Vessel start - 30% opacity
+          opacityFunction.addPoint((lower + upper) / 2, 0.6);  // Mid vessels - 60% opacity
+          opacityFunction.addPoint(upper, 0.9);        // Bright vessels - 90% opacity
+          opacityFunction.addPoint(500, 1.0);          // Bone - 100% opacity
+          opacityFunction.addPoint(3000, 1.0);         // Metal - 100% opacity
+
+          // Inverted grayscale - high HU (vessels) = dark/black, darker overall
+          const colorFunction = vtkColorTransferFunction.newInstance();
+          colorFunction.addRGBPoint(-3024, 1.0, 1.0, 1.0);      // Air - white
+          colorFunction.addRGBPoint(0, 0.7, 0.7, 0.7);          // Soft tissue - lighter gray
+          colorFunction.addRGBPoint(lower, 0.4, 0.4, 0.4);      // Vessel start - darker medium gray
+          colorFunction.addRGBPoint((lower + upper) / 2, 0.15, 0.15, 0.15);  // Mid vessels - much darker
+          colorFunction.addRGBPoint(upper, 0.05, 0.05, 0.05);   // Bright vessels - nearly black
+          colorFunction.addRGBPoint(500, 0.0, 0.0, 0.0);        // Bone - black
+          colorFunction.addRGBPoint(3000, 0.0, 0.0, 0.0);       // Metal - black
+
+          property.setRGBTransferFunction(0, colorFunction);
+          property.setScalarOpacity(0, opacityFunction);
+        }
 
         viewport.render();
-        console.log(`✅ Applied MIP preset for vessel visualization`);
+        console.log(`✅ Applied MAXIMUM_INTENSITY_BLEND mode for vessels`);
 
       } else if (mode === 'all') {
-        // Use CT-Cardiac preset which shows everything
+        // Use COMPOSITE blend mode (default) with CT-Cardiac preset
+        console.log('🎨 Applying COMPOSITE blend mode for all structures...');
+
+        const actors = (viewport as any).getActors();
+        if (actors && actors.length > 0) {
+          const actorEntry = actors[0];
+          const volumeActor = actorEntry.actor || actorEntry;
+          const mapper = volumeActor.getMapper();
+
+          if (mapper && typeof mapper.setBlendMode === 'function') {
+            // VTK BlendMode enum: COMPOSITE_BLEND = 0
+            mapper.setBlendMode(0);
+            console.log('✅ Set blend mode to COMPOSITE_BLEND (0)');
+          }
+        }
+
         viewport.setProperties({
           preset: 'CT-Cardiac',
         });
         viewport.render();
-        console.log('✅ Applied CT-Cardiac preset');
+        console.log('✅ Applied CT-Cardiac preset with composite blend');
       } else {
         // Soft tissue mode using opacity transfer functions
         const actors = (viewport as any).getActors();
@@ -7313,87 +7880,88 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         
         {/* MPR views in a dynamic grid based on stage */}
         <div className={`${maximizedViewport ? 'w-full h-full' :
-          currentStage === WorkflowStage.MEASUREMENTS ? 'flex flex-col h-full gap-1 bg-slate-900' : // 5-viewport: custom layout
           `grid h-full gap-1 bg-slate-900 ${
             currentStage === WorkflowStage.ROOT_DEFINITION ? 'grid-cols-2 grid-rows-2' : // 4-viewport: 2x2 grid
-            currentStage === WorkflowStage.ANNULUS_DEFINITION ? 'grid-cols-2 grid-rows-2' : // 2x2 grid
+            currentStage === WorkflowStage.ANNULUS_DEFINITION ? 'grid-cols-3' : // 1x3 layout (3 columns in 1 row)
+            currentStage === WorkflowStage.MEASUREMENTS ? 'grid-cols-3' : // 1x3 layout (3 columns in 1 row)
             'grid-cols-3' // Default: 3 columns
           }`
         }`}>
-          {/* MEASUREMENTS Stage: Special 5-viewport layout (3 top, 2 bottom) */}
-          {currentStage === WorkflowStage.MEASUREMENTS && !maximizedViewport ? (
+          {/* MEASUREMENTS Stage: Use same 2x2 grid (SIMPLIFIED) */}
+          {false && currentStage === WorkflowStage.MEASUREMENTS && !maximizedViewport ? (
             <>
-              {/* Top row: 3 small viewports (1/3 height each) */}
-              <div className="flex gap-1 h-1/3">
+              {/* Top row: 3 viewports (1/3 height each) - Axial, 3D, Empty */}
+              <div className="flex gap-1 h-1/3 relative z-10">
                 {/* Axial */}
-                <div className="relative bg-black border border-slate-700 w-1/3">
+                <div className="relative bg-black border border-slate-700 w-1/3 overflow-hidden">
                   <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
                     Axial
                   </div>
                   <div
                     ref={elementRefs.axial}
-                    className="w-full h-full"
+                    className="w-full h-full relative z-0"
                     style={{ minHeight: '200px' }}
                     onDoubleClick={() => handleViewportDoubleClick('axial')}
                   />
                 </div>
-                {/* Sagittal */}
-                <div className="relative bg-black border border-slate-700 w-1/3">
+                {/* 3D View */}
+                <div className="relative bg-black border border-slate-700 w-1/3 overflow-hidden">
                   <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
-                    Sagittal
+                    3D View
+                  </div>
+                  <div
+                    ref={elementRefs.measurement1}
+                    className="w-full h-full relative z-0"
+                    style={{ minHeight: '200px' }}
+                    onDoubleClick={() => handleViewportDoubleClick('measurement1')}
+                  />
+                </div>
+                {/* Empty / Reserved */}
+                <div className="relative bg-slate-800 border border-slate-700 w-1/3 overflow-hidden">
+                  <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                    Reserved
+                  </div>
+                  <div
+                    ref={elementRefs.measurement2}
+                    className="w-full h-full flex items-center justify-center text-slate-500 relative z-0"
+                    style={{ minHeight: '200px' }}
+                  >
+                    <span className="text-sm">Reserved for future use</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Bottom row: 2 large viewports (2/3 height) - Long axis views */}
+              <div className="flex gap-1 h-2/3 relative z-0">
+                {/* Sagittal (Long Axis) */}
+                <div className="relative bg-black border border-slate-700 w-1/2 overflow-hidden">
+                  <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                    Sagittal (Long Axis)
                   </div>
                   <div
                     ref={elementRefs.sagittal}
-                    className="w-full h-full"
-                    style={{ minHeight: '200px' }}
+                    className="w-full h-full relative z-0"
+                    style={{ minHeight: '400px' }}
                     onDoubleClick={() => handleViewportDoubleClick('sagittal')}
                   />
                 </div>
-                {/* Coronal */}
-                <div className="relative bg-black border border-slate-700 w-1/3">
+                {/* Coronal (Long Axis) */}
+                <div className="relative bg-black border border-slate-700 w-1/2 overflow-hidden">
                   <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
-                    Coronal
+                    Coronal (Long Axis)
                   </div>
                   <div
                     ref={elementRefs.coronal}
-                    className="w-full h-full"
-                    style={{ minHeight: '200px' }}
+                    className="w-full h-full relative z-0"
+                    style={{ minHeight: '400px' }}
                     onDoubleClick={() => handleViewportDoubleClick('coronal')}
                   />
                 </div>
               </div>
-
-              {/* Bottom row: 2 large viewports (2/3 height) */}
-              <div className="flex gap-1 h-2/3">
-                {/* Measurement View 1 */}
-                <div className="relative bg-black border border-slate-700 w-1/2">
-                  <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
-                    Measurement View 1
-                  </div>
-                  <div
-                    ref={elementRefs.measurement1}
-                    className="w-full h-full"
-                    style={{ minHeight: '400px' }}
-                    onDoubleClick={() => handleViewportDoubleClick('measurement1')}
-                  />
-                </div>
-                {/* Measurement View 2 */}
-                <div className="relative bg-black border border-slate-700 w-1/2">
-                  <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
-                    Measurement View 2
-                  </div>
-                  <div
-                    ref={elementRefs.measurement2}
-                    className="w-full h-full"
-                    style={{ minHeight: '400px' }}
-                    onDoubleClick={() => handleViewportDoubleClick('measurement2')}
-                  />
-                </div>
-              </div>
             </>
-          ) : currentStage !== WorkflowStage.MEASUREMENTS && (
+          ) : (
             <>
-          {/* Axial View (for non-MEASUREMENTS stages or when maximized) */}
+          {/* Axial View (all stages with 2x2 grid layout) */}
           {(!maximizedViewport || maximizedViewport === 'axial') && (
             <div className={`relative bg-black border border-slate-700 ${
               maximizedViewport === 'axial' ? 'w-full h-full' : ''
@@ -8178,132 +8746,111 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                   Reset to AP
                 </button>
 
-                {/* Toggle Volume Cropping */}
-                <button
-                  onClick={() => {
-                    const newState = !isCroppingEnabled;
-                    setIsCroppingEnabled(newState);
+                {/* CROPPING DISABLED - Volume Cropping Button
+                //                 <button
+                //                   onClick={() => {
+                //                     const newState = !isCroppingEnabled;
+                //                     setIsCroppingEnabled(newState);
+                // 
+                //                     // Toggle cropping control tool in MPR viewports only
+                //                     // 3D viewport will automatically show the cropped volume
+                //                     const toolGroupMPR = ToolGroupManager.getToolGroup(toolGroupId);
+                //                     if (toolGroupMPR) {
+                //                       try {
+                //                         if (newState) {
+                //                           // Enable cropping control in MPR - set tool to active
+                //                           toolGroupMPR.setToolActive(VolumeCroppingControlTool.toolName, {
+                //                             bindings: [{ mouseButton: MouseBindings.Primary }],
+                //                           });
+                //                           console.log('✅ Volume cropping enabled (via MPR planes)');
+                //                         } else {
+                //                           // Disable cropping control in MPR - set tool to disabled
+                //                           toolGroupMPR.setToolDisabled(VolumeCroppingControlTool.toolName);
+                //                           // Reset clipping to show full volume
+                //                           restoreOriginalVolume();
+                //                           console.log('⏸️ Volume cropping disabled');
+                //                         }
+                //                       } catch (error) {
+                //                         console.error('Error toggling MPR cropping tool:', error);
+                //                       }
+                //                     }
+                // 
+                //                     renderingEngineRef.current?.render();
+                //                   }}
+                //                   className={`px-3 py-1.5 text-xs rounded shadow-lg font-semibold ${
+                //                     isCroppingEnabled
+                //                       ? 'bg-green-600 hover:bg-green-700 text-white'
+                //                       : 'bg-gray-600 hover:bg-gray-700 text-white'
+                //                   }`}
+                //                   title={isCroppingEnabled ? "Click to disable volume cropping (adjust via MPR planes)" : "Click to enable volume cropping (adjust via MPR planes)"}
+                //                 >
+                //                   {isCroppingEnabled ? '✓ Cropping ON' : 'Cropping OFF'}
+                //                 </button> */}
 
-                    // Toggle cropping tool in 3D viewport
-                    const toolGroup3D = ToolGroupManager.getToolGroup(`${toolGroupId}_3D`);
-                    if (toolGroup3D) {
-                      try {
-                        const croppingTool = toolGroup3D.getToolInstance(VolumeCroppingTool.toolName) as any;
+                {/* CROPPING DISABLED - Centerline-Based Crop Button
+                //                 {(currentStage === WorkflowStage.ROOT_DEFINITION ||
+                //                   currentStage === WorkflowStage.CPR_ANALYSIS ||
+                //                   currentStage === WorkflowStage.ANNULUS_DEFINITION ||
+                //                   currentStage === WorkflowStage.MEASUREMENTS) && (
+                //                   <button
+                //                     onClick={() => {
+                //                       console.log('🖱️ Crop to Aorta button clicked!');
+                //                       console.log('📊 Current centerline data:', centerlineDataRef.current);
+                //                       console.log('📊 Current sphere positions:', spherePositionsRef.current);
+                // 
+                //                       // If no centerline but we have 3+ spheres, generate it now
+                //                       if ((!centerlineDataRef.current?.position || centerlineDataRef.current.position.length < 2) &&
+                //                           existingSpheres && existingSpheres.length >= 3) {
+                //                         console.log('🔄 Generating centerline from spheres...');
+                //                         const centerlineData = CenterlineGenerator.generateFromRootPoints(
+                //                           existingSpheres.map((sphere, index) => {
+                //                             let type: any;
+                //                             if (existingSpheres.length === 3) {
+                //                               type = index === 0 ? RootPointType.LV_OUTFLOW :
+                //                                     index === 1 ? RootPointType.AORTIC_VALVE :
+                //                                     RootPointType.ASCENDING_AORTA;
+                //                             } else {
+                //                               const middleIndex = Math.floor(existingSpheres.length / 2);
+                //                               type = index === 0 ? RootPointType.LV_OUTFLOW :
+                //                                     index === middleIndex ? RootPointType.AORTIC_VALVE :
+                //                                     index === existingSpheres.length - 1 ? RootPointType.ASCENDING_AORTA :
+                //                                     RootPointType.EXTENDED;
+                //                             }
+                //                             return {
+                //                               id: sphere.id,
+                //                               position: sphere.pos,
+                //                               type: type,
+                //                               timestamp: Date.now()
+                //                             };
+                //                           })
+                //                         );
+                //                         centerlineDataRef.current = centerlineData;
+                //                         console.log('✅ Centerline generated:', centerlineData);
+                //                       }
+                // 
+                //                       if (!centerlineDataRef.current?.position || centerlineDataRef.current.position.length < 2) {
+                //                         console.warn('⚠️ No centerline - showing alert');
+                //                         alert('Please place 3 spheres first to define the vessel path.');
+                //                         return;
+                //                       }
+                //                       cropVolumeByCenterline(cropRadius);
+                //                     }}
+                //                     className={`px-3 py-1.5 text-xs rounded shadow-lg font-semibold ${
+                //                       (!existingSpheres || existingSpheres.length < 3)
+                //                         ? 'bg-gray-500 text-gray-300 cursor-not-allowed'
+                //                         : 'bg-purple-600 hover:bg-purple-700 text-white'
+                //                     }`}
+                //                     title={
+                //                       (!existingSpheres || existingSpheres.length < 3)
+                //                         ? 'Place 3 spheres first to define vessel path'
+                //                         : `Crop volume to show only aorta (${cropRadius}mm radius around centerline)`
+                //                     }
+                //                   >
+                //                     Crop to Aorta ({cropRadius}mm)
+                //                   </button>
+                //                 )} */}
 
-                        if (newState) {
-                          // Enable cropping in 3D - set tool to active
-                          toolGroup3D.setToolActive(VolumeCroppingTool.toolName, {
-                            bindings: [{ mouseButton: MouseBindings.Primary }],
-                          });
-                          // Show handles and planes
-                          if (croppingTool) {
-                            if (typeof croppingTool.setHandlesVisible === 'function') {
-                              croppingTool.setHandlesVisible(true);
-                            }
-                            if (typeof croppingTool.setClippingPlanesVisible === 'function') {
-                              croppingTool.setClippingPlanesVisible(true);
-                            }
-                          }
-                          // Also need to set TrackballRotateTool to shift+primary
-                          toolGroup3D.setToolActive(TrackballRotateTool.toolName, {
-                            bindings: [{ mouseButton: MouseBindings.Primary, modifierKey: 'Shift' }],
-                          });
-                        } else {
-                          // Reset clipping planes to show full volume
-                          const viewport3D = renderingEngineRef.current?.getViewport('volume3D');
-                          if (viewport3D) {
-                            const actors = viewport3D.getActors();
-                            actors.forEach((actorEntry) => {
-                              const actor = actorEntry.actor;
-                              const mapper = actor?.getMapper();
-                              if (mapper && typeof mapper.removeAllClippingPlanes === 'function') {
-                                mapper.removeAllClippingPlanes();
-                              }
-                            });
-                          }
-
-                          // Hide handles and planes before disabling
-                          if (croppingTool) {
-                            if (typeof croppingTool.setHandlesVisible === 'function') {
-                              croppingTool.setHandlesVisible(false);
-                            }
-                            if (typeof croppingTool.setClippingPlanesVisible === 'function') {
-                              croppingTool.setClippingPlanesVisible(false);
-                            }
-                          }
-                          // Disable cropping in 3D - set tool to disabled (not just passive)
-                          toolGroup3D.setToolDisabled(VolumeCroppingTool.toolName);
-                          // Make TrackballRotateTool primary without shift
-                          toolGroup3D.setToolActive(TrackballRotateTool.toolName, {
-                            bindings: [{ mouseButton: MouseBindings.Primary }],
-                          });
-                        }
-                      } catch (error) {
-                        console.error('Error toggling 3D cropping tool:', error);
-                      }
-                    }
-
-                    // Toggle cropping control tool in MPR viewports
-                    const toolGroupMPR = ToolGroupManager.getToolGroup(toolGroupId);
-                    if (toolGroupMPR) {
-                      try {
-                        if (newState) {
-                          // Enable cropping control in MPR - set tool to active
-                          toolGroupMPR.setToolActive(VolumeCroppingControlTool.toolName, {
-                            bindings: [{ mouseButton: MouseBindings.Primary }],
-                          });
-                        } else {
-                          // Disable cropping control in MPR - set tool to disabled
-                          toolGroupMPR.setToolDisabled(VolumeCroppingControlTool.toolName);
-                        }
-                      } catch (error) {
-                        console.error('Error toggling MPR cropping tool:', error);
-                      }
-                    }
-
-                    console.log(newState ? '✅ Volume cropping enabled' : '⏸️ Volume cropping disabled');
-                    renderingEngineRef.current?.render();
-                  }}
-                  className={`px-3 py-1.5 text-xs rounded shadow-lg font-semibold ${
-                    isCroppingEnabled
-                      ? 'bg-green-600 hover:bg-green-700 text-white'
-                      : 'bg-gray-600 hover:bg-gray-700 text-white'
-                  }`}
-                  title={isCroppingEnabled ? "Click to disable volume cropping" : "Click to enable volume cropping"}
-                >
-                  {isCroppingEnabled ? '✓ Cropping ON' : 'Cropping OFF'}
-                </button>
-
-                {/* HU Range Presets */}
-                <div className="bg-black bg-opacity-80 rounded p-2 border border-gray-600">
-                  <div className="text-white text-xs font-bold mb-2">Visibility</div>
-                  <div className="flex flex-col gap-1">
-                    <button
-                      onClick={() => apply3DVolumeRange(150, 300, 'vessels')}
-                      className={`px-2 py-1 text-xs rounded ${volume3DRange.lower === 150 && volume3DRange.upper === 300 ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
-                      title="MIP preset - Show contrast-enhanced vessels only (150-300 HU)"
-                    >
-                      Vessels Only
-                    </button>
-                    <button
-                      onClick={() => apply3DVolumeRange(200, 3000, 'all')}
-                      className={`px-2 py-1 text-xs rounded ${volume3DRange.lower === 200 && volume3DRange.upper === 3000 ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
-                      title="CT-Cardiac preset - Show all including bones"
-                    >
-                      All + Bones
-                    </button>
-                    <button
-                      onClick={() => apply3DVolumeRange(-100, 300, 'soft')}
-                      className={`px-2 py-1 text-xs rounded ${volume3DRange.lower === -100 && volume3DRange.upper === 300 ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
-                      title="Show soft tissue only (-100 to 300 HU)"
-                    >
-                      Soft Tissue
-                    </button>
-                  </div>
-                  <div className="text-gray-400 text-xs mt-2">
-                    {volume3DRange.lower} - {volume3DRange.upper} HU
-                  </div>
-                </div>
+                {/* HU Range Presets - REMOVED */}
               </div>
 
               <div

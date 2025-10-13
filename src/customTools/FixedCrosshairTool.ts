@@ -23,8 +23,8 @@ class FixedCrosshairTool extends BaseTool {
   // Rotation state
   private isDragging: boolean = false;
   private dragStartAngle: number = 0;
-  private minRotationThreshold: number = 0.01; // Minimum angle change (in radians) before applying rotation
-  private rotationSmoothingFactor: number = 0.3; // 0.3 = less sensitive, smoother; 1.0 = direct, more sensitive
+  private minRotationThreshold: number = 0.001; // Very small threshold for smooth updates (0.001 radians = ~0.057 degrees)
+  private rotationSmoothingFactor: number = 0.5; // 0.5 = balanced sensitivity and smoothness
 
   // Center dot dragging state
   private isCenterDragging: boolean = false;
@@ -34,6 +34,11 @@ class FixedCrosshairTool extends BaseTool {
   private centerDraggingDisabled: boolean = false; // Disable center dragging (e.g., during measurements)
   private annulusReferencePosition: Types.Point3 | null = null; // Reference position for distance measurement (annulus plane)
   private showDistanceFromAnnulus: boolean = false; // Show distance measurement during measurements stage
+
+  // Windowing state
+  private isWindowing: boolean = false;
+  private windowingStartPos: { x: number; y: number } | null = null;
+  private windowingStartValues: { windowCenter: number; windowWidth: number } | null = null;
 
   // Color scheme per viewport
   private redColor = 'rgba(255, 50, 50, 0.7)'; // Red with 70% opacity - for coronal and axial horizontal
@@ -55,7 +60,6 @@ class FixedCrosshairTool extends BaseTool {
   setFixedPosition(position: Types.Point3, renderingEngineId: string = 'mprRenderingEngine') {
     this.fixedPosition = [...position] as Types.Point3; // Clone to avoid reference issues
     this.renderingEngineId = renderingEngineId;
-    console.log('🔒 FixedCrosshairTool: Position set to', this.fixedPosition);
 
     // Start rendering loop
     this.startRenderLoop();
@@ -137,6 +141,16 @@ class FixedCrosshairTool extends BaseTool {
     this.cleanupLines();
 
     console.log('🔓 FixedCrosshairTool: Position cleared');
+  }
+
+  /**
+   * Reset viewport size cache to force recalculation of crosshair positions
+   * Call this when viewport layout changes (e.g., entering measurements stage)
+   */
+  resetViewportSizes() {
+    console.log('🔄 FixedCrosshairTool: Resetting viewport size cache');
+    this.lastViewportSizes = {};
+    this.skipDrawUntil = {};
   }
 
   /**
@@ -737,8 +751,8 @@ class FixedCrosshairTool extends BaseTool {
         FixedCrosshairTool.globalRotationAngle = oldRotation + smoothedDeltaAngle;
         const deltaAngle = smoothedDeltaAngle;
 
-        // Only update if there's a meaningful change (increased threshold for less sensitivity)
-        if (Math.abs(deltaAngle) > this.minRotationThreshold) {
+        // Always update for smooth rotation - even tiny movements
+        if (Math.abs(deltaAngle) > 0) {
           // Rotate the MPR viewing planes (negate deltaAngle to fix direction)
           this.rotateMPRPlanes(renderingEngine, 'axial', -deltaAngle);
         }
@@ -791,6 +805,7 @@ class FixedCrosshairTool extends BaseTool {
   preMouseDownCallback = (evt: any) => {
     const { element, currentPoints } = evt.detail;
     const canvas = currentPoints.canvas;
+    const event = evt.detail.event as MouseEvent;
 
     if (!this.renderingEngineId || !this.fixedPosition) {
       return false;
@@ -802,6 +817,26 @@ class FixedCrosshairTool extends BaseTool {
     const viewportId = element.getAttribute('data-viewport-uid');
     const viewport = renderingEngine.getViewport(viewportId);
     if (!viewport) return false;
+
+    // Check for windowing (Shift + drag anywhere on viewport)
+    if (event.shiftKey) {
+      this.isWindowing = true;
+      this.windowingStartPos = { x: event.clientX, y: event.clientY };
+
+      // Get current window values
+      const voiRange = viewport.getProperties().voiRange;
+      if (voiRange) {
+        const windowWidth = voiRange.upper - voiRange.lower;
+        const windowCenter = (voiRange.upper + voiRange.lower) / 2;
+        this.windowingStartValues = { windowCenter, windowWidth };
+      } else {
+        // Default values if no VOI range set
+        this.windowingStartValues = { windowCenter: 40, windowWidth: 400 };
+      }
+
+      console.log('🪟 Starting windowing:', this.windowingStartValues);
+      return true; // We're handling this event
+    }
 
     // Get center point in canvas coordinates
     const centerCanvas = viewport.worldToCanvas(this.fixedPosition);
@@ -896,6 +931,45 @@ class FixedCrosshairTool extends BaseTool {
   mouseDragCallback = (evt: any) => {
     const { element, currentPoints, deltaPoints } = evt.detail;
     const canvas = currentPoints.canvas;
+    const event = evt.detail.event as MouseEvent;
+
+    // Handle windowing (Shift + drag)
+    if (this.isWindowing && this.windowingStartPos && this.windowingStartValues) {
+      if (!this.renderingEngineId) return false;
+
+      const renderingEngine = getRenderingEngine(this.renderingEngineId);
+      if (!renderingEngine) return false;
+
+      const viewportId = element.getAttribute('data-viewport-uid');
+      const viewport = renderingEngine.getViewport(viewportId);
+      if (!viewport) return false;
+
+      // Calculate mouse delta
+      const deltaX = event.clientX - this.windowingStartPos.x;
+      const deltaY = event.clientY - this.windowingStartPos.y;
+
+      // Apply windowing changes: horizontal = window width, vertical = window level/center
+      const windowWidthDelta = deltaX * 2; // Sensitivity multiplier for width
+      const windowCenterDelta = -deltaY; // Invert Y (down = darker)
+
+      const newWindowWidth = Math.max(1, this.windowingStartValues.windowWidth + windowWidthDelta);
+      const newWindowCenter = this.windowingStartValues.windowCenter + windowCenterDelta;
+
+      // Calculate new VOI range
+      const newLower = newWindowCenter - newWindowWidth / 2;
+      const newUpper = newWindowCenter + newWindowWidth / 2;
+
+      // Apply to viewport
+      viewport.setProperties({
+        voiRange: { lower: newLower, upper: newUpper }
+      });
+
+      viewport.render();
+
+      evt.preventDefault();
+      evt.stopPropagation();
+      return true;
+    }
 
     // Handle center dot dragging
     if (this.isCenterDragging && this.renderingEngineId && this.fixedPosition) {
@@ -986,8 +1060,8 @@ class FixedCrosshairTool extends BaseTool {
     FixedCrosshairTool.globalRotationAngle = oldRotation + smoothedDeltaAngle;
     const deltaAngle = smoothedDeltaAngle;
 
-    // Only update if there's a meaningful change (increased threshold for less sensitivity)
-    if (Math.abs(deltaAngle) > this.minRotationThreshold) {
+    // Always update for smooth rotation - even tiny movements
+    if (Math.abs(deltaAngle) > 0) {
       // Rotate the MPR viewing planes (negate deltaAngle to fix direction)
       this.rotateMPRPlanes(renderingEngine, viewportId, -deltaAngle);
     }
@@ -1102,9 +1176,16 @@ class FixedCrosshairTool extends BaseTool {
   }
 
   /**
-   * Mouse up callback - stop rotation or center dragging
+   * Mouse up callback - stop rotation or center dragging or windowing
    */
   mouseUpCallback = (evt: any) => {
+    if (this.isWindowing) {
+      this.isWindowing = false;
+      this.windowingStartPos = null;
+      this.windowingStartValues = null;
+      console.log('✅ Windowing complete');
+      return true;
+    }
     if (this.isCenterDragging) {
       this.isCenterDragging = false;
       console.log('✅ Center dot drag complete');

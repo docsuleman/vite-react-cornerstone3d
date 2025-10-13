@@ -37,7 +37,8 @@
       "Bash(xargs -r kill -9)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(cat:*)",
-      "mcp__ide__getDiagnostics"
+      "mcp__ide__getDiagnostics",
+      "WebFetch(domain:discourse.vtk.org)"
     ],
     "deny": []
   }

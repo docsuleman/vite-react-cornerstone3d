@@ -211,12 +211,9 @@ class CuspNadirTool extends BaseTool {
 
     const dotId = `cusp-${Date.now()}`;
 
-    // Cusp types and colors based on placement order
-    const cuspTypes: ('left' | 'right' | 'non-coronary')[] = ['left', 'right', 'non-coronary'];
-    const colors = ['#FF6B6B', '#FFD700', '#4169E1']; // Red, Gold, Royal Blue (very distinct)
-
-    const cuspType = cuspTypes[this.cuspDots.length];
-    const color = colors[this.cuspDots.length];
+    // Temporarily assign placeholder cusp type - will be determined after all 3 are placed
+    const cuspType = `temp-${this.cuspDots.length}` as any;
+    const color = '#999999'; // Temporary gray color
 
     // Use accurate world coordinates from canvasToWorld conversion
     const finalPos: Vector3 = [worldPos[0], worldPos[1], worldPos[2]];
@@ -233,8 +230,13 @@ class CuspNadirTool extends BaseTool {
     this.cuspDots.push(dotData);
     this._placeDot(dotData);
 
-    console.log(`🎯 Placed ${cuspType} cusp nadir dot (${this.cuspDots.length}/3)`);
-    
+    console.log(`🎯 Placed cusp nadir dot (${this.cuspDots.length}/3)`);
+
+    // If all 3 dots are placed, determine anatomical positions and update colors
+    if (this.cuspDots.length === 3) {
+      this._determineAnatomicalPositions();
+    }
+
     this._notifyPositionUpdate();
   };
 
@@ -296,6 +298,76 @@ class CuspNadirTool extends BaseTool {
       this.activeDotDrag = null;
     }
   };
+
+  // Determine anatomical cusp positions based on 3D coordinates
+  _determineAnatomicalPositions() {
+    if (this.cuspDots.length !== 3) return;
+
+    console.log('🔍 Determining anatomical cusp positions...');
+
+    // Calculate centroid
+    const centroid: Vector3 = [
+      (this.cuspDots[0].pos[0] + this.cuspDots[1].pos[0] + this.cuspDots[2].pos[0]) / 3,
+      (this.cuspDots[0].pos[1] + this.cuspDots[1].pos[1] + this.cuspDots[2].pos[1]) / 3,
+      (this.cuspDots[0].pos[2] + this.cuspDots[1].pos[2] + this.cuspDots[2].pos[2]) / 3,
+    ];
+
+    // Find the most anterior dot (highest Y value) - this is RIGHT (RCA)
+    let rightIndex = 0;
+    let maxY = this.cuspDots[0].pos[1];
+    for (let i = 1; i < 3; i++) {
+      if (this.cuspDots[i].pos[1] > maxY) {
+        maxY = this.cuspDots[i].pos[1];
+        rightIndex = i;
+      }
+    }
+
+    // Get the other two dots
+    const otherIndices = [0, 1, 2].filter(i => i !== rightIndex);
+
+    // Between the other two: LEFT is on patient's left (LOWER X, negative), NON is on patient's right (HIGHER X, positive)
+    // In patient coordinates: +X = patient's right, -X = patient's left
+    const leftIndex = this.cuspDots[otherIndices[0]].pos[0] < this.cuspDots[otherIndices[1]].pos[0]
+      ? otherIndices[0]
+      : otherIndices[1];
+    const nonIndex = otherIndices.find(i => i !== leftIndex)!;
+
+    // Assign cusp types based on anatomical coordinates (now order-independent)
+    // Right cusp (RCA): highest Y (most anterior)
+    // Left cusp: lowest X (patient's left)
+    // Non-coronary: highest X (patient's right)
+    this.cuspDots[rightIndex].cuspType = 'right';      // highest Y = RCA (anterior)
+    this.cuspDots[leftIndex].cuspType = 'left';        // lowest X = left cusp
+    this.cuspDots[nonIndex].cuspType = 'non-coronary'; // highest X = non cusp
+
+    // Assign colors: Red=Left, Yellow=Right/RCA, Green=Non
+    this.cuspDots[leftIndex].color = '#00FF00';  // Green for LEFT cusp (lowest X, patient's left)
+    this.cuspDots[rightIndex].color = '#FFFF00'; // Yellow for RIGHT/RCA (highest Y, anterior)
+    this.cuspDots[nonIndex].color = '#FF0000';   // Red for NON-coronary (highest X, patient's right)
+
+    console.log(`✅ Determined cusp positions (order-independent, anatomical coordinates):`);
+    console.log(`  - Left cusp (Green): dot ${leftIndex}, pos:`, this.cuspDots[leftIndex].pos);
+    console.log(`  - Right/RCA cusp (Yellow): dot ${rightIndex}, pos:`, this.cuspDots[rightIndex].pos);
+    console.log(`  - Non-coronary cusp (Red): dot ${nonIndex}, pos:`, this.cuspDots[nonIndex].pos);
+
+    // Update colors in all viewports
+    this.cuspDots.forEach(dot => {
+      const hex = dot.color.replace('#', '');
+      const r = parseInt(hex.substr(0, 2), 16) / 255;
+      const g = parseInt(hex.substr(2, 2), 16) / 255;
+      const b = parseInt(hex.substr(4, 2), 16) / 255;
+
+      dot.actors.forEach((actor) => {
+        const property = actor.getProperty();
+        property.setColor(r, g, b);
+        actor.modified();
+      });
+    });
+
+    // Render all viewports
+    const enabledElements = getEnabledElements();
+    enabledElements.forEach(({ viewport }) => viewport.render());
+  }
 
   _placeDot(dotData: { id: string; pos: Vector3; actors: Map<string, any>; source: any; color: string; cuspType: string }) {
     const enabledElements = getEnabledElements();
