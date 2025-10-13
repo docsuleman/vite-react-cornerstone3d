@@ -17,7 +17,7 @@ import { init as csToolsInit } from "@cornerstonejs/tools";
 import { init as dicomImageLoaderInit } from "@cornerstonejs/dicom-image-loader";
 import * as cornerstoneTools from "@cornerstonejs/tools";
 import { initializeCornerstone, isCornerStoneInitialized } from '../utils/cornerstoneInit';
-import { FaCrosshairs, FaSearchPlus, FaArrowsAlt, FaAdjust, FaCircle, FaMousePointer, FaScroll, FaTrash, FaDotCircle, FaPlay, FaPause, FaDrawPolygon, FaRuler, FaTag, FaPen, FaCheck, FaChevronDown } from "react-icons/fa";
+import { FaCrosshairs, FaSearchPlus, FaArrowsAlt, FaAdjust, FaCircle, FaMousePointer, FaScroll, FaTrash, FaDotCircle, FaPlay, FaPause, FaDrawPolygon, FaRuler, FaTag, FaPen, FaCheck, FaChevronDown, FaInfo } from "react-icons/fa";
 import SphereMarkerTool from '../customTools/Spheremarker';
 import CuspNadirTool from '../customTools/CuspNadirTool';
 import FixedCrosshairTool from '../customTools/FixedCrosshairTool';
@@ -91,6 +91,7 @@ interface ProperMPRViewportProps {
   currentStage?: WorkflowStage;
   existingSpheres?: { id: string; pos: [number, number, number]; color: string }[];
   renderMode?: 'mpr' | 'cpr'; // Toggle between standard MPR and straightened CPR
+  onRenderModeChange?: (mode: 'mpr' | 'cpr') => void; // Callback when user changes render mode
   // Workflow-related props
   currentWorkflowStep?: MeasurementStep | null;
   workflowControlled?: boolean;
@@ -123,6 +124,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   currentStage,
   existingSpheres,
   renderMode = 'mpr', // Default to standard MPR
+  onRenderModeChange,
   currentWorkflowStep = null,
   workflowControlled = false,
   onMeasurementComplete,
@@ -299,7 +301,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               </svg>
             )}
           <div
-            className="absolute z-50 cursor-move"
+            className="absolute z-40 cursor-move"
             style={{
               left: `${overlay.x}px`,
               top: `${overlay.y}px`,
@@ -5731,6 +5733,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           }
         }
 
+        // No annotation context menu fired - do nothing
+
         // Helper function to calculate distance from point to line segment
         function distanceToLineSegment(
           point: number[],
@@ -8653,8 +8657,18 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               >
               {/* Axial */}
               <div className="relative bg-black border border-slate-700">
-              <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
-                Axial
+              <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded flex items-center gap-2">
+                <span>Axial</span>
+                {currentStage === WorkflowStage.MEASUREMENTS && onRenderModeChange && (
+                  <select
+                    value={renderMode}
+                    onChange={(e) => onRenderModeChange(e.target.value as 'mpr' | 'cpr')}
+                    className="text-[10px] bg-slate-800 text-white border border-slate-600 rounded px-1.5 py-0.5 cursor-pointer hover:bg-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  >
+                    <option value="mpr">Curved</option>
+                    <option value="cpr">Straight</option>
+                  </select>
+                )}
               </div>
               <div
                 ref={elementRefs.axial}
@@ -8666,8 +8680,18 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
             {/* Sagittal */}
               <div className="relative bg-black border border-slate-700">
-                <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
-                  Sagittal
+                <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded flex items-center gap-2">
+                  <span>Sagittal</span>
+                  {currentStage === WorkflowStage.MEASUREMENTS && onRenderModeChange && (
+                    <select
+                      value={renderMode}
+                      onChange={(e) => onRenderModeChange(e.target.value as 'mpr' | 'cpr')}
+                      className="text-[10px] bg-slate-800 text-white border border-slate-600 rounded px-1.5 py-0.5 cursor-pointer hover:bg-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    >
+                      <option value="mpr">Curved</option>
+                      <option value="cpr">Straight</option>
+                    </select>
+                  )}
                 </div>
                 <div
                   ref={elementRefs.sagittal}
@@ -8959,88 +8983,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 );
               });
             })()}
-
-            {/* Context menu for annotation actions */}
-            {contextMenu && (
-              <ContextMenu
-                x={contextMenu.x}
-                y={contextMenu.y}
-                items={
-                  contextMenu.annotationUID === 'cpr-position-line' && contextMenu.cprLineData
-                    ? [
-                        {
-                          label: `Height: ${Math.abs(contextMenu.cprLineData.distanceFromAnnulus).toFixed(2)} mm`,
-                          icon: null,
-                          onClick: () => {
-                            // Add new height indicator line (allow multiple)
-                            if (contextMenu.cprLineData) {
-                              // Convert canvas Y coordinates to display Y coordinates for SVG rendering
-                              const viewport = renderingEngineRef.current?.getViewport(contextMenu.cprLineData.viewportId);
-                              if (viewport) {
-                                const canvas = viewport.getCanvas() as HTMLCanvasElement;
-                                const element = contextMenu.cprLineData.viewportId === 'sagittal'
-                                  ? elementRefs.sagittal.current
-                                  : elementRefs.coronal.current;
-
-                                if (element && canvas) {
-                                  const rect = element.getBoundingClientRect();
-                                  const canvasHeight = canvas.height;
-                                  const displayHeight = rect.height;
-
-                                  // Convert canvas pixels to display pixels
-                                  const y1Display = (contextMenu.cprLineData.annulusYPixel / canvasHeight) * displayHeight;
-                                  const y2Display = (contextMenu.cprLineData.clickedYPixel / canvasHeight) * displayHeight;
-
-                                  const newIndicator = {
-                                    id: `height-${Date.now()}`,
-                                    viewportId: contextMenu.cprLineData.viewportId,
-                                    y1: y1Display,
-                                    y2: y2Display,
-                                    height: contextMenu.cprLineData.distanceFromAnnulus
-                                  };
-                                  setCprHeightIndicators(prev => [...prev, newIndicator]);
-                                }
-                              }
-                            }
-                            setContextMenu(null);
-                          }
-                        }
-                      ]
-                    : [
-                        {
-                          label: annotationLabels[contextMenu.annotationUID] ? 'Edit Label' : 'Add Label',
-                          icon: <FaTag />,
-                          onClick: () => {
-                            // Get the annotation to check for existing label
-                            const annotations = cornerstoneTools.annotation.state.getAllAnnotations();
-                            const annotation = annotations.find((ann: any) => ann.annotationUID === contextMenu.annotationUID);
-
-                            // Pre-fill with existing customLabel (used by both workflow and manual labels)
-                            const existingLabel = annotation?.metadata?.customLabel;
-                            const stateLabel = annotationLabels[contextMenu.annotationUID];
-
-                            setLabelModal({
-                              visible: true,
-                              annotationUID: contextMenu.annotationUID,
-                              currentLabel: stateLabel?.text || existingLabel?.text || '',
-                              currentColor: stateLabel?.color || existingLabel?.color || '#ffff00'
-                            });
-                            setContextMenu(null);
-                          }
-                        },
-                        {
-                          label: 'Delete Annotation',
-                          icon: <FaTrash />,
-                          onClick: () => {
-                            deleteAnnotation(contextMenu.annotationUID);
-                            setContextMenu(null);
-                          }
-                        }
-                      ]
-                }
-                onClose={() => setContextMenu(null)}
-              />
-            )}
           </div>
           )}
 
@@ -9481,6 +9423,88 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               </div>
             </div>
           </div>
+        )}
+
+        {/* Global Context Menu */}
+        {contextMenu && (
+          <ContextMenu
+            x={contextMenu.x}
+            y={contextMenu.y}
+            items={
+              contextMenu.annotationUID === 'cpr-position-line' && contextMenu.cprLineData
+                ? [
+                    {
+                      label: `Height: ${Math.abs(contextMenu.cprLineData.distanceFromAnnulus).toFixed(2)} mm`,
+                      icon: null,
+                      onClick: () => {
+                        // Add new height indicator line (allow multiple)
+                        if (contextMenu.cprLineData) {
+                          // Convert canvas Y coordinates to display Y coordinates for SVG rendering
+                          const viewport = renderingEngineRef.current?.getViewport(contextMenu.cprLineData.viewportId);
+                          if (viewport) {
+                            const canvas = viewport.getCanvas() as HTMLCanvasElement;
+                            const element = contextMenu.cprLineData.viewportId === 'sagittal'
+                              ? elementRefs.sagittal.current
+                              : elementRefs.coronal.current;
+
+                            if (element && canvas) {
+                              const rect = element.getBoundingClientRect();
+                              const canvasHeight = canvas.height;
+                              const displayHeight = rect.height;
+
+                              // Convert canvas pixels to display pixels
+                              const y1Display = (contextMenu.cprLineData.annulusYPixel / canvasHeight) * displayHeight;
+                              const y2Display = (contextMenu.cprLineData.clickedYPixel / canvasHeight) * displayHeight;
+
+                              const newIndicator = {
+                                id: `height-${Date.now()}`,
+                                viewportId: contextMenu.cprLineData.viewportId,
+                                y1: y1Display,
+                                y2: y2Display,
+                                height: contextMenu.cprLineData.distanceFromAnnulus
+                              };
+                              setCprHeightIndicators(prev => [...prev, newIndicator]);
+                            }
+                          }
+                        }
+                        setContextMenu(null);
+                      }
+                    }
+                  ]
+                : [
+                    {
+                      label: annotationLabels[contextMenu.annotationUID] ? 'Edit Label' : 'Add Label',
+                      icon: <FaTag />,
+                      onClick: () => {
+                        // Get the annotation to check for existing label
+                        const annotations = cornerstoneTools.annotation.state.getAllAnnotations();
+                        const annotation = annotations.find((ann: any) => ann.annotationUID === contextMenu.annotationUID);
+
+                        // Pre-fill with existing customLabel (used by both workflow and manual labels)
+                        const existingLabel = annotation?.metadata?.customLabel;
+                        const stateLabel = annotationLabels[contextMenu.annotationUID];
+
+                        setLabelModal({
+                          visible: true,
+                          annotationUID: contextMenu.annotationUID,
+                          currentLabel: stateLabel?.text || existingLabel?.text || '',
+                          currentColor: stateLabel?.color || existingLabel?.color || '#ffff00'
+                        });
+                        setContextMenu(null);
+                      }
+                    },
+                    {
+                      label: 'Delete Annotation',
+                      icon: <FaTrash />,
+                      onClick: () => {
+                        deleteAnnotation(contextMenu.annotationUID);
+                        setContextMenu(null);
+                      }
+                    }
+                  ]
+            }
+            onClose={() => setContextMenu(null)}
+          />
         )}
 
         {/* Workflow Confirmation Button - Show when measurement is complete but not confirmed */}

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FaUser, FaStethoscope, FaEye, FaRuler, FaCog, FaChevronRight, FaCheck, FaExclamationTriangle, FaCircle, FaTrash, FaFileAlt, FaCrosshairs, FaAdjust, FaSearchPlus, FaHandPaper, FaDotCircle, FaDrawPolygon, FaSquare } from 'react-icons/fa';
+import { FaUser, FaStethoscope, FaEye, FaRuler, FaCog, FaChevronRight, FaCheck, FaExclamationTriangle, FaCircle, FaTrash, FaFileAlt, FaCrosshairs, FaAdjust, FaSearchPlus, FaHandPaper, FaDotCircle, FaDrawPolygon, FaSquare, FaDraftingCompass } from 'react-icons/fa';
 import appIcon from '../assets/app-icon.png';
 import PatientSearch from './PatientSearch';
 import LeftSidebarSteps from './LeftSidebarSteps';
@@ -40,8 +40,8 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
   const { state, actions, canAdvanceToStage, getCurrentStageProgress, getStageTitle } = useWorkflowState();
 
   // Toolbar state management
-  const [activeTool, setActiveTool] = useState<string>('Crosshairs');
-  const [requestedTool, setRequestedTool] = useState<string>('Crosshairs');
+  const [activeTool, setActiveTool] = useState<string>('SphereMarker');
+  const [requestedTool, setRequestedTool] = useState<string>('SphereMarker');
   const [windowLevelPreset, setWindowLevelPreset] = useState<string>('cardiac');
 
   // Measurement workflow manager
@@ -61,22 +61,87 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
   useEffect(() => {
     if (state.currentStage === WorkflowStage.MEASUREMENTS && !state.measurementWorkflowActive) {
       console.log('🎯 Initializing measurement workflow');
+
+      workflowManager.reset();
       const workflow = workflowManager.loadWorkflow();
       setWorkflowSteps(workflow.measurements);
 
-      const firstStep = workflowManager.getCurrentStep();
+      const firstStep = workflowManager.setCurrentStepIndex(0);
       setCurrentWorkflowStep(firstStep);
 
       actions.startMeasurementWorkflow();
+      actions.setMeasurementStepIndex(0);
+
+      if (firstStep) {
+        const initialTool = workflowManager.getToolNameForStep(firstStep);
+        setRequestedTool(initialTool);
+        setActiveTool(initialTool);
+      }
     }
   }, [state.currentStage, state.measurementWorkflowActive, workflowManager, actions]);
+
+  useEffect(() => {
+    if (state.currentStage !== WorkflowStage.MEASUREMENTS || !currentWorkflowStep) {
+      return;
+    }
+
+    const stepIndex = workflowSteps.findIndex(step => step.id === currentWorkflowStep.id);
+    if (stepIndex !== -1 && state.currentMeasurementStepIndex !== stepIndex) {
+      actions.setMeasurementStepIndex(stepIndex);
+    }
+
+    const desiredTool = workflowManager.getToolNameForStep(currentWorkflowStep);
+    if (desiredTool) {
+      setRequestedTool(desiredTool);
+      setActiveTool(desiredTool);
+    }
+  }, [
+    state.currentStage,
+    currentWorkflowStep,
+    workflowSteps,
+    state.currentMeasurementStepIndex,
+    actions,
+    workflowManager
+  ]);
+
+  useEffect(() => {
+    if (state.currentStage !== WorkflowStage.MEASUREMENTS || workflowSteps.length === 0) {
+      return;
+    }
+
+    const desiredIndex = Math.min(
+      Math.max(state.currentMeasurementStepIndex ?? 0, 0),
+      workflowSteps.length - 1
+    );
+    const desiredStep = workflowSteps[desiredIndex];
+
+    if (!desiredStep) {
+      return;
+    }
+
+    if (!currentWorkflowStep || currentWorkflowStep.id !== desiredStep.id) {
+      setCurrentWorkflowStep(desiredStep);
+      const managerStep = workflowManager.setCurrentStepIndex(desiredIndex) ?? desiredStep;
+      const tool = workflowManager.getToolNameForStep(managerStep);
+      setRequestedTool(tool);
+      setActiveTool(tool);
+    }
+  }, [
+    state.currentStage,
+    workflowSteps,
+    state.currentMeasurementStepIndex,
+    currentWorkflowStep,
+    workflowManager
+  ]);
 
   // Auto-activate centerline tool in ROOT_DEFINITION stage
   useEffect(() => {
     if (state.currentStage === WorkflowStage.ROOT_DEFINITION) {
       setRequestedTool('SphereMarker');
+      setActiveTool('SphereMarker');
     } else if (state.currentStage === WorkflowStage.ANNULUS_DEFINITION) {
       setRequestedTool('CuspNadir');
+      setActiveTool('CuspNadir');
     }
   }, [state.currentStage]);
 
@@ -176,7 +241,13 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
     const stepIndex = workflowSteps.findIndex(s => s.id === step.id);
     if (stepIndex !== -1) {
       actions.setMeasurementStepIndex(stepIndex);
-      workflowManager.setCurrentStepIndex(stepIndex); // Also update workflow manager for consistency
+      const managerStep = workflowManager.setCurrentStepIndex(stepIndex); // Also update workflow manager for consistency
+      if (managerStep) {
+        setCurrentWorkflowStep(managerStep);
+        const nextTool = workflowManager.getToolNameForStep(managerStep);
+        setRequestedTool(nextTool);
+        setActiveTool(nextTool);
+      }
     }
 
     // The ProperMPRViewport will receive this step and auto-activate the tool
@@ -194,6 +265,11 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
     // Move to next step
     const nextStep = workflowManager.getCurrentStep();
     setCurrentWorkflowStep(nextStep);
+    if (nextStep) {
+      const tool = workflowManager.getToolNameForStep(nextStep);
+      setRequestedTool(tool);
+      setActiveTool(tool);
+    }
 
     if (!nextStep) {
       actions.markStageComplete(WorkflowStage.MEASUREMENTS);
@@ -203,6 +279,7 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
   // Handle toolbar button clicks
   const handleToolClick = (toolName: string) => {
     setRequestedTool(toolName);
+    setActiveTool(toolName);
   };
 
   // Handle crop Apply button
@@ -424,9 +501,13 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
 
         {/* Patient Information */}
         {state.patientInfo && (
-          <div className="bg-slate-800 rounded-lg px-3 py-2">
-            <div className="font-semibold text-sm text-white">{state.patientInfo.patientName || 'Unknown Patient'}</div>
-            <div className="text-slate-400 text-xs">ID: {state.patientInfo.patientID || 'Unknown ID'}</div>
+          <div className="inline-flex items-center gap-2 bg-slate-800/70 border border-slate-700/70 rounded px-2 py-1.5">
+            <span className="text-[11px] font-medium text-slate-100 truncate max-w-[140px]">
+              {state.patientInfo.patientName || 'Unknown Patient'}
+            </span>
+            <span className="text-[10px] text-slate-400 whitespace-nowrap">
+              ID: {state.patientInfo.patientID || 'Unknown ID'}
+            </span>
           </div>
         )}
       </div>
@@ -436,11 +517,28 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
                               state.currentStage === WorkflowStage.ANNULUS_DEFINITION ||
                               state.currentStage === WorkflowStage.MEASUREMENTS) && (
         <div className="px-3 py-2 border-b border-slate-700 flex-shrink-0">
-          <h4 className="text-xs font-semibold mb-1.5 text-slate-400 uppercase tracking-wide">Tools</h4>
+          <div className="flex items-center justify-between mb-1.5">
+            <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Tools</h4>
+            <div className="flex items-center gap-1.5">
+              <label htmlFor="wl-preset" className="text-[10px] text-slate-400 uppercase tracking-wide">W/L</label>
+              <select
+                id="wl-preset"
+                value={windowLevelPreset}
+                onChange={(e) => setWindowLevelPreset(e.target.value)}
+                className="bg-slate-800 text-slate-200 text-[11px] rounded px-2 py-1 border border-slate-700 focus:border-blue-500 focus:outline-none"
+              >
+                <option value="cardiac">Cardiac (-180/220)</option>
+                <option value="soft-tissue">Soft Tissue (40/400)</option>
+                <option value="lung">Lung (-500/1500)</option>
+                <option value="bone">Bone (400/1800)</option>
+                <option value="angio">Angio (300/600)</option>
+              </select>
+            </div>
+          </div>
           <div className="grid grid-cols-5 gap-1">
             <button
               onClick={() => handleToolClick('Crosshairs')}
-              className={`p-1.5 rounded transition-colors flex flex-col items-center justify-center ${
+              className={`p-1.5 rounded transition-colors flex items-center justify-center ${
                 activeTool === 'Crosshairs'
                   ? 'bg-blue-600 text-white'
                   : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
@@ -448,11 +546,10 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
               title="Crosshairs"
             >
               <FaCrosshairs className="text-sm" />
-              <span className="text-[10px] mt-0.5">Cross</span>
             </button>
             <button
               onClick={() => handleToolClick('WindowLevel')}
-              className={`p-1.5 rounded transition-colors flex flex-col items-center justify-center ${
+              className={`p-1.5 rounded transition-colors flex items-center justify-center ${
                 activeTool === 'WindowLevel'
                   ? 'bg-blue-600 text-white'
                   : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
@@ -460,11 +557,10 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
               title="Window/Level"
             >
               <FaAdjust className="text-sm" />
-              <span className="text-[10px] mt-0.5">W/L</span>
             </button>
             <button
               onClick={() => handleToolClick('Zoom')}
-              className={`p-1.5 rounded transition-colors flex flex-col items-center justify-center ${
+              className={`p-1.5 rounded transition-colors flex items-center justify-center ${
                 activeTool === 'Zoom'
                   ? 'bg-blue-600 text-white'
                   : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
@@ -472,11 +568,10 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
               title="Zoom"
             >
               <FaSearchPlus className="text-sm" />
-              <span className="text-[10px] mt-0.5">Zoom</span>
             </button>
             <button
               onClick={() => handleToolClick('Pan')}
-              className={`p-1.5 rounded transition-colors flex flex-col items-center justify-center ${
+              className={`p-1.5 rounded transition-colors flex items-center justify-center ${
                 activeTool === 'Pan'
                   ? 'bg-blue-600 text-white'
                   : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
@@ -484,12 +579,11 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
               title="Pan"
             >
               <FaHandPaper className="text-sm" />
-              <span className="text-[10px] mt-0.5">Pan</span>
             </button>
             {state.currentStage === WorkflowStage.ROOT_DEFINITION && (
               <button
                 onClick={() => handleToolClick('SphereMarker')}
-                className={`p-1.5 rounded transition-colors flex flex-col items-center justify-center ${
+                className={`p-1.5 rounded transition-colors flex items-center justify-center ${
                   activeTool === 'SphereMarker'
                     ? 'bg-blue-600 text-white'
                     : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
@@ -497,13 +591,12 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
                 title="Centerline Tool"
               >
                 <FaDotCircle className="text-sm" />
-                <span className="text-[10px] mt-0.5">Line</span>
               </button>
             )}
             {state.currentStage === WorkflowStage.ANNULUS_DEFINITION && (
               <button
                 onClick={() => handleToolClick('CuspNadir')}
-                className={`p-1.5 rounded transition-colors flex flex-col items-center justify-center ${
+                className={`p-1.5 rounded transition-colors flex items-center justify-center ${
                   activeTool === 'CuspNadir'
                     ? 'bg-blue-600 text-white'
                     : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
@@ -511,14 +604,13 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
                 title="Cusp Nadir"
               >
                 <FaDotCircle className="text-sm" />
-                <span className="text-[10px] mt-0.5">Cusp</span>
               </button>
             )}
             {state.currentStage === WorkflowStage.MEASUREMENTS && (
               <>
                 <button
                   onClick={() => handleToolClick('SmoothPolygon')}
-                  className={`p-1.5 rounded transition-colors flex flex-col items-center justify-center ${
+                  className={`p-1.5 rounded transition-colors flex items-center justify-center ${
                     activeTool === 'SmoothPolygon'
                       ? 'bg-blue-600 text-white'
                       : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
@@ -526,11 +618,21 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
                   title="Polygon"
                 >
                   <FaDrawPolygon className="text-sm" />
-                  <span className="text-[10px] mt-0.5">Poly</span>
+                </button>
+                <button
+                  onClick={() => handleToolClick('Angle')}
+                  className={`p-1.5 rounded transition-colors flex items-center justify-center ${
+                    activeTool === 'Angle'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                  }`}
+                  title="Angle"
+                >
+                  <FaDraftingCompass className="text-sm" />
                 </button>
                 <button
                   onClick={() => handleToolClick('AxialLine')}
-                  className={`p-1.5 rounded transition-colors flex flex-col items-center justify-center ${
+                  className={`p-1.5 rounded transition-colors flex items-center justify-center ${
                     activeTool === 'AxialLine'
                       ? 'bg-blue-600 text-white'
                       : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
@@ -538,27 +640,9 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
                   title="Length"
                 >
                   <FaRuler className="text-sm" />
-                  <span className="text-[10px] mt-0.5">Line</span>
                 </button>
               </>
             )}
-          </div>
-
-          {/* Window/Level Presets Dropdown */}
-          <div className="mt-3">
-            <label htmlFor="wl-preset" className="text-xs text-slate-400 mb-1 block">W/L Preset</label>
-            <select
-              id="wl-preset"
-              value={windowLevelPreset}
-              onChange={(e) => setWindowLevelPreset(e.target.value)}
-              className="w-full bg-slate-800 text-slate-200 text-xs rounded px-2 py-2 border border-slate-700 focus:border-blue-500 focus:outline-none"
-            >
-              <option value="cardiac">Cardiac CT (-180/220)</option>
-              <option value="soft-tissue">Soft Tissue (40/400)</option>
-              <option value="lung">Lung (-500/1500)</option>
-              <option value="bone">Bone (400/1800)</option>
-              <option value="angio">Angiography (300/600)</option>
-            </select>
           </div>
         </div>
       )}
@@ -590,37 +674,6 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
               </div>
             )}
           </div>
-        </div>
-      )}
-
-      {/* Measurements Panel */}
-      {Object.keys(state.measurements).length > 0 && (
-        <div className="border-t border-slate-700 p-6">
-          <h4 className="text-lg font-semibold text-slate-200 mb-4">Measurements</h4>
-
-          {state.measurements.annulus && (
-            <div className="bg-slate-800 rounded-lg p-4">
-              <h5 className="font-semibold text-blue-400 mb-3">Annulus Measurements</h5>
-              <div className="grid grid-cols-2 gap-3 text-sm">
-                <div className="bg-slate-700 p-2 rounded">
-                  <div className="text-slate-400">Area</div>
-                  <div className="font-medium">{state.measurements.annulus.area.toFixed(1)} mm²</div>
-                </div>
-                <div className="bg-slate-700 p-2 rounded">
-                  <div className="text-slate-400">Perimeter</div>
-                  <div className="font-medium">{state.measurements.annulus.perimeter.toFixed(1)} mm</div>
-                </div>
-                <div className="bg-slate-700 p-2 rounded">
-                  <div className="text-slate-400">Area Ø</div>
-                  <div className="font-medium">{state.measurements.annulus.areaDerivedDiameter.toFixed(1)} mm</div>
-                </div>
-                <div className="bg-slate-700 p-2 rounded">
-                  <div className="text-slate-400">Perim Ø</div>
-                  <div className="font-medium">{state.measurements.annulus.perimeterDerivedDiameter.toFixed(1)} mm</div>
-                </div>
-              </div>
-            </div>
-          )}
         </div>
       )}
 

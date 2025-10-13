@@ -200,6 +200,35 @@ export class MeasurementWorkflowManager {
   }
 
   /**
+   * Manually set the current step index (used when user selects a step)
+   */
+  public setCurrentStepIndex(index: number): MeasurementStep | null {
+    const totalSteps = this.workflow.measurements.length;
+
+    if (totalSteps === 0) {
+      this.currentStepIndex = 0;
+      return null;
+    }
+
+    if (index <= 0) {
+      this.currentStepIndex = 0;
+    } else if (index >= totalSteps) {
+      this.currentStepIndex = totalSteps - 1;
+    } else {
+      this.currentStepIndex = index;
+    }
+
+    return this.getCurrentStep();
+  }
+
+  /**
+   * Get the current step index
+   */
+  public getCurrentStepIndex(): number {
+    return this.currentStepIndex;
+  }
+
+  /**
    * Get instruction text for current step
    */
   public getInstructionForStep(step: MeasurementStep, annulusArea: number = 400): string {

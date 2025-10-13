@@ -21,30 +21,42 @@ interface ContextMenuProps {
  * Shows on right-click on annotations
  */
 const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, items, onClose }) => {
+  const menuRef = React.useRef<HTMLDivElement>(null);
+
   React.useEffect(() => {
-    // Close menu on click outside
-    const handleClickOutside = () => onClose();
+    const handleMouseDown = (event: MouseEvent) => {
+      // Don't close if clicking inside the menu
+      if (menuRef.current && menuRef.current.contains(event.target as Node)) {
+        return;
+      }
+      // Only close on primary button to avoid dismissing immediately on right-click.
+      if (event.button === 0) {
+        onClose();
+      }
+    };
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
 
-    document.addEventListener('click', handleClickOutside);
+    document.addEventListener('mousedown', handleMouseDown);
     document.addEventListener('keydown', handleEscape);
 
     return () => {
-      document.removeEventListener('click', handleClickOutside);
+      document.removeEventListener('mousedown', handleMouseDown);
       document.removeEventListener('keydown', handleEscape);
     };
   }, [onClose]);
 
   return (
     <div
-      className="fixed z-50 bg-slate-800 border border-slate-600 rounded-lg shadow-2xl py-1 min-w-[180px]"
+      ref={menuRef}
+      className="fixed z-[2000] bg-slate-800 border border-slate-600 rounded-lg shadow-2xl py-1 min-w-[180px]"
       style={{
         left: `${x}px`,
         top: `${y}px`,
       }}
       onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
     >
       {items.map((item, index) => {
         if (item.separator) {

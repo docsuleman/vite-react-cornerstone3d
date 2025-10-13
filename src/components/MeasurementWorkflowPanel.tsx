@@ -4,8 +4,8 @@
  */
 
 import React from 'react';
-import { FaCheck, FaCircle, FaLock, FaDrawPolygon, FaRuler, FaPen, FaPlay } from 'react-icons/fa';
-import { MeasurementStep, MeasurementType, MeasurementSection } from '../types/MeasurementWorkflowTypes';
+import { FaCheck, FaCircle, FaDrawPolygon, FaRuler, FaPen } from 'react-icons/fa';
+import { MeasurementStep, MeasurementType } from '../types/MeasurementWorkflowTypes';
 
 interface MeasurementWorkflowPanelProps {
   steps: MeasurementStep[];
@@ -30,29 +30,41 @@ const MeasurementWorkflowPanel: React.FC<MeasurementWorkflowPanelProps> = ({
   const progress = Math.round((completedCount / totalSteps) * 100);
 
   // Get icon for measurement type
-  const getToolIcon = (type: MeasurementType) => {
+  const getToolIcon = (type: MeasurementType, size = 16) => {
     switch (type) {
       case MeasurementType.POLYGON:
-        return <FaDrawPolygon />;
+        return <FaDrawPolygon size={size} />;
       case MeasurementType.LINE:
-        return <FaRuler />;
+        return <FaRuler size={size} />;
       case MeasurementType.SPLINE:
-        return <FaPen />;
+        return <FaPen size={size} />;
       default:
-        return <FaCircle />;
+        return <FaCircle size={size} />;
     }
   };
 
   // Get status color for step
   const getStepColor = (step: MeasurementStep, index: number) => {
     if (completedStepIds.includes(step.id)) {
-      return 'bg-green-900/30 border-green-500 text-green-300';
+      return 'bg-green-900/20 border-green-500/60 text-green-200';
     } else if (index === currentStepIndex) {
-      return 'bg-blue-900/30 border-blue-500 text-blue-300';
+      return 'bg-blue-900/25 border-blue-500/60 text-blue-200';
     } else if (index < currentStepIndex) {
-      return 'bg-yellow-900/30 border-yellow-500 text-yellow-300'; // Skipped optional
+      return 'bg-amber-900/20 border-amber-500/60 text-amber-200'; // Skipped optional
     } else {
-      return 'bg-slate-800 border-slate-600 text-slate-400';
+      return 'bg-slate-800/80 border-slate-600 text-slate-400';
+    }
+  };
+
+  const getStepDotClass = (step: MeasurementStep, index: number) => {
+    if (completedStepIds.includes(step.id)) {
+      return 'bg-green-400 ring-2 ring-green-400/40';
+    } else if (index === currentStepIndex) {
+      return 'bg-blue-400 ring-2 ring-blue-400/40 animate-pulse';
+    } else if (index < currentStepIndex) {
+      return 'bg-amber-400 ring-2 ring-amber-400/40';
+    } else {
+      return 'bg-slate-500';
     }
   };
 
@@ -85,27 +97,25 @@ const MeasurementWorkflowPanel: React.FC<MeasurementWorkflowPanelProps> = ({
     return '';
   };
 
-  // Get section badge
-  const getSectionBadge = (section: MeasurementSection) => {
-    if (section === MeasurementSection.AXIAL) {
-      return <span className="text-xs bg-purple-600 px-2 py-0.5 rounded">Axial</span>;
-    } else {
-      return <span className="text-xs bg-cyan-600 px-2 py-0.5 rounded">Long Axis</span>;
-    }
+  const formatMeasurementType = (type: MeasurementType) => {
+    const label = type.toString();
+    return label.charAt(0).toUpperCase() + label.slice(1);
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full bg-slate-900/15 border border-slate-700/40 rounded-lg overflow-hidden">
       {/* Progress Header */}
-      <div className="p-4 border-b border-slate-700">
-        <h4 className="text-lg font-semibold text-slate-200 mb-2">Measurement Workflow</h4>
-        <div className="flex items-center justify-between text-sm text-slate-300 mb-2">
-          <span>{completedCount} of {totalSteps} completed</span>
-          <span>{progress}%</span>
+      <div className="px-3 py-2 bg-slate-900/20">
+        <div className="flex items-center justify-between text-xs text-slate-300">
+          <div className="flex items-center gap-2 truncate">
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-300">Measurement Workflow</span>
+            <span className="text-[11px] text-slate-500 whitespace-nowrap">{completedCount}/{totalSteps}</span>
+          </div>
+          <span className="text-[11px] text-blue-300 font-medium">{progress}%</span>
         </div>
-        <div className="w-full bg-slate-700 rounded-full h-2">
+        <div className="w-full bg-slate-800 rounded-full h-1 mt-2">
           <div
-            className="bg-blue-500 h-2 rounded-full transition-all duration-300"
+            className="bg-blue-500 h-1 rounded-full transition-all duration-300"
             style={{ width: `${progress}%` }}
           />
         </div>
@@ -113,58 +123,48 @@ const MeasurementWorkflowPanel: React.FC<MeasurementWorkflowPanelProps> = ({
 
       {/* Current Step Card */}
       {currentStep && (
-        <div className="p-4 border-b border-slate-700 bg-blue-900/20">
-          <div className="flex items-start gap-3 mb-3">
-            <div className="text-2xl text-blue-400 mt-1">
-              {getToolIcon(currentStep.type)}
+        <div className="px-3 py-3 border-t border-slate-800/40 bg-slate-900/18">
+          <div className="flex items-start gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-500/15 text-blue-300">
+              {getToolIcon(currentStep.type, 16)}
             </div>
-            <div className="flex-1">
-              <div className="flex items-center gap-2 mb-1">
-                <h5 className="text-lg font-bold text-white">{currentStep.name}</h5>
-                {!currentStep.required && (
-                  <span className="text-xs bg-yellow-600 px-2 py-0.5 rounded">Optional</span>
-                )}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <h5 className="text-sm font-semibold text-white truncate">{currentStep.name}</h5>
+                  <div className="mt-1 text-[11px] text-slate-400 flex flex-wrap gap-x-3 gap-y-1">
+                    {getOffsetText(currentStep) && <span>{getOffsetText(currentStep)}</span>}
+                    {!currentStep.required && <span className="text-amber-300">Optional</span>}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={onCompleteStep}
+                    className="px-3 py-1 bg-green-600 hover:bg-green-700 text-white rounded-md transition-colors text-[11px] font-medium whitespace-nowrap"
+                  >
+                    {currentStepIndex < steps.length - 1 ? `Next: ${steps[currentStepIndex + 1]?.name}` : 'Complete'}
+                  </button>
+                  {!currentStep.required && (
+                    <button
+                      onClick={onCompleteStep}
+                      className="text-[11px] text-slate-400 hover:text-white transition-colors"
+                    >
+                      Skip
+                    </button>
+                  )}
+                </div>
               </div>
-              <div className="flex items-center gap-2 mb-2">
-                {getSectionBadge(currentStep.section)}
-                <span className="text-xs text-slate-400">{getOffsetText(currentStep)}</span>
-              </div>
-              <p className="text-sm text-slate-300">
-                Draw {currentStep.type} measurement in {currentStep.section} view
+              <p className="mt-2 text-xs text-slate-300">
+                Draw the measurement for this step.
               </p>
             </div>
-          </div>
-
-          <div className="flex gap-2">
-            <button
-              onClick={() => onActivateStep(currentStep)}
-              className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors font-medium flex items-center justify-center gap-2"
-            >
-              <FaPlay className="text-sm" />
-              {completedStepIds.includes(currentStep.id) ? 'Redo Measurement' : 'Start Measurement'}
-            </button>
-            <button
-              onClick={onCompleteStep}
-              className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors font-medium flex items-center justify-center gap-2"
-            >
-              <FaCheck className="text-sm" />
-              {currentStepIndex < steps.length - 1 ? `Next: ${steps[currentStepIndex + 1]?.name}` : 'Complete'}
-            </button>
-            {!currentStep.required && (
-              <button
-                onClick={onCompleteStep}
-                className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg transition-colors"
-              >
-                Skip
-              </button>
-            )}
           </div>
         </div>
       )}
 
       {/* Steps List */}
-      <div className="flex-1 overflow-y-auto p-4">
-        <div className="space-y-2">
+      <div className="flex-1 overflow-y-auto px-3 py-3 bg-slate-900/25 border-t border-slate-800/40">
+        <div className="space-y-1.5">
           {steps.map((step, index) => {
             const isCompleted = completedStepIds.includes(step.id);
             const isCurrent = index === currentStepIndex;
@@ -174,47 +174,53 @@ const MeasurementWorkflowPanel: React.FC<MeasurementWorkflowPanelProps> = ({
               <div
                 key={step.id}
                 onClick={() => onActivateStep(step)}
-                className={`p-3 rounded-lg border-2 transition-all cursor-pointer hover:border-blue-400 ${getStepColor(step, index)} ${
-                  isCurrent ? 'ring-2 ring-blue-400' : ''
+                className={`relative pl-6 pr-3 py-2.5 rounded-md border transition-all cursor-pointer hover:border-blue-400/70 ${getStepColor(step, index)} ${
+                  isCurrent ? 'ring-1 ring-blue-400/60' : ''
                 }`}
                 title={`Click to jump to: ${step.name}`}
               >
+                <span
+                  aria-hidden="true"
+                  className="absolute left-2 top-0 bottom-0 w-px bg-slate-600/60"
+                />
+                <span
+                  aria-hidden="true"
+                  className={`absolute left-1.5 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full ${getStepDotClass(step, index)}`}
+                />
                 <div className="flex items-center gap-3">
                   <div className="flex-shrink-0">
                     {isCompleted ? (
-                      <div className="w-6 h-6 bg-green-500 rounded-full flex items-center justify-center">
-                        <FaCheck className="text-white text-xs" />
+                      <div className="w-5 h-5 bg-green-500 rounded-full flex items-center justify-center">
+                        <FaCheck className="text-white text-[10px]" />
                       </div>
                     ) : isCurrent ? (
-                      <div className="w-6 h-6 bg-blue-500 rounded-full flex items-center justify-center">
-                        <span className="text-white text-xs font-bold">{index + 1}</span>
+                      <div className="w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center">
+                        <span className="text-white text-[10px] font-bold">{index + 1}</span>
                       </div>
                     ) : isPast ? (
-                      <div className="w-6 h-6 bg-yellow-500 rounded-full flex items-center justify-center">
-                        <span className="text-white text-xs font-bold">!</span>
+                      <div className="w-5 h-5 bg-amber-500 rounded-full flex items-center justify-center">
+                        <span className="text-white text-[10px] font-bold">!</span>
                       </div>
                     ) : (
-                      <div className="w-6 h-6 bg-slate-600 rounded-full flex items-center justify-center">
-                        <FaLock className="text-slate-400 text-xs" />
+                      <div className="w-5 h-5 bg-slate-600 rounded-full flex items-center justify-center text-slate-400">
+                        <span className="flex items-center">
+                          {getToolIcon(step.type, 10)}
+                        </span>
                       </div>
                     )}
                   </div>
 
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium truncate">{step.name}</span>
+                    <div className="flex items-center gap-2 text-xs font-medium text-slate-100">
+                      <span className="truncate">{step.name}</span>
                       {!step.required && (
-                        <span className="text-xs text-yellow-400">(Opt)</span>
+                        <span className="text-[10px] text-amber-300">(Opt)</span>
                       )}
-                    </div>
-                    <div className="flex items-center gap-2 mt-1">
-                      <span className="text-xs">{getToolIcon(step.type)}</span>
-                      <span className="text-xs opacity-75">{step.section}</span>
                     </div>
                   </div>
 
                   {isCompleted && (
-                    <div className="text-xs text-green-400 font-medium">✓ Done</div>
+                    <div className="text-[11px] text-green-300 font-medium">✓ Done</div>
                   )}
                 </div>
               </div>
