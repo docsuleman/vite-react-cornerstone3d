@@ -10,6 +10,7 @@ import {
   getRenderingEngine,
   cache,
   setVolumesForViewports,
+  getEnabledElement,
 } from "@cornerstonejs/core";
 import { init as csRenderInit } from "@cornerstonejs/core";
 import { init as csToolsInit } from "@cornerstonejs/tools";
@@ -61,6 +62,8 @@ const {
   StackScrollTool,
   SplineROITool,
   LengthTool,
+  AngleTool,
+  LabelTool,
   RectangleROITool,
   TrackballRotateTool,
   VolumeCroppingTool,
@@ -68,8 +71,8 @@ const {
   OrientationMarkerTool,
   synchronizers,
 } = cornerstoneTools;
-
 const { createSlabThicknessSynchronizer, createCameraPositionSynchronizer, createZoomPanSynchronizer } = synchronizers;
+const toolUtilities = cornerstoneTools.utilities || {};
 const { MouseBindings } = csToolsEnums;
 
 // Register volume loader
@@ -182,6 +185,229 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     height: number; // distance in mm
   }>>([]);
 
+  const getViewportElementById = (viewportId: string): HTMLElement | null => {
+    switch (viewportId) {
+      case 'axial':
+        return elementRefs.axial.current?.parentElement || null;
+      case 'sagittal':
+        return elementRefs.sagittal.current?.parentElement || null;
+      case 'coronal':
+        return elementRefs.coronal.current?.parentElement || null;
+      case 'measurement1':
+        return elementRefs.measurement1.current?.parentElement || null;
+      case 'measurement2':
+        return elementRefs.measurement2.current?.parentElement || null;
+      default:
+        return null;
+    }
+  };
+
+  const canvasToDisplayPoint = (
+    viewport: Types.IVolumeViewport | undefined,
+    viewportElement: HTMLElement | null,
+    canvasPoint: Types.Point2
+  ): Types.Point2 => {
+    if (!viewport) {
+      return canvasPoint;
+    }
+    const canvas = viewport.getCanvas?.() as HTMLCanvasElement | undefined;
+    if (!canvas || canvas.width === 0 || canvas.height === 0) {
+      return canvasPoint;
+    }
+
+    const canvasRect = canvas.getBoundingClientRect();
+    const parentRect = viewportElement?.getBoundingClientRect();
+    const scaleX = canvasRect.width / canvas.width;
+    const scaleY = canvasRect.height / canvas.height;
+
+    let offsetX = 0;
+    let offsetY = 0;
+    if (parentRect) {
+      offsetX = canvasRect.left - parentRect.left;
+      offsetY = canvasRect.top - parentRect.top;
+    }
+
+    const displayX = canvasPoint[0] * scaleX + offsetX;
+    const displayY = canvasPoint[1] * scaleY + offsetY;
+    return [displayX, displayY] as Types.Point2;
+  };
+
+  const getAnnotationAnchorPoint = (annotation: any): Types.Point3 | null => {
+    if (Array.isArray(annotation?.data?.handles?.points) && annotation.data.handles.points.length > 0) {
+      return [...annotation.data.handles.points[0]] as Types.Point3;
+    }
+    if (Array.isArray(annotation?.data?.handles?.textBox?.worldPosition)) {
+      return [...annotation.data.handles.textBox.worldPosition] as Types.Point3;
+    }
+    const polyline = annotation?.data?.contour?.polyline;
+    if (Array.isArray(polyline) && polyline.length >= 3) {
+      return [polyline[0], polyline[1], polyline[2]] as Types.Point3;
+    }
+    return null;
+  };
+
+  const renderAnnotationOverlayElements = (viewportId: string) => {
+    return annotationOverlays
+      .filter(overlay => overlay.viewportId === viewportId)
+      .map(overlay => {
+        const labelInfo = annotationLabels[overlay.annotationUID];
+        const measurementLines = labelInfo
+          ? overlay.lines.filter(line => line !== labelInfo.text)
+          : overlay.lines;
+
+        const viewport = renderingEngineRef.current?.getViewport(viewportId);
+        const viewportElement = getViewportElementById(viewportId);
+        const annotations = cornerstoneTools.annotation.state.getAllAnnotations();
+        const annotation = annotations.find((ann: any) => ann.annotationUID === overlay.annotationUID);
+
+        let anchorDisplay: Types.Point2 | null = null;
+        if (annotation && viewport) {
+          const anchorWorld = getAnnotationAnchorPoint(annotation);
+          if (anchorWorld) {
+            const canvasAnchor = viewport.worldToCanvas(anchorWorld);
+            if (Array.isArray(canvasAnchor) && canvasAnchor.length === 2) {
+              anchorDisplay = canvasToDisplayPoint(viewport, viewportElement, canvasAnchor as Types.Point2);
+            }
+          }
+        }
+
+        const allLabelLines = labelInfo ? [labelInfo.text, ...measurementLines] : measurementLines;
+        const estimatedWidth = Math.max(
+          80,
+          ...allLabelLines.map(line => line.length * 7 + 16)
+        );
+        const estimatedHeight = Math.max(18, allLabelLines.length * 16 || 18);
+        const labelAttachX = overlay.x + estimatedWidth / 2 - 10;
+        const labelAttachY = overlay.y + estimatedHeight / 2 - 10;
+
+        return (
+          <React.Fragment key={overlay.uid}>
+            {anchorDisplay && viewportElement && (
+              <svg
+                className="absolute top-0 left-0 w-full h-full pointer-events-none"
+                style={{ overflow: 'visible' }}
+              >
+                <line
+                  x1={labelAttachX}
+                  y1={labelAttachY}
+                  x2={anchorDisplay[0]}
+                  y2={anchorDisplay[1]}
+                  stroke={labelInfo?.color || '#ffff00'}
+                  strokeWidth={1.5}
+                  strokeDasharray="4 4"
+                />
+              </svg>
+            )}
+          <div
+            className="absolute z-50 cursor-move"
+            style={{
+              left: `${overlay.x}px`,
+              top: `${overlay.y}px`,
+              padding: '2px',
+              userSelect: 'none',
+              pointerEvents: 'auto'
+            }}
+            ref={undefined}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setContextMenu({
+                x: e.clientX,
+                y: e.clientY,
+                annotationUID: overlay.annotationUID
+              });
+            }}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              const rect = e.currentTarget.parentElement?.getBoundingClientRect();
+              if (rect) {
+                setDraggingOverlay(overlay.uid);
+                setDragOffset({
+                  x: (e.clientX - rect.left) - overlay.x,
+                  y: (e.clientY - rect.top) - overlay.y
+                });
+              }
+            }}
+            onMouseMove={(e) => {
+              if (draggingOverlay === overlay.uid) {
+                e.preventDefault();
+                e.stopPropagation();
+                const rect = e.currentTarget.parentElement?.getBoundingClientRect();
+                if (rect) {
+                  const mouseX = e.clientX - rect.left;
+                  const mouseY = e.clientY - rect.top;
+                  const newX = mouseX - dragOffset.x;
+                  const newY = mouseY - dragOffset.y;
+
+                  const annotations = cornerstoneTools.annotation.state.getAllAnnotations();
+                  const annotation = annotations.find((ann: any) => ann.annotationUID === overlay.uid);
+                  if (annotation) {
+                    if (!annotation.metadata) annotation.metadata = {};
+                    annotation.metadata.customTextPosition = { x: newX, y: newY, userMoved: true };
+                  }
+
+                  setAnnotationOverlays(prev =>
+                    prev.map(o =>
+                      o.uid === overlay.uid ? { ...o, x: newX, y: newY, userMoved: true } : o
+                    )
+                  );
+                }
+              }
+            }}
+            onMouseUp={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setDraggingOverlay(null);
+            }}
+            onMouseLeave={(e) => {
+              if (draggingOverlay === overlay.uid) {
+                e.preventDefault();
+                e.stopPropagation();
+                setDraggingOverlay(null);
+              }
+            }}
+          >
+            {labelInfo && (
+              <div
+                style={{
+                  color: labelInfo.color,
+                  fontSize: '15px',
+                  fontFamily: 'Arial, sans-serif',
+                  fontWeight: 'bold',
+                  lineHeight: '1.3',
+                  textShadow: '1px 1px 3px rgba(0, 0, 0, 1), -1px -1px 3px rgba(0, 0, 0, 1)',
+                  whiteSpace: 'nowrap',
+                  marginBottom: measurementLines.length > 0 ? 4 : 0,
+                  borderBottom: measurementLines.length > 0 ? `2px solid ${labelInfo.color}` : undefined,
+                  paddingBottom: measurementLines.length > 0 ? 2 : 0
+                }}
+              >
+                {labelInfo.text}
+              </div>
+            )}
+            {measurementLines.map((line, index) => (
+              <div
+                key={index}
+                style={{
+                  color: '#ffff00',
+                  fontSize: '13px',
+                  fontFamily: 'Arial, sans-serif',
+                  fontWeight: 'bold',
+                  lineHeight: '1.3',
+                  textShadow: '1px 1px 2px rgba(0, 0, 0, 0.9), -1px -1px 2px rgba(0, 0, 0, 0.9)',
+                  whiteSpace: 'nowrap'
+                }}
+              >
+                {line}
+              </div>
+            ))}
+          </div>
+          </React.Fragment>
+        );
+      });
+  };
+
   // Annotation labeling
   const [annotationLabels, setAnnotationLabels] = useState<{
     [annotationUID: string]: { text: string; color: string }
@@ -215,6 +441,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   // Use refs for workflow props to avoid closure issues in event handlers
   const workflowControlledRef = useRef<boolean>(workflowControlled);
   const currentWorkflowStepRef = useRef<MeasurementStep | null>(currentWorkflowStep);
+  const pendingToolRef = useRef<string | null>(null);
+  const workflowLabelAnnotationsRef = useRef<Record<string, string>>({});
   const onMeasurementCompleteRef = useRef(onMeasurementComplete);
 
   // Track if we should skip auto-scroll (when user is manually scrolling)
@@ -569,6 +797,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       // Remove annotation using Cornerstone's API
       cornerstoneTools.annotation.state.removeAnnotation(annotationUID);
+
+      const labelUid = workflowLabelAnnotationsRef.current[annotationUID];
+      if (labelUid) {
+        cornerstoneTools.annotation.state.removeAnnotation(labelUid);
+        delete workflowLabelAnnotationsRef.current[annotationUID];
+      }
 
       // Remove associated overlay from React state
       setAnnotationOverlays(prev => prev.filter(o => o.annotationUID !== annotationUID));
@@ -4176,6 +4410,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       // Add measurement tools
       cornerstoneTools.addTool(SplineROITool);
       cornerstoneTools.addTool(LengthTool);
+      cornerstoneTools.addTool(AngleTool);
+      cornerstoneTools.addTool(LabelTool);
       cornerstoneTools.addTool(RectangleROITool);
       cornerstoneTools.addTool(VerticalDistanceTool);
       cornerstoneTools.addTool(VerticalLineTool);
@@ -4247,6 +4483,13 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       // Add RectangleROI tool for volume cropping in ROOT_DEFINITION stage
       toolGroup.addTool(RectangleROITool.toolName);
+      toolGroup.addTool(LabelTool.toolName, {
+        configuration: {
+          getTextCallback: (callback, defaultText) => callback(defaultText ?? ''),
+          changeTextCallback: (data, callback) => callback(data.text ?? ''),
+          preventHandleOutsideImage: false,
+        }
+      });
 
       // CROPPING DISABLED - VolumeCroppingControlTool disabled
       // toolGroup.addTool(VolumeCroppingControlTool.toolName, {
@@ -4577,23 +4820,54 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         // Get the tool's class (constructor)
         const ToolClass = (smoothPolygonTool as any).constructor;
 
-        // Store the original _getTextLines method if it exists
+        // Store the original _getTextLines method if it exists (fallback)
         const original_getTextLines = ToolClass.prototype._getTextLines || ToolClass.prototype.getTextLines;
 
-        // Override with custom implementation to show workflow label
         ToolClass.prototype._getTextLines = function(data: any, targetId: string) {
-          const textLines: string[] = [];
+          const lines: string[] = [];
 
-          // Show workflow label if it exists
-          if (data.label) {
-            textLines.push(data.label);
+          if (data?.label) {
+            lines.push(data.label);
           }
 
-          // Return the label (or empty if no label)
-          return textLines;
+          const cachedStats = data?.cachedStats || {};
+          const volumeIds = Object.keys(cachedStats);
+          const stats = volumeIds.length > 0 ? cachedStats[volumeIds[0]] : null;
+
+          const addNumericLine = (prefix: string, value: unknown, suffix: string = '') => {
+            if (typeof value === 'number' && isFinite(value)) {
+              lines.push(`${prefix}: ${value.toFixed(2)}${suffix}`.trim());
+            }
+          };
+
+          if (stats) {
+            if (Array.isArray(stats.textLines) && stats.textLines.length > 0) {
+              lines.push(...stats.textLines);
+            } else {
+              addNumericLine('Area', stats.area, ' mm²');
+              addNumericLine('Area Ø', stats['Area Ø'] ?? stats.areaDerivedDiameter, ' mm');
+              addNumericLine('Perim', stats.perimeter, ' mm');
+              addNumericLine('Perim Ø', stats['Perimeter Ø'] ?? stats.perimeterDerivedDiameter, ' mm');
+              addNumericLine('Long', stats['Long Axis'], ' mm');
+              addNumericLine('Short', stats['Short Axis'], ' mm');
+            }
+          }
+
+          // Fallback to original implementation if nothing generated
+          if (lines.length === 0 && typeof original_getTextLines === 'function') {
+            try {
+              const fallback = original_getTextLines.call(this, data, targetId);
+              if (Array.isArray(fallback)) {
+                return fallback;
+              }
+            } catch (error) {
+              // ignore fallback errors
+            }
+          }
+
+          return lines;
         };
 
-        // Also try overriding getTextLines (some versions use this)
         ToolClass.prototype.getTextLines = ToolClass.prototype._getTextLines;
       }
 
@@ -4631,7 +4905,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         }
       });
 
-      // 4. CurvedLeafletTool - For workflow leaflet measurements (Sagittal/Coronal only)
+      // 4. Angle measurement tool - Axial only
+      toolGroup.addToolInstance('AngleMeasurement', AngleTool.toolName, {
+        getViewportsForAnnotation: (_annotation: any, viewportIds: string[]) => viewportIds.filter(id => id === 'axial')
+      });
+
+      // 5. CurvedLeafletTool - For workflow leaflet measurements (Sagittal/Coronal only)
       toolGroup.addTool(CurvedLeafletTool.toolName, {
         getViewportsForAnnotation: (annotation: any, viewportIds: string[]) => {
           return viewportIds.filter(id => id === 'sagittal' || id === 'coronal');
@@ -4641,7 +4920,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       // Add event listener for SplineROI annotations to calculate extended statistics
       const annotationModifiedHandler = (evt: any) => {
-        const { annotation } = evt.detail;
+        const { annotation, element: annotationElement } = evt.detail;
 
         // Only process SmoothPolygon annotations (our tool instance name)
         if (annotation?.metadata?.toolName !== 'SmoothPolygon') {
@@ -4743,6 +5022,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               };
             }
 
+            // If a custom/workflow label exists, prepend it so it displays as the first line
+            const customLabel = annotation.metadata?.customLabel;
+            if (customLabel?.text) {
+              overlayTextLines = [customLabel.text, ...overlayTextLines];
+            }
+
             // Store text lines in cached stats for rendering
             annotation.data.cachedStats[volumeId].textLines = overlayTextLines;
           }
@@ -4768,7 +5053,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
             // Get viewport to convert world to canvas
             const viewport = renderingEngineRef.current?.getViewport(viewportId);
             if (viewport) {
-              const canvasPoint = viewport.worldToCanvas(firstPoint);
+              const canvasPoint = viewport.worldToCanvas(firstPoint) as Types.Point2;
+              const viewportElement = getViewportElementById(viewportId);
+              const displayPoint = canvasToDisplayPoint(viewport, viewportElement, canvasPoint);
 
               // Update React state to show overlay
               setAnnotationOverlays(prev => {
@@ -4782,8 +5069,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
                 // If user moved it, use the stored custom position
                 // Otherwise use default position from first point
-                const overlayX = userMoved && customPos ? customPos.x : canvasPoint[0] + 10;
-                const overlayY = userMoved && customPos ? customPos.y : canvasPoint[1] - 10;
+                const overlayX = userMoved && customPos ? customPos.x : displayPoint[0] + 10;
+                const overlayY = userMoved && customPos ? customPos.y : displayPoint[1] - 10;
 
                 // Add new overlay with preserved position if user moved it
                 return [...filtered, {
@@ -4891,7 +5178,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         const currentStep = currentWorkflowStepRef.current;
         const measurementCompleteCallback = onMeasurementCompleteRef.current;
 
-        const { annotation } = evt.detail;
+        const { annotation, element: annotationElement } = evt.detail;
 
         // Prevent duplicate processing of the same annotation
         if (annotation?.annotationUID && workflowProcessedAnnotations.has(annotation.annotationUID)) {
@@ -4927,45 +5214,10 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           console.log(`🏷️ Auto-labeling annotation for step: ${currentStep.name}`);
           console.log(`   Label from manager: "${labelData.text}", Color: ${labelData.color}`);
 
-          // Apply label using the SAME system as "Add Label" (customLabel in metadata)
-          if (!annotation.metadata) {
-            annotation.metadata = {};
-          }
-          annotation.metadata.customLabel = {
-            text: labelData.text,
-            color: labelData.color
-          };
-
-          // Also save to state for UI to recognize it
-          setAnnotationLabels(prev => ({
-            ...prev,
-            [annotation.annotationUID]: {
-              text: labelData.text,
-              color: labelData.color
-            }
-          }));
-
-          // Invalidate annotation to trigger re-render with new label
-          annotation.invalidated = true;
-
-          // Trigger viewport render to display the label immediately
-          if (renderingEngineRef.current) {
-            renderingEngineRef.current.render();
-          }
-
-          // Store workflow metadata in annotation for later confirmation
-          if (!annotation.metadata) {
-            annotation.metadata = {};
-          }
-          annotation.metadata.workflowStepId = currentStep.id;
-          annotation.metadata.workflowStepName = currentStep.name;
-
-          // Extract measured value based on tool type
-          let measuredValue = null;
+          let measuredValue: any = null;
           const toolName = annotation?.metadata?.toolName;
 
           if (toolName === 'SplineROITool' || toolName === 'SmoothPolygon') {
-            // Polygon tool - extract area
             const stats = annotation?.data?.cachedStats;
             if (stats) {
               const volumeId = Object.keys(stats)[0];
@@ -4973,18 +5225,16 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 area: stats[volumeId]?.area,
                 perimeter: stats[volumeId]?.perimeter,
                 areaDerivedDiameter: stats[volumeId]?.areaDerivedDiameter,
-                perimeterDerivedDiameter: stats[volumeId]?.perimeterDerivedDiameter
+                perimeterDerivedDiameter: stats[volumeId]?.perimeterDerivedDiameter,
               };
             }
           } else if (toolName === 'AxialLine' || toolName === 'MPRLongAxisLine') {
-            // Line tool - extract length
             const handles = annotation?.data?.handles;
             if (handles?.points) {
               const length = annotation?.data?.cachedStats?.length;
               measuredValue = { length };
             }
           } else if (toolName === CurvedLeafletTool.toolName) {
-            // Spline tool - extract curve length
             const splinePoints = annotation?.data?.spline?.points;
             if (splinePoints && splinePoints.length >= 2) {
               const length = CurvedLeafletTool.calculateCurveLength(splinePoints);
@@ -4992,11 +5242,251 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
             }
           }
 
-          // Store measurement data and show tick button
+          const cachedStats = annotation?.data?.cachedStats;
+          const overlayVolumeIds = cachedStats ? Object.keys(cachedStats) : [];
+          const statsForOverlay = overlayVolumeIds.length > 0 ? cachedStats[overlayVolumeIds[0]] : undefined;
+
+          const measurementLines: string[] = [];
+          const appendLine = (label: string, value?: number, unit: string = '') => {
+            if (typeof value === 'number' && isFinite(value)) {
+              measurementLines.push(`${label}: ${value.toFixed(2)}${unit}`);
+            }
+          };
+
+          if (statsForOverlay) {
+            if (Array.isArray(statsForOverlay.textLines) && statsForOverlay.textLines.length > 0) {
+              measurementLines.push(
+                ...statsForOverlay.textLines.filter(line => line && line !== labelData.text)
+              );
+            } else {
+              const areaValue = typeof statsForOverlay.area === 'number' ? statsForOverlay.area : undefined;
+              const areaDiameter = statsForOverlay['Area Ø'] ?? statsForOverlay.areaDerivedDiameter ??
+                (typeof areaValue === 'number' ? 2 * Math.sqrt(areaValue / Math.PI) : undefined);
+              const perimeterValue = typeof statsForOverlay.perimeter === 'number' ? statsForOverlay.perimeter : undefined;
+              const perimeterDiameter = statsForOverlay['Perimeter Ø'] ?? statsForOverlay.perimeterDerivedDiameter ??
+                (typeof perimeterValue === 'number' ? perimeterValue / Math.PI : undefined);
+
+              appendLine('Area', areaValue, ' mm²');
+              appendLine('Area Ø', areaDiameter, ' mm');
+              appendLine('Perim', perimeterValue, ' mm');
+              appendLine('Perim Ø', perimeterDiameter, ' mm');
+              appendLine('Long', statsForOverlay['Long Axis'], ' mm');
+              appendLine('Short', statsForOverlay['Short Axis'], ' mm');
+            }
+          } else if (measuredValue && typeof measuredValue === 'object') {
+            const mv: any = measuredValue;
+            const areaValue = mv.area;
+            const areaDiameter = mv.areaDerivedDiameter ?? (typeof areaValue === 'number' ? 2 * Math.sqrt(areaValue / Math.PI) : undefined);
+            const perimeterValue = mv.perimeter;
+            const perimeterDiameter = mv.perimeterDerivedDiameter ?? (typeof perimeterValue === 'number' ? perimeterValue / Math.PI : undefined);
+
+            appendLine('Area', areaValue, ' mm²');
+            appendLine('Area Ø', areaDiameter, ' mm');
+            appendLine('Perim', perimeterValue, ' mm');
+            appendLine('Perim Ø', perimeterDiameter, ' mm');
+            appendLine('Length', mv.length, ' mm');
+          }
+
+          const overlayLines = [labelData.text, ...measurementLines].filter(Boolean);
+          const labelText = overlayLines.join('\n');
+
+          if (!annotation.metadata) {
+            annotation.metadata = {};
+          }
+          annotation.metadata.customLabel = {
+            text: labelData.text,
+            color: labelData.color,
+          };
+
+          if (!annotation.data) {
+            annotation.data = {} as any;
+          }
+          (annotation.data as any).label = labelText;
+
+          if (!annotation.data.handles) {
+            annotation.data.handles = {} as any;
+          }
+
+          if (annotation.data?.handles?.textBox) {
+            annotation.data.handles.textBox.text = labelText;
+            annotation.data.handles.textBox.color = labelData.color;
+            annotation.data.handles.textBox.hasMoved = annotation.data.handles.textBox.hasMoved || false;
+          }
+
+          let anchorPoint: Types.Point3 | null = null;
+          if (currentStage === WorkflowStage.MEASUREMENTS && Array.isArray(annotation.data.handles?.points) && annotation.data.handles.points.length > 0) {
+            anchorPoint = [...annotation.data.handles.points[0]] as Types.Point3;
+          } else if (Array.isArray(annotation.data?.handles?.points) && annotation.data.handles.points.length > 0) {
+            anchorPoint = [...annotation.data.handles.points[0]] as Types.Point3;
+          } else if (Array.isArray(annotation?.data?.handles?.textBox?.worldPosition)) {
+            anchorPoint = [...annotation.data.handles.textBox.worldPosition] as Types.Point3;
+          }
+
+          if (!anchorPoint && measuredValue?.worldPosition) {
+            anchorPoint = [...(measuredValue as any).worldPosition];
+          }
+
+          if (!annotation.data.handles.textBox && anchorPoint) {
+            annotation.data.handles.textBox = {
+              hasMoved: false,
+              worldPosition: anchorPoint,
+              worldBoundingBox: {
+                topLeft: anchorPoint,
+                topRight: anchorPoint,
+                bottomLeft: anchorPoint,
+                bottomRight: anchorPoint,
+              },
+            };
+          }
+
+          if (annotation.data.handles.textBox) {
+            annotation.data.handles.textBox.text = labelText;
+            annotation.data.handles.textBox.color = labelData.color;
+            annotation.data.handles.textBox.hasMoved = annotation.data.handles.textBox.hasMoved || false;
+          }
+
+          setAnnotationLabels(prev => ({
+            ...prev,
+            [annotation.annotationUID]: {
+              text: labelData.text,
+              color: labelData.color,
+            },
+          }));
+
+          setAnnotationOverlays(prev => {
+            let overlayFound = false;
+            const updated = prev.map(overlay => {
+              if (overlay.annotationUID === annotation.annotationUID) {
+                overlayFound = true;
+                return {
+                  ...overlay,
+                  lines: overlayLines,
+                };
+              }
+              return overlay;
+            });
+
+            if (!overlayFound && overlayLines.length > 0 && anchorPoint) {
+              const viewportId = annotation.metadata?.viewportId || 'axial';
+              const viewport = renderingEngineRef.current?.getViewport(viewportId);
+              if (viewport) {
+                const canvasPoint = viewport.worldToCanvas(anchorPoint) as Types.Point2;
+                const viewportElement = getViewportElementById(viewportId);
+                const displayPoint = canvasToDisplayPoint(viewport, viewportElement, canvasPoint);
+                return [
+                  ...updated,
+                  {
+                    uid: annotation.annotationUID,
+                    annotationUID: annotation.annotationUID,
+                    x: displayPoint[0] + 10,
+                    y: displayPoint[1] - 10,
+                    lines: overlayLines,
+                    viewportId,
+                    userMoved: false,
+                  },
+                ];
+              }
+            }
+
+            return updated;
+          });
+
+          const targetElement = annotationElement || elementRefs.axial.current;
+          if (targetElement) {
+            const enabled = getEnabledElement(targetElement);
+            const viewport = enabled?.viewport;
+            if (viewport) {
+              const handlesPoints = annotation.data?.handles?.points;
+              const textBoxPos = annotation.data?.handles?.textBox?.worldPosition;
+              let labelWorldPos: Types.Point3 | null = null;
+
+              if (Array.isArray(handlesPoints) && handlesPoints.length > 0) {
+                labelWorldPos = [...handlesPoints[0]] as Types.Point3;
+              } else if (anchorPoint) {
+                labelWorldPos = [...anchorPoint] as Types.Point3;
+              } else if (Array.isArray(textBoxPos)) {
+                labelWorldPos = [...textBoxPos] as Types.Point3;
+              }
+
+              if (!annotation.metadata) {
+                annotation.metadata = {};
+              }
+              annotation.metadata.viewportId = annotation.metadata.viewportId || viewport.id;
+
+              if (labelWorldPos) {
+                const existingLabelUid = workflowLabelAnnotationsRef.current[annotation.annotationUID];
+                if (existingLabelUid) {
+                  cornerstoneTools.annotation.state.removeAnnotation(existingLabelUid);
+                  delete workflowLabelAnnotationsRef.current[annotation.annotationUID];
+                }
+
+                const labelAnnotation = LabelTool.hydrate?.(viewport.id, labelWorldPos, labelText);
+                if (labelAnnotation) {
+                  labelAnnotation.metadata = {
+                    ...(labelAnnotation.metadata || {}),
+                    toolName: LabelTool.toolName,
+                    workflowParentUID: annotation.annotationUID,
+                    isVisible: false,
+                  };
+
+                  labelAnnotation.isVisible = false;
+                  labelAnnotation.data.text = '';
+                  labelAnnotation.data.label = '';
+                  labelAnnotation.data.handles = labelAnnotation.data.handles || ({} as any);
+                  labelAnnotation.data.handles.points = [labelWorldPos];
+                  labelAnnotation.data.handles.textBox = {
+                    ...(labelAnnotation.data.handles.textBox || {}),
+                    hasMoved: false,
+                    worldPosition: labelWorldPos,
+                    worldBoundingBox: {
+                      topLeft: labelWorldPos,
+                      topRight: labelWorldPos,
+                      bottomLeft: labelWorldPos,
+                      bottomRight: labelWorldPos,
+                    },
+                    text: '',
+                    color: labelData.color,
+                  };
+
+                  cornerstoneTools.annotation.state.addAnnotation(labelAnnotation, targetElement);
+                  workflowLabelAnnotationsRef.current[annotation.annotationUID] = labelAnnotation.annotationUID;
+
+                  if (toolUtilities.triggerAnnotationRenderForViewportIds) {
+                    toolUtilities.triggerAnnotationRenderForViewportIds([viewport.id]);
+                  } else {
+                    viewport.render?.();
+                  }
+                }
+              }
+            }
+          }
+
+          const targetVolumeId = overlayVolumeIds.length > 0 ? overlayVolumeIds[0] : '__workflow__';
+          if (!annotation.data.cachedStats) {
+            annotation.data.cachedStats = {};
+          }
+          annotation.data.cachedStats[targetVolumeId] = {
+            ...(annotation.data.cachedStats[targetVolumeId] || {}),
+            textLines: overlayLines,
+          };
+
+          annotation.invalidated = true;
+
+          if (renderingEngineRef.current) {
+            renderingEngineRef.current.render();
+          }
+
+          if (!annotation.metadata) {
+            annotation.metadata = {};
+          }
+          annotation.metadata.workflowStepId = currentStep.id;
+          annotation.metadata.workflowStepName = currentStep.name;
+
           setCurrentMeasurementData({
             annotationUID: annotation.annotationUID,
-            measuredValue
+            measuredValue,
           });
+
           setMeasurementReadyForConfirm(true);
 
           // Mark as processed to prevent duplicate handling
@@ -5304,10 +5794,15 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               const viewport = renderingEngineRef.current?.getViewport(overlay.viewportId);
               if (!viewport) return;
 
-              const contourPoints = annotation.data?.contour?.polyline || annotation.data?.handles?.points || [];
-              if (contourPoints.length === 0) return;
+              let firstPoint: Types.Point3 | null = null;
+              if (Array.isArray(annotation.data?.handles?.points) && annotation.data.handles.points.length > 0) {
+                firstPoint = [...annotation.data.handles.points[0]] as Types.Point3;
+              } else if (Array.isArray(annotation.data?.contour?.polyline) && annotation.data.contour.polyline.length >= 3) {
+                const polyline = annotation.data.contour.polyline;
+                firstPoint = [polyline[0], polyline[1], polyline[2]] as Types.Point3;
+              }
 
-              const firstPoint = contourPoints[0];
+              if (!firstPoint) return;
               const camera = viewport.getCamera();
               const { viewPlaneNormal, focalPoint } = camera;
 
@@ -5328,7 +5823,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               const isVisible = distanceToPlane <= visibilityThreshold;
 
               if (isVisible) {
-                const canvasPoint = viewport.worldToCanvas(firstPoint);
+                const canvasPoint = viewport.worldToCanvas(firstPoint) as Types.Point2;
                 const canvas = viewport.canvas;
                 const isInBounds = canvasPoint[0] >= -50 &&
                                  canvasPoint[0] <= canvas.width + 50 &&
@@ -5341,8 +5836,10 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                   const userMoved = customPos?.userMoved || overlay.userMoved || false;
 
                   // Preserve user's dragged position if they moved it
-                  const finalX = userMoved && customPos ? customPos.x : canvasPoint[0] + 10;
-                  const finalY = userMoved && customPos ? customPos.y : canvasPoint[1] - 10;
+                  const viewportElement = getViewportElementById(overlay.viewportId);
+                  const displayPoint = canvasToDisplayPoint(viewport, viewportElement, canvasPoint);
+                  const finalX = userMoved && customPos ? customPos.x : displayPoint[0] + 10;
+                  const finalY = userMoved && customPos ? customPos.y : displayPoint[1] - 10;
 
                   updated.push({
                     ...overlay,
@@ -5367,13 +5864,18 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                     annotation.data?.contour?.closed) {
 
                   // Check if this annotation is visible
-                  const viewport = renderingEngineRef.current?.getViewport('axial');
+             const viewport = renderingEngineRef.current?.getViewport('axial');
                   if (!viewport) return;
+                  const handlesPoints = annotation.data?.handles?.points;
+                  const textBoxPos = annotation.data?.handles?.textBox?.worldPosition;
+                  const firstPoint = Array.isArray(handlesPoints) && handlesPoints.length > 0
+                    ? [...handlesPoints[0]] as Types.Point3
+                    : Array.isArray(textBoxPos)
+                      ? [...textBoxPos] as Types.Point3
+                      : null;
 
-                  const contourPoints = annotation.data?.contour?.polyline || annotation.data?.handles?.points || [];
-                  if (contourPoints.length === 0) return;
+                  if (!firstPoint) return;
 
-                  const firstPoint = contourPoints[0];
                   const camera = viewport.getCamera();
                   const { viewPlaneNormal, focalPoint } = camera;
 
@@ -5496,17 +5998,24 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                       if (stats.perimeter) textLines.push(`Perim: ${stats.perimeter.toFixed(2)} mm`);
                       if (stats['Perimeter Ø']) textLines.push(`Perim Ø: ${stats['Perimeter Ø'].toFixed(2)} mm`);
 
-                      if (textLines.length > 0) {
-                        const canvasPoint = viewport.worldToCanvas(firstPoint);
-                        updated.push({
-                          uid: annotation.annotationUID,
-                          x: canvasPoint[0] + 10,
-                          y: canvasPoint[1] - 10,
-                          lines: textLines,
-                          viewportId: 'axial',
-                          annotationUID: annotation.annotationUID
-                        });
-                      }
+                      const canvasPoint = viewport.worldToCanvas(firstPoint) as Types.Point2;
+                      const customPos = annotation.metadata?.customTextPosition;
+                      const userMoved = !!customPos?.userMoved;
+                      const viewportElement = getViewportElementById(annotation.metadata?.viewportId || 'axial');
+                      const displayPoint = canvasToDisplayPoint(viewport, viewportElement, canvasPoint);
+                      const overlayX = userMoved && customPos ? customPos.x : displayPoint[0] + 10;
+                      const overlayY = userMoved && customPos ? customPos.y : displayPoint[1] - 10;
+
+                      updated.push({
+                        uid: annotation.annotationUID,
+                        x: overlayX,
+                        y: overlayY,
+                        lines: textLines,
+                        viewportId: 'axial',
+                        annotationUID: annotation.annotationUID,
+                        userMoved,
+                      });
+                      processedUIDs.add(annotation.annotationUID);
                     }
                   }
                 }
@@ -5666,6 +6175,11 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       }
 
       console.log('✅✅✅ SETUP TOOLS COMPLETE');
+
+      if (pendingToolRef.current) {
+        console.log('  🔁 Applying pending tool request:', pendingToolRef.current);
+        handleToolChange(pendingToolRef.current);
+      }
     } catch (error) {
       console.error('❌ Failed to setup tools:', error);
       throw error;
@@ -5675,7 +6189,10 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const handleToolChange = (toolName: string) => {
     try {
       const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
-      if (!toolGroup) return;
+      if (!toolGroup) {
+        pendingToolRef.current = toolName;
+        return;
+      }
 
       // Always disable CrosshairsTool when switching to other tools (completely hide it)
       // We use FixedCrosshairTool for custom crosshairs instead
@@ -5688,6 +6205,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       toolGroup.setToolPassive(CuspNadirTool.toolName);
       toolGroup.setToolPassive(WindowLevelTool.toolName);
       toolGroup.setToolPassive(FixedCrosshairTool.toolName); // Also disable fixed crosshairs when switching tools
+      toolGroup.setToolPassive('SmoothPolygon');
+      toolGroup.setToolPassive('AxialLine');
+      toolGroup.setToolPassive('MPRLongAxisLine');
+      toolGroup.setToolPassive('AngleMeasurement');
+      toolGroup.setToolPassive(LabelTool.toolName);
+      toolGroup.setToolPassive(CurvedLeafletTool.toolName);
 
       // Set measurement tool instances to enabled (not passive!)
       // Enabled = annotations are visible and interactive but tool is not actively drawing
@@ -5695,6 +6218,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       toolGroup.setToolEnabled('SmoothPolygon');
       toolGroup.setToolEnabled('AxialLine');
       toolGroup.setToolEnabled('MPRLongAxisLine');
+      toolGroup.setToolEnabled('AngleMeasurement');
+      toolGroup.setToolEnabled(LabelTool.toolName);
       toolGroup.setToolEnabled(CurvedLeafletTool.toolName);
 
       // Always keep these tools active with their default bindings
@@ -5755,6 +6280,16 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         toolGroup.setToolActive('AxialLine', {
           bindings: [{ mouseButton: MouseBindings.Primary }],
         });
+      } else if (toolName === 'Angle') {
+        console.log('🎯 Activating AngleMeasurement tool');
+        toolGroup.setToolActive('AngleMeasurement', {
+          bindings: [{ mouseButton: MouseBindings.Primary }],
+        });
+      } else if (toolName === 'Label') {
+        console.log('🎯 Activating Label tool');
+        toolGroup.setToolActive(LabelTool.toolName, {
+          bindings: [{ mouseButton: MouseBindings.Primary }],
+        });
       } else if (toolName === 'MPRLongAxisLine') {
         console.log('🎯 Activating MPRLongAxisLine tool');
         toolGroup.setToolActive('MPRLongAxisLine', {
@@ -5769,6 +6304,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       }
 
       setActiveTool(toolName);
+      pendingToolRef.current = null;
     } catch (error) {
       console.warn('Tool change error:', error);
     }
@@ -8117,17 +8653,18 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               >
               {/* Axial */}
               <div className="relative bg-black border border-slate-700">
-                <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
-                  Axial
-                </div>
-                <div
-                  ref={elementRefs.axial}
-                  className="w-full h-full"
-                  onDoubleClick={() => handleViewportDoubleClick('axial')}
-                />
+              <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                Axial
               </div>
+              <div
+                ref={elementRefs.axial}
+                className="w-full h-full"
+                onDoubleClick={() => handleViewportDoubleClick('axial')}
+              />
+              {renderAnnotationOverlayElements('axial')}
+            </div>
 
-              {/* Sagittal */}
+            {/* Sagittal */}
               <div className="relative bg-black border border-slate-700">
                 <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
                   Sagittal
@@ -8137,6 +8674,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                   className="w-full h-full"
                   onDoubleClick={() => handleViewportDoubleClick('sagittal')}
                 />
+                {renderAnnotationOverlayElements('sagittal')}
               </div>
 
               {/* Coronal */}
@@ -8149,6 +8687,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                   className="w-full h-full"
                   onDoubleClick={() => handleViewportDoubleClick('coronal')}
                 />
+                {renderAnnotationOverlayElements('coronal')}
               </div>
 
               {/* volume3D for ROOT_DEFINITION */}
@@ -8184,119 +8723,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 style={{ minHeight: '300px' }}
                 onDoubleClick={() => handleViewportDoubleClick('axial')}
               />
-            {/* Custom annotation text overlays */}
-            {annotationOverlays
-              .filter(overlay => overlay.viewportId === 'axial')
-              .map(overlay => (
-                <div
-                  key={overlay.uid}
-                  className="absolute z-50 cursor-move"
-                  style={{
-                    left: `${overlay.x}px`,
-                    top: `${overlay.y}px`,
-                    padding: '2px',
-                    userSelect: 'none'
-                  }}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setContextMenu({
-                      x: e.clientX,
-                      y: e.clientY,
-                      annotationUID: overlay.annotationUID
-                    });
-                  }}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const rect = e.currentTarget.parentElement?.getBoundingClientRect();
-                    if (rect) {
-                      setDraggingOverlay(overlay.uid);
-                      // Store offset from current mouse position to overlay position
-                      setDragOffset({
-                        x: (e.clientX - rect.left) - overlay.x,
-                        y: (e.clientY - rect.top) - overlay.y
-                      });
-                    }
-                  }}
-                  onMouseMove={(e) => {
-                    if (draggingOverlay === overlay.uid) {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      const rect = e.currentTarget.parentElement?.getBoundingClientRect();
-                      if (rect) {
-                        const mouseX = e.clientX - rect.left;
-                        const mouseY = e.clientY - rect.top;
-                        const newX = mouseX - dragOffset.x;
-                        const newY = mouseY - dragOffset.y;
-
-                        // Store the custom position in the annotation metadata so it persists
-                        const annotations = cornerstoneTools.annotation.state.getAllAnnotations();
-                        const annotation = annotations.find((ann: any) => ann.annotationUID === overlay.uid);
-                        if (annotation) {
-                          if (!annotation.metadata) annotation.metadata = {};
-                          annotation.metadata.customTextPosition = { x: newX, y: newY, userMoved: true };
-                        }
-
-                        setAnnotationOverlays(prev =>
-                          prev.map(o =>
-                            o.uid === overlay.uid ? { ...o, x: newX, y: newY, userMoved: true } : o
-                          )
-                        );
-                      }
-                    }
-                  }}
-                  onMouseUp={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setDraggingOverlay(null);
-                  }}
-                  onMouseLeave={(e) => {
-                    if (draggingOverlay === overlay.uid) {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      setDraggingOverlay(null);
-                    }
-                  }}
-                >
-                  {/* Custom label if exists */}
-                  {annotationLabels[overlay.annotationUID] && (
-                    <div
-                      style={{
-                        color: annotationLabels[overlay.annotationUID].color,
-                        fontSize: '15px',
-                        fontFamily: 'Arial, sans-serif',
-                        fontWeight: 'bold',
-                        lineHeight: '1.3',
-                        textShadow: '1px 1px 3px rgba(0, 0, 0, 1), -1px -1px 3px rgba(0, 0, 0, 1)',
-                        whiteSpace: 'nowrap',
-                        marginBottom: '4px',
-                        borderBottom: `2px solid ${annotationLabels[overlay.annotationUID].color}`,
-                        paddingBottom: '2px'
-                      }}
-                    >
-                      {annotationLabels[overlay.annotationUID].text}
-                    </div>
-                  )}
-                  {/* Measurement lines */}
-                  {overlay.lines.map((line, index) => (
-                    <div
-                      key={index}
-                      style={{
-                        color: '#ffff00',
-                        fontSize: '13px',
-                        fontFamily: 'Arial, sans-serif',
-                        fontWeight: 'bold',
-                        lineHeight: '1.3',
-                        textShadow: '1px 1px 2px rgba(0, 0, 0, 0.9), -1px -1px 2px rgba(0, 0, 0, 0.9)',
-                        whiteSpace: 'nowrap'
-                      }}
-                    >
-                      {line}
-                    </div>
-                  ))}
-                </div>
-              ))}
+            {renderAnnotationOverlayElements('axial')}
 
             {/* Custom labels for line annotations */}
             {(() => {
@@ -8360,7 +8787,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 }
 
                 // Convert to canvas coordinates
-                const canvasPoint = viewport.worldToCanvas(midpoint);
+                const canvasPoint = viewport.worldToCanvas(midpoint) as Types.Point2;
+                const viewportElement = getViewportElementById('axial');
+                const displayPoint = canvasToDisplayPoint(viewport, viewportElement, canvasPoint);
 
                 // Check if point is visible
                 const canvas = viewport.canvas;
@@ -8374,8 +8803,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                     key={annotation.annotationUID}
                     className="absolute z-50"
                     style={{
-                      left: `${canvasPoint[0]}px`,
-                      top: `${canvasPoint[1] - 30}px`, // Position above the line
+                      left: `${displayPoint[0]}px`,
+                      top: `${displayPoint[1] - 30}px`, // Position above the line
                       transform: 'translateX(-50%)'
                     }}
                   >
@@ -8453,16 +8882,37 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                   return null;
                 }
 
-                // Convert world coordinates to canvas coordinates
-                const longAxisP1Canvas = viewport.worldToCanvas(axes.longAxisP1);
-                const longAxisP2Canvas = viewport.worldToCanvas(axes.longAxisP2);
-                const shortAxisP1Canvas = viewport.worldToCanvas(axes.shortAxisP1);
-                const shortAxisP2Canvas = viewport.worldToCanvas(axes.shortAxisP2);
+                // Convert world coordinates to display coordinates
+                const longAxisP1Display = canvasToDisplayPoint(
+                  viewport,
+                  getViewportElementById('axial'),
+                  viewport.worldToCanvas(axes.longAxisP1) as Types.Point2
+                );
+                const longAxisP2Display = canvasToDisplayPoint(
+                  viewport,
+                  getViewportElementById('axial'),
+                  viewport.worldToCanvas(axes.longAxisP2) as Types.Point2
+                );
+                const shortAxisP1Display = canvasToDisplayPoint(
+                  viewport,
+                  getViewportElementById('axial'),
+                  viewport.worldToCanvas(axes.shortAxisP1) as Types.Point2
+                );
+                const shortAxisP2Display = canvasToDisplayPoint(
+                  viewport,
+                  getViewportElementById('axial'),
+                  viewport.worldToCanvas(axes.shortAxisP2) as Types.Point2
+                );
 
                 // Find the text overlay for this annotation
                 const textOverlay = annotationOverlays.find(o => o.annotationUID === annotation.annotationUID);
 
-                const firstPointCanvas = viewport.worldToCanvas(firstPoint);
+                const firstPointCanvas = viewport.worldToCanvas(firstPoint) as Types.Point2;
+                const firstPointDisplay = canvasToDisplayPoint(
+                  viewport,
+                  getViewportElementById('axial'),
+                  firstPointCanvas
+                );
 
                 return (
                   <svg
@@ -8475,8 +8925,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                       <line
                         x1={textOverlay.x}
                         y1={textOverlay.y}
-                        x2={firstPointCanvas[0]}
-                        y2={firstPointCanvas[1]}
+                        x2={firstPointDisplay[0]}
+                        y2={firstPointDisplay[1]}
                         stroke="#ffff00"
                         strokeWidth="1"
                         strokeDasharray="3,3"
@@ -8486,10 +8936,10 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
                     {/* Long axis line (red) */}
                     <line
-                      x1={longAxisP1Canvas[0]}
-                      y1={longAxisP1Canvas[1]}
-                      x2={longAxisP2Canvas[0]}
-                      y2={longAxisP2Canvas[1]}
+                      x1={longAxisP1Display[0]}
+                      y1={longAxisP1Display[1]}
+                      x2={longAxisP2Display[0]}
+                      y2={longAxisP2Display[1]}
                       stroke="#ff0000"
                       strokeWidth="2"
                       strokeDasharray="5,5"
@@ -8497,10 +8947,10 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
                     {/* Short axis line (cyan) */}
                     <line
-                      x1={shortAxisP1Canvas[0]}
-                      y1={shortAxisP1Canvas[1]}
-                      x2={shortAxisP2Canvas[0]}
-                      y2={shortAxisP2Canvas[1]}
+                      x1={shortAxisP1Display[0]}
+                      y1={shortAxisP1Display[1]}
+                      x2={shortAxisP2Display[0]}
+                      y2={shortAxisP2Display[1]}
                       stroke="#00ffff"
                       strokeWidth="2"
                       strokeDasharray="5,5"
@@ -8606,6 +9056,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 style={{ minHeight: '300px' }}
                 onDoubleClick={() => handleViewportDoubleClick('sagittal')}
               />
+              {renderAnnotationOverlayElements('sagittal')}
 
             {/* Custom labels for line annotations (Sagittal) */}
             {(() => {
@@ -8639,7 +9090,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 // They span the full volume
 
                 // Convert to canvas coordinates
-                const canvasPoint = viewport.worldToCanvas(midpoint);
+                const canvasPoint = viewport.worldToCanvas(midpoint) as Types.Point2;
+                const viewportElement = getViewportElementById('sagittal');
+                const displayPoint = canvasToDisplayPoint(viewport, viewportElement, canvasPoint);
 
                 // Check if point is visible
                 const canvas = viewport.canvas;
@@ -8653,8 +9106,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                     key={annotation.annotationUID}
                     className="absolute z-50"
                     style={{
-                      left: `${canvasPoint[0]}px`,
-                      top: `${canvasPoint[1] - 30}px`,
+                      left: `${displayPoint[0]}px`,
+                      top: `${displayPoint[1] - 30}px`,
                       transform: 'translateX(-50%)'
                     }}
                   >
@@ -8768,6 +9221,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 style={{ minHeight: '300px' }}
                 onDoubleClick={() => handleViewportDoubleClick('coronal')}
               />
+              {renderAnnotationOverlayElements('coronal')}
 
             {/* Custom labels for line annotations (Coronal) */}
             {(() => {
@@ -8801,7 +9255,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 // They span the full volume
 
                 // Convert to canvas coordinates
-                const canvasPoint = viewport.worldToCanvas(midpoint);
+                const canvasPoint = viewport.worldToCanvas(midpoint) as Types.Point2;
+                const viewportElement = getViewportElementById('coronal');
+                const displayPoint = canvasToDisplayPoint(viewport, viewportElement, canvasPoint);
 
                 // Check if point is visible
                 const canvas = viewport.canvas;
@@ -8815,8 +9271,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                     key={annotation.annotationUID}
                     className="absolute z-50"
                     style={{
-                      left: `${canvasPoint[0]}px`,
-                      top: `${canvasPoint[1] - 30}px`,
+                      left: `${displayPoint[0]}px`,
+                      top: `${displayPoint[1] - 30}px`,
                       transform: 'translateX(-50%)'
                     }}
                   >
