@@ -435,110 +435,110 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
       {state.patientInfo && (state.currentStage === WorkflowStage.ROOT_DEFINITION ||
                               state.currentStage === WorkflowStage.ANNULUS_DEFINITION ||
                               state.currentStage === WorkflowStage.MEASUREMENTS) && (
-        <div className="px-4 py-3 border-b border-slate-700 flex-shrink-0">
-          <h4 className="text-xs font-semibold mb-2 text-slate-400 uppercase tracking-wide">Tools</h4>
-          <div className="grid grid-cols-4 gap-2">
+        <div className="px-3 py-2 border-b border-slate-700 flex-shrink-0">
+          <h4 className="text-xs font-semibold mb-1.5 text-slate-400 uppercase tracking-wide">Tools</h4>
+          <div className="grid grid-cols-5 gap-1">
             <button
               onClick={() => handleToolClick('Crosshairs')}
-              className={`p-2 rounded transition-colors flex flex-col items-center justify-center gap-1 ${
+              className={`p-1.5 rounded transition-colors flex flex-col items-center justify-center ${
                 activeTool === 'Crosshairs'
                   ? 'bg-blue-600 text-white'
                   : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
               }`}
               title="Crosshairs"
             >
-              <FaCrosshairs className="text-lg" />
-              <span className="text-xs">Cross</span>
+              <FaCrosshairs className="text-sm" />
+              <span className="text-[10px] mt-0.5">Cross</span>
             </button>
             <button
               onClick={() => handleToolClick('WindowLevel')}
-              className={`p-2 rounded transition-colors flex flex-col items-center justify-center gap-1 ${
+              className={`p-1.5 rounded transition-colors flex flex-col items-center justify-center ${
                 activeTool === 'WindowLevel'
                   ? 'bg-blue-600 text-white'
                   : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
               }`}
               title="Window/Level"
             >
-              <FaAdjust className="text-lg" />
-              <span className="text-xs">W/L</span>
+              <FaAdjust className="text-sm" />
+              <span className="text-[10px] mt-0.5">W/L</span>
             </button>
             <button
               onClick={() => handleToolClick('Zoom')}
-              className={`p-2 rounded transition-colors flex flex-col items-center justify-center gap-1 ${
+              className={`p-1.5 rounded transition-colors flex flex-col items-center justify-center ${
                 activeTool === 'Zoom'
                   ? 'bg-blue-600 text-white'
                   : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
               }`}
               title="Zoom"
             >
-              <FaSearchPlus className="text-lg" />
-              <span className="text-xs">Zoom</span>
+              <FaSearchPlus className="text-sm" />
+              <span className="text-[10px] mt-0.5">Zoom</span>
             </button>
             <button
               onClick={() => handleToolClick('Pan')}
-              className={`p-2 rounded transition-colors flex flex-col items-center justify-center gap-1 ${
+              className={`p-1.5 rounded transition-colors flex flex-col items-center justify-center ${
                 activeTool === 'Pan'
                   ? 'bg-blue-600 text-white'
                   : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
               }`}
               title="Pan"
             >
-              <FaHandPaper className="text-lg" />
-              <span className="text-xs">Pan</span>
+              <FaHandPaper className="text-sm" />
+              <span className="text-[10px] mt-0.5">Pan</span>
             </button>
             {state.currentStage === WorkflowStage.ROOT_DEFINITION && (
               <button
                 onClick={() => handleToolClick('SphereMarker')}
-                className={`p-2 rounded transition-colors flex flex-col items-center justify-center gap-1 ${
+                className={`p-1.5 rounded transition-colors flex flex-col items-center justify-center ${
                   activeTool === 'SphereMarker'
                     ? 'bg-blue-600 text-white'
                     : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
                 }`}
                 title="Centerline Tool"
               >
-                <FaDotCircle className="text-lg" />
-                <span className="text-xs">Line</span>
+                <FaDotCircle className="text-sm" />
+                <span className="text-[10px] mt-0.5">Line</span>
               </button>
             )}
             {state.currentStage === WorkflowStage.ANNULUS_DEFINITION && (
               <button
                 onClick={() => handleToolClick('CuspNadir')}
-                className={`p-2 rounded transition-colors flex flex-col items-center justify-center gap-1 ${
+                className={`p-1.5 rounded transition-colors flex flex-col items-center justify-center ${
                   activeTool === 'CuspNadir'
                     ? 'bg-blue-600 text-white'
                     : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
                 }`}
                 title="Cusp Nadir"
               >
-                <FaDotCircle className="text-lg" />
-                <span className="text-xs">Cusp</span>
+                <FaDotCircle className="text-sm" />
+                <span className="text-[10px] mt-0.5">Cusp</span>
               </button>
             )}
             {state.currentStage === WorkflowStage.MEASUREMENTS && (
               <>
                 <button
                   onClick={() => handleToolClick('SmoothPolygon')}
-                  className={`p-2 rounded transition-colors flex flex-col items-center justify-center gap-1 ${
+                  className={`p-1.5 rounded transition-colors flex flex-col items-center justify-center ${
                     activeTool === 'SmoothPolygon'
                       ? 'bg-blue-600 text-white'
                       : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
                   }`}
                   title="Polygon"
                 >
-                  <FaDrawPolygon className="text-lg" />
-                  <span className="text-xs">Poly</span>
+                  <FaDrawPolygon className="text-sm" />
+                  <span className="text-[10px] mt-0.5">Poly</span>
                 </button>
                 <button
                   onClick={() => handleToolClick('AxialLine')}
-                  className={`p-2 rounded transition-colors flex flex-col items-center justify-center gap-1 ${
+                  className={`p-1.5 rounded transition-colors flex flex-col items-center justify-center ${
                     activeTool === 'AxialLine'
                       ? 'bg-blue-600 text-white'
                       : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
                   }`}
                   title="Length"
                 >
-                  <FaRuler className="text-lg" />
-                  <span className="text-xs">Line</span>
+                  <FaRuler className="text-sm" />
+                  <span className="text-[10px] mt-0.5">Line</span>
                 </button>
               </>
             )}
@@ -563,58 +563,7 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
         </div>
       )}
 
-      {/* Current Stage Info */}
-      <div className="px-4 py-3 border-b border-slate-700 flex-shrink-0">
-        <h4 className="text-sm font-semibold mb-3 text-white">{getStageTitle(state.currentStage)}</h4>
-        {/* Image placeholder */}
-        <div className="bg-slate-800 border-2 border-dashed border-slate-600 rounded-lg aspect-video flex items-center justify-center">
-          <span className="text-slate-500 text-xs">Instruction Image</span>
-        </div>
-      </div>
 
-      {/* View Report Button - Show when measurements exist */}
-      {Object.keys(state.measurements).length > 0 && (
-        <div className="px-6 py-3 border-b border-slate-700 flex-shrink-0">
-          <button
-            onClick={() => actions.setStage(WorkflowStage.REPORT)}
-            className="w-full px-4 py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm flex items-center justify-center gap-2 transition-colors font-medium"
-          >
-            <FaFileAlt />
-            View Report
-          </button>
-        </div>
-      )}
-
-      {/* View Type Selector - Only show during MEASUREMENTS stage */}
-      {state.patientInfo && state.currentStage === WorkflowStage.MEASUREMENTS && state.rootPoints.length >= 3 && (
-        <div className="px-6 py-4 border-b border-slate-700">
-          <h4 className="text-sm font-semibold mb-2 text-slate-300">Viewport Mode</h4>
-          <div className="flex gap-2">
-            <button
-              onClick={() => setViewType('mpr')}
-              className={`flex-1 px-3 py-2 text-sm rounded transition-colors ${
-                viewType === 'mpr'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-              }`}
-            >
-              <div className="font-medium">Standard MPR</div>
-              <div className="text-xs opacity-75">Multiplanar</div>
-            </button>
-            <button
-              onClick={() => setViewType('cpr')}
-              className={`flex-1 px-3 py-2 text-sm rounded transition-colors ${
-                viewType === 'cpr'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-              }`}
-            >
-              <div className="font-medium">CPR View</div>
-              <div className="text-xs opacity-75">Straightened</div>
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Tools Section - Replace with Measurement Workflow Panel for MEASUREMENTS stage */}
       {state.currentStage === WorkflowStage.MEASUREMENTS ? (
@@ -736,6 +685,7 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             state.currentStage === WorkflowStage.MEASUREMENTS) && state.patientInfo ? (
         <ProperMPRViewport
             renderMode={viewType}
+            onRenderModeChange={setViewType}
             patientInfo={state.patientInfo}
             currentStage={state.currentStage}
             existingSpheres={state.rootPoints.map((point) => ({

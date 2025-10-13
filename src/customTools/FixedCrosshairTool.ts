@@ -120,6 +120,7 @@ class FixedCrosshairTool extends BaseTool {
    */
   setCPRRotationCallback(callback: ((deltaAngle: number) => void) | null) {
     FixedCrosshairTool.globalCPRRotationCallback = callback;
+    console.log(`🔧 CPR rotation callback ${callback ? 'SET (CPR mode)' : 'CLEARED (MPR mode)'}`);
   }
 
   /**
@@ -700,7 +701,7 @@ class FixedCrosshairTool extends BaseTool {
       e.preventDefault();
       e.stopPropagation();
 
-      console.log('🔄 Starting crosshair rotation from marker');
+      console.log('🔄 Starting crosshair rotation from marker in viewport:', viewportId);
       this.isDragging = true;
 
       // Get center point in canvas coordinates
@@ -718,17 +719,42 @@ class FixedCrosshairTool extends BaseTool {
       // Change cursor to grabbing
       marker.style.cursor = 'grabbing';
 
+      console.log('📎 Adding global event listeners to document');
+      let moveCount = 0;
+
       // Add global mousemove listener
       const handleMouseMove = (moveEvent: MouseEvent) => {
+        moveCount++;
+
+        // Log every 10th move to reduce console spam
+        if (moveCount % 10 === 1) {
+          console.log(`🖱️ MouseMove event #${moveCount}`, {
+            isDragging: this.isDragging,
+            hasRenderingEngineId: !!this.renderingEngineId,
+            hasFixedPosition: !!this.fixedPosition
+          });
+        }
+
         if (!this.isDragging || !this.renderingEngineId || !this.fixedPosition) {
+          console.warn('⚠️ MouseMove: Conditions not met', {
+            isDragging: this.isDragging,
+            hasRenderingEngineId: !!this.renderingEngineId,
+            hasFixedPosition: !!this.fixedPosition
+          });
           return;
         }
 
         const renderingEngine = getRenderingEngine(this.renderingEngineId);
-        if (!renderingEngine) return;
+        if (!renderingEngine) {
+          console.warn('⚠️ MouseMove: Rendering engine not found');
+          return;
+        }
 
         const axialViewport = renderingEngine.getViewport('axial');
-        if (!axialViewport) return;
+        if (!axialViewport) {
+          console.warn('⚠️ MouseMove: Axial viewport not found');
+          return;
+        }
 
         // Get center point in canvas coordinates
         const centerCanvas = axialViewport.worldToCanvas(this.fixedPosition);
@@ -751,15 +777,22 @@ class FixedCrosshairTool extends BaseTool {
         FixedCrosshairTool.globalRotationAngle = oldRotation + smoothedDeltaAngle;
         const deltaAngle = smoothedDeltaAngle;
 
+        // Log rotation updates
+        if (Math.abs(deltaAngle) > 0.001) {
+          console.log(`🔄 Rotating: deltaAngle=${(deltaAngle * 180 / Math.PI).toFixed(2)}°, total=${(FixedCrosshairTool.globalRotationAngle * 180 / Math.PI).toFixed(1)}°`);
+        }
+
         // Always update for smooth rotation - even tiny movements
         if (Math.abs(deltaAngle) > 0) {
           // Rotate the MPR viewing planes (negate deltaAngle to fix direction)
+          console.log('📐 Calling rotateMPRPlanes...');
           this.rotateMPRPlanes(renderingEngine, 'axial', -deltaAngle);
         }
       };
 
       // Add global mouseup listener
       const handleMouseUp = () => {
+        console.log(`🖱️ MouseUp event, total moves: ${moveCount}`);
         if (this.isDragging) {
           this.isDragging = false;
           console.log(`✅ Crosshair rotation complete: ${(FixedCrosshairTool.globalRotationAngle * 180 / Math.PI).toFixed(1)}°`);
@@ -772,6 +805,7 @@ class FixedCrosshairTool extends BaseTool {
         }
 
         // Remove global listeners
+        console.log('🗑️ Removing global event listeners');
         document.removeEventListener('mousemove', handleMouseMove);
         document.removeEventListener('mouseup', handleMouseUp);
       };
@@ -779,6 +813,20 @@ class FixedCrosshairTool extends BaseTool {
       // Add global listeners
       document.addEventListener('mousemove', handleMouseMove);
       document.addEventListener('mouseup', handleMouseUp);
+
+      // Add a temporary test listener to verify ANY mousemove events fire
+      let testCount = 0;
+      const testMove = () => {
+        testCount++;
+        if (testCount <= 5) {
+          console.log(`🧪 Test mousemove event ${testCount}`);
+        }
+      };
+      document.addEventListener('mousemove', testMove);
+      setTimeout(() => {
+        console.log(`🧪 Test complete: ${testCount} mousemove events detected`);
+        document.removeEventListener('mousemove', testMove);
+      }, 2000);
     });
   }
 
@@ -1078,19 +1126,32 @@ class FixedCrosshairTool extends BaseTool {
    *                     OR update CPR direction matrices (CPR mode via callback)
    */
   private rotateMPRPlanes(renderingEngine: any, activeViewportId: string, deltaAngle: number) {
-    if (!this.fixedPosition) return;
+    if (!this.fixedPosition) {
+      console.warn('⚠️ rotateMPRPlanes: No fixed position');
+      return;
+    }
 
     // Only allow rotation from axial view
-    if (activeViewportId !== 'axial') return;
+    if (activeViewportId !== 'axial') {
+      console.log(`⏭️ rotateMPRPlanes: Ignoring rotation from ${activeViewportId} (only axial allowed)`);
+      return;
+    }
 
     // If CPR rotation callback is set (check static property), use it instead of standard rotation
-    if (FixedCrosshairTool.globalCPRRotationCallback) {
+    // IMPORTANT: Only use CPR callback if it's actually set and not null
+    if (FixedCrosshairTool.globalCPRRotationCallback && typeof FixedCrosshairTool.globalCPRRotationCallback === 'function') {
+      console.log('🔄 Using CPR rotation callback for CPR mode');
       FixedCrosshairTool.globalCPRRotationCallback(deltaAngle);
       return;
     }
 
+    console.log(`🔄 Using MPR rotation (standard camera rotation): deltaAngle=${(deltaAngle * 180 / Math.PI).toFixed(1)}°`);
+
     const axialViewport = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
-    if (!axialViewport) return;
+    if (!axialViewport) {
+      console.warn('⚠️ rotateMPRPlanes: Axial viewport not found');
+      return;
+    }
 
     const axialCamera = axialViewport.getCamera();
     const axialNormal = axialCamera.viewPlaneNormal; // This is the rotation axis (perpendicular to axial plane)
@@ -1100,7 +1161,10 @@ class FixedCrosshairTool extends BaseTool {
 
     longAxisViewports.forEach(viewportId => {
       const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
-      if (!viewport) return;
+      if (!viewport) {
+        console.warn(`⚠️ rotateMPRPlanes: ${viewportId} viewport not found`);
+        return;
+      }
 
       const camera = viewport.getCamera();
 
@@ -1131,15 +1195,33 @@ class FixedCrosshairTool extends BaseTool {
         deltaAngle
       );
 
+      // CRITICAL: Also rotate the viewPlaneNormal to slice through different parts of the volume
+      const newViewPlaneNormal = this.rotateVectorAroundAxis(
+        camera.viewPlaneNormal,
+        axialNormal,
+        deltaAngle
+      );
+
+      // Set the new camera with ALL parameters including viewPlaneNormal
+      console.log(`  📷 Updating ${viewportId} camera...`);
       viewport.setCamera({
-        ...camera,
         position: newPosition,
         viewUp: newViewUp,
+        viewPlaneNormal: newViewPlaneNormal, // This determines which slice we see!
         focalPoint: this.fixedPosition, // Keep focal point locked at valve
+        clippingRange: camera.clippingRange, // Preserve clipping range
+        parallelScale: camera.parallelScale, // Preserve zoom
       });
 
+      // Force immediate render - call render() directly on viewport
       viewport.render();
+      console.log(`  ✅ ${viewportId} camera updated and rendered`);
     });
+
+    // CRITICAL: Force render all viewports together to ensure synchronization
+    // This is especially important for the new 2-row layout in measurements stage
+    renderingEngine.renderViewports(['axial', 'sagittal', 'coronal']);
+    console.log('  🔄 All viewports rendered together');
 
     // DON'T rotate the axial viewport camera - only the visual crosshair lines rotate
     // This is handled by the rotationAngle in the drawing code
