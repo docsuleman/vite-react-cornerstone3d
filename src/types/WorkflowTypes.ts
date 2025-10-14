@@ -75,6 +75,21 @@ export interface VolumeCropInfo {
   timestamp: number;
 }
 
+export interface ReportScreenshot {
+  id: string;
+  viewportId: string;
+  imageDataUrl: string;
+  capturedAt: string;
+  workflowStepId?: string;
+  workflowStepName?: string;
+  annotationUID?: string;
+  details?: Array<{
+    title: string;
+    lines: string[];
+    color?: string;
+  }>;
+}
+
 export interface TAVIMeasurements {
   // Existing annulus measurements
   annulus?: AnnulusMeasurements;

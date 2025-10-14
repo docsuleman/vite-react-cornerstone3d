@@ -4,8 +4,8 @@
  */
 
 import React from 'react';
-import { FaPrint, FaDownload, FaTimes, FaCheck, FaRuler, FaCircle } from 'react-icons/fa';
-import { TAVIMeasurements } from '../types/WorkflowTypes';
+import { FaPrint, FaDownload, FaTimes, FaCheck, FaRuler, FaCircle, FaCamera } from 'react-icons/fa';
+import { TAVIMeasurements, ReportScreenshot } from '../types/WorkflowTypes';
 import { MeasurementStep } from '../types/MeasurementWorkflowTypes';
 
 interface MeasurementReportPageProps {
@@ -17,6 +17,7 @@ interface MeasurementReportPageProps {
   };
   measurements: TAVIMeasurements;
   completedSteps: MeasurementStep[];
+  screenshots?: ReportScreenshot[];
   onClose: () => void;
 }
 
@@ -24,6 +25,7 @@ const MeasurementReportPage: React.FC<MeasurementReportPageProps> = ({
   patientInfo,
   measurements,
   completedSteps,
+  screenshots = [],
   onClose
 }) => {
   const handlePrint = () => {
@@ -56,6 +58,14 @@ const MeasurementReportPage: React.FC<MeasurementReportPageProps> = ({
 
   const formatDate = () => {
     return new Date().toLocaleString();
+  };
+
+  const formatTimestamp = (value: string) => {
+    try {
+      return new Date(value).toLocaleString();
+    } catch (error) {
+      return value;
+    }
   };
 
   return (
@@ -354,6 +364,57 @@ const MeasurementReportPage: React.FC<MeasurementReportPageProps> = ({
               </div>
             )}
           </div>
+
+          {screenshots.length > 0 && (
+            <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
+              <h2 className="text-2xl font-bold text-gray-900 mb-4 border-b-2 border-purple-600 pb-2 flex items-center gap-2">
+                <FaCamera className="text-purple-500" />
+                Report Screenshots
+              </h2>
+              <div className="grid gap-4 md:grid-cols-2">
+                {screenshots.map((shot) => (
+                  <div key={shot.id} className="bg-slate-50 border border-slate-200 rounded-lg overflow-hidden shadow-inner">
+                    <div className="bg-black flex items-center justify-center">
+                      <img
+                        src={shot.imageDataUrl}
+                        alt={`Report screenshot captured from ${shot.viewportId}`}
+                        className="w-full h-48 object-contain"
+                      />
+                    </div>
+                    <div className="p-3 text-xs text-slate-600 space-y-3">
+                      <div className="space-y-1">
+                        <div className="text-slate-800 font-semibold">
+                          {shot.workflowStepName || 'Manual Capture'}
+                        </div>
+                        <div className="uppercase tracking-wide">{shot.viewportId}</div>
+                        <div>{formatTimestamp(shot.capturedAt)}</div>
+                      </div>
+
+                      {shot.details && shot.details.length > 0 && (
+                        <div className="space-y-2">
+                          {shot.details.map((detail, detailIndex) => (
+                            <div key={`${shot.id}-detail-${detailIndex}`} className="space-y-1">
+                              <div
+                                className="text-[11px] font-semibold text-slate-800"
+                                style={{ color: detail.color || undefined }}
+                              >
+                                {detail.title}
+                              </div>
+                              <ul className="ml-4 list-disc text-[11px] text-slate-600 space-y-1">
+                                {detail.lines.map((line, lineIndex) => (
+                                  <li key={`${shot.id}-detail-${detailIndex}-line-${lineIndex}`}>{line}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Workflow Completion Status */}
           <div className="bg-white rounded-lg shadow-lg p-6">

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { FaUser, FaStethoscope, FaEye, FaRuler, FaCog, FaChevronRight, FaCheck, FaExclamationTriangle, FaCircle, FaTrash, FaFileAlt, FaCrosshairs, FaAdjust, FaSearchPlus, FaHandPaper, FaDotCircle, FaDrawPolygon, FaSquare, FaDraftingCompass } from 'react-icons/fa';
 import appIcon from '../assets/app-icon.png';
 import PatientSearch from './PatientSearch';
@@ -12,7 +12,7 @@ import ProperMPRViewport from './ProperMPRViewport';
 import MeasurementWorkflowPanel from './MeasurementWorkflowPanel';
 import MeasurementReportPage from './MeasurementReportPage';
 import { useWorkflowState } from '../hooks/useWorkflowState';
-import { WorkflowStage, RootPointType } from '../types/WorkflowTypes';
+import { WorkflowStage, RootPointType, ReportScreenshot } from '../types/WorkflowTypes';
 import { Study, Series, dicomWebService } from '../services/DicomWebService';
 import { getWorkflowManager } from '../utils/MeasurementWorkflowManager';
 import { MeasurementStep } from '../types/MeasurementWorkflowTypes';
@@ -48,6 +48,7 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
   const [workflowManager] = useState(() => getWorkflowManager());
   const [workflowSteps, setWorkflowSteps] = useState<MeasurementStep[]>([]);
   const [currentWorkflowStep, setCurrentWorkflowStep] = useState<MeasurementStep | null>(null);
+  const [reportScreenshots, setReportScreenshots] = useState<ReportScreenshot[]>([]);
 
 
   useEffect(() => {
@@ -56,6 +57,12 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
       setShowPatientSearch(true);
     }
   }, [state.currentStage, state.patientInfo]);
+
+  useEffect(() => {
+    if (state.currentStage === WorkflowStage.PATIENT_SELECTION) {
+      setReportScreenshots([]);
+    }
+  }, [state.currentStage]);
 
   // Initialize measurement workflow when entering MEASUREMENTS stage
   useEffect(() => {
@@ -275,6 +282,16 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
       actions.markStageComplete(WorkflowStage.MEASUREMENTS);
     }
   };
+
+  const handleAddScreenshotToReport = useCallback((payload: Omit<ReportScreenshot, 'id'>) => {
+    setReportScreenshots((prev) => [
+      ...prev,
+      {
+        id: `screenshot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        ...payload,
+      },
+    ]);
+  }, []);
 
   // Handle toolbar button clicks
   const handleToolClick = (toolName: string) => {
@@ -730,6 +747,7 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             patientInfo={state.patientInfo}
             measurements={state.measurements}
             completedSteps={workflowSteps.filter(step => state.completedMeasurementSteps.includes(step.id))}
+            screenshots={reportScreenshots}
             onClose={() => actions.setStage(WorkflowStage.MEASUREMENTS)}
           />
         </div>
@@ -759,6 +777,13 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             requestedTool={requestedTool}
             windowLevelPreset={windowLevelPreset}
             initializeCropBox={state.currentStage === WorkflowStage.ROOT_DEFINITION}
+            onAddScreenshotToReport={handleAddScreenshotToReport}
+            onWorkflowStepSelect={(stepId) => {
+              const targetStep = workflowSteps.find(step => step.id === stepId);
+              if (targetStep) {
+                handleActivateMeasurementStep(targetStep);
+              }
+            }}
             onMeasurementComplete={(stepId, annotationUID, measuredValue) => {
               // Complete the step in workflow manager and state
               workflowManager.completeCurrentStep(annotationUID, measuredValue);

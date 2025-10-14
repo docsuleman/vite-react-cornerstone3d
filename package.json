@@ -20,6 +20,7 @@
     "dcmjs": "0.33.0",
     "dicom-parser": "1.8.21",
     "dicomweb-client": "0.10.4",
+    "html2canvas": "^1.4.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-icons": "^5.5.0",

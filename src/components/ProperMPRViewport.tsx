@@ -17,14 +17,14 @@ import { init as csToolsInit } from "@cornerstonejs/tools";
 import { init as dicomImageLoaderInit } from "@cornerstonejs/dicom-image-loader";
 import * as cornerstoneTools from "@cornerstonejs/tools";
 import { initializeCornerstone, isCornerStoneInitialized } from '../utils/cornerstoneInit';
-import { FaCrosshairs, FaSearchPlus, FaArrowsAlt, FaAdjust, FaCircle, FaMousePointer, FaScroll, FaTrash, FaDotCircle, FaPlay, FaPause, FaDrawPolygon, FaRuler, FaTag, FaPen, FaCheck, FaChevronDown, FaInfo } from "react-icons/fa";
+import { FaCrosshairs, FaSearchPlus, FaArrowsAlt, FaAdjust, FaCircle, FaMousePointer, FaScroll, FaTrash, FaDotCircle, FaPlay, FaPause, FaDrawPolygon, FaRuler, FaTag, FaPen, FaCheck, FaChevronDown, FaInfo, FaCamera, FaTools, FaListUl, FaDraftingCompass, FaBullseye, FaVectorSquare, FaMapMarkerAlt, FaRegSquare } from "react-icons/fa";
 import SphereMarkerTool from '../customTools/Spheremarker';
 import CuspNadirTool from '../customTools/CuspNadirTool';
 import FixedCrosshairTool from '../customTools/FixedCrosshairTool';
 import VerticalDistanceTool from '../customTools/VerticalDistanceTool';
 import VerticalLineTool from '../customTools/VerticalLineTool';
 import CurvedLeafletTool from '../customTools/CurvedLeafletTool';
-import ContextMenu from './ContextMenu';
+import ContextMenu, { ContextMenuItem } from './ContextMenu';
 import { WorkflowStage, RootPointType } from '../types/WorkflowTypes';
 import { CenterlineGenerator } from '../utils/CenterlineGenerator';
 import { MeasurementStep } from '../types/MeasurementWorkflowTypes';
@@ -48,6 +48,7 @@ import vtkRenderWindow from '@kitware/vtk.js/Rendering/Core/RenderWindow';
 import vtkRenderer from '@kitware/vtk.js/Rendering/Core/Renderer';
 import vtkRenderWindowInteractor from '@kitware/vtk.js/Rendering/Core/RenderWindowInteractor';
 import vtkPiecewiseFunction from '@kitware/vtk.js/Common/DataModel/PiecewiseFunction';
+import html2canvas from 'html2canvas';
 import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction';
 import { mat3, vec3 } from 'gl-matrix';
 import HumanVTP from '../assets/Human.vtp?url';
@@ -64,7 +65,9 @@ const {
   LengthTool,
   AngleTool,
   LabelTool,
+  ProbeTool,
   RectangleROITool,
+  CircleROITool,
   TrackballRotateTool,
   VolumeCroppingTool,
   VolumeCroppingControlTool,
@@ -114,6 +117,15 @@ interface ProperMPRViewportProps {
   requestedTool?: string; // Tool requested from parent
   windowLevelPreset?: string; // W/L preset from parent toolbar
   initializeCropBox?: boolean; // Initialize default crop box for volume cropping
+  onAddScreenshotToReport?: (payload: {
+    viewportId: string;
+    imageDataUrl: string;
+    capturedAt: string;
+    workflowStepId?: string;
+    workflowStepName?: string;
+    annotationUID?: string;
+  }) => void;
+  onWorkflowStepSelect?: (stepId: string) => void;
 }
 
 const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
@@ -135,7 +147,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   onActiveToolChange,
   requestedTool,
   windowLevelPreset = 'cardiac',
-  initializeCropBox = false
+  initializeCropBox = false,
+  onAddScreenshotToReport,
+  onWorkflowStepSelect
 }) => {
   const elementRefs = {
     axial: useRef(null),
@@ -158,6 +172,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     x: number;
     y: number;
     annotationUID: string;
+    viewportId: string | null;
     cprLineData?: {
       arcLength: number;
       totalLength: number;
@@ -168,6 +183,14 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       clickedYPixel: number;
     }
   } | null>(null);
+  const [viewportContextMenu, setViewportContextMenu] = useState<{
+    x: number;
+    y: number;
+    viewportId: string | null;
+  } | null>(null);
+  const [annotationLabels, setAnnotationLabels] = useState<{
+    [annotationUID: string]: { text: string; color: string }
+  }>({});
   const [annotationOverlays, setAnnotationOverlays] = useState<Array<{
     uid: string;
     x: number;
@@ -248,6 +271,267 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     return null;
   };
 
+  const captureViewportScreenshot = useCallback(async (viewportId: string, annotationUID?: string) => {
+    console.log('📸 captureViewportScreenshot called for:', viewportId);
+
+    if (!onAddScreenshotToReport) {
+      console.warn('Screenshot handler not provided, skipping capture.');
+      return;
+    }
+
+    const viewport = renderingEngineRef.current?.getViewport(viewportId);
+    if (!viewport) {
+      console.warn(`Unable to find viewport "${viewportId}" for screenshot capture.`);
+      return;
+    }
+
+    const canvas = viewport.getCanvas?.() as HTMLCanvasElement | undefined;
+    if (!canvas) {
+      console.warn(`Viewport "${viewportId}" does not expose a canvas for screenshot capture.`);
+      return;
+    }
+
+    console.log('📸 Canvas found, capturing with html2canvas...');
+
+    try {
+      // Temporarily hide crosshair tool
+      const toolGroup = cornerstoneTools.ToolGroupManager.getToolGroup(toolGroupId);
+      const crosshairWasEnabled = toolGroup?.getToolOptions('FixedCrosshair')?.mode !== undefined;
+
+      if (crosshairWasEnabled && toolGroup) {
+        toolGroup.setToolDisabled('FixedCrosshair');
+      }
+
+      // Trigger a render to ensure annotations are up to date and crosshair is hidden
+      viewport.render();
+
+      // Small delay to ensure render completes
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Find the viewport element (parent of canvas)
+      const viewportElement = canvas.parentElement;
+      if (!viewportElement) {
+        console.warn('Unable to find viewport element');
+        // Re-enable crosshair before returning
+        if (crosshairWasEnabled && toolGroup) {
+          toolGroup.setToolEnabled('FixedCrosshair');
+          viewport.render();
+        }
+        return;
+      }
+
+      // Use html2canvas to capture the entire viewport including SVG overlays
+      const capturedCanvas = await html2canvas(viewportElement, {
+        backgroundColor: '#000000',
+        logging: false,
+        scale: 1,
+        useCORS: true,
+      });
+
+      console.log('📸 html2canvas capture complete');
+
+      // Re-enable crosshair tool
+      if (crosshairWasEnabled && toolGroup) {
+        toolGroup.setToolEnabled('FixedCrosshair');
+        viewport.render();
+      }
+
+      // Collect annotation details for the report
+      const details: Array<{ title: string; lines: string[]; color?: string }> = [];
+
+      if (currentStage === WorkflowStage.MEASUREMENTS) {
+        const overlays = annotationOverlays.filter((overlay) => overlay.viewportId === viewportId);
+        const allAnnotations = cornerstoneTools.annotation.state.getAllAnnotations();
+
+        const annotationsForViewport = allAnnotations.filter((ann: any) => {
+          const toolName = ann.metadata?.toolName;
+          const metaViewportId = ann.metadata?.viewportId;
+          if (metaViewportId) {
+            return metaViewportId === viewportId;
+          }
+          if (toolName === 'SmoothPolygon' || toolName === 'AxialLine') {
+            return viewportId === 'axial';
+          }
+          if (toolName === 'MPRLongAxisLine') {
+            return viewportId === 'sagittal' || viewportId === 'coronal';
+          }
+          return false;
+        });
+
+        overlays.forEach((overlay) => {
+          const labelInfo = annotationLabels[overlay.annotationUID];
+          const title = labelInfo?.text || overlay.lines[0] || 'Annotation';
+          const lines = overlay.lines.filter((line) => line !== title);
+          details.push({
+            title,
+            lines: lines.length > 0 ? lines : overlay.lines,
+            color: labelInfo?.color,
+          });
+        });
+
+        annotationsForViewport.forEach((ann: any) => {
+          const labelInfo = annotationLabels[ann.annotationUID];
+          if (labelInfo) {
+            const stats = ann.data?.cachedStats;
+            let lengthValue: number | undefined;
+            if (typeof stats?.length === 'number') {
+              lengthValue = stats.length;
+            } else if (stats && typeof stats === 'object') {
+              const keys = Object.keys(stats);
+              for (const key of keys) {
+                const entry = (stats as any)[key];
+                if (entry && typeof entry.length === 'number') {
+                  lengthValue = entry.length;
+                  break;
+                }
+                if (entry && typeof entry.textLines === 'object' && Array.isArray(entry.textLines)) {
+                  const lengthLine = entry.textLines.find((line: string) => line.toLowerCase().includes('length'));
+                  if (lengthLine) {
+                    details.push({
+                      title: labelInfo.text,
+                      lines: [lengthLine],
+                      color: labelInfo.color,
+                    });
+                    lengthValue = undefined;
+                    break;
+                  }
+                }
+              }
+            }
+
+            if (typeof lengthValue === 'number' && isFinite(lengthValue)) {
+              details.push({
+                title: labelInfo.text,
+                lines: [`Length: ${lengthValue.toFixed(2)} mm`],
+                color: labelInfo.color,
+              });
+            }
+          }
+        });
+      }
+
+      // Convert captured canvas to data URL
+      const imageDataUrl = capturedCanvas.toDataURL('image/png');
+      onAddScreenshotToReport({
+        viewportId,
+        imageDataUrl,
+        capturedAt: new Date().toISOString(),
+        workflowStepId: currentWorkflowStep?.id,
+        workflowStepName: currentWorkflowStep?.name,
+        annotationUID,
+        details: details.filter((detail) => detail.lines.length > 0),
+      });
+      console.log(`📸 Added ${viewportId} viewport screenshot to report.`);
+    } catch (error) {
+      console.error('Failed to capture viewport screenshot for report:', error);
+    }
+  }, [
+    annotationOverlays,
+    annotationLabels,
+    currentStage,
+    currentWorkflowStep?.id,
+    currentWorkflowStep?.name,
+    onAddScreenshotToReport,
+  ]);
+
+  const getViewportMenuItems = (viewportId: string | null): ContextMenuItem[] => {
+    if (currentStage !== WorkflowStage.MEASUREMENTS) {
+      return [];
+    }
+
+    const measurementToolItems: ContextMenuItem[] = [
+      {
+        label: `Line${activeTool === 'AxialLine' ? ' (Active)' : ''}`,
+        icon: <FaRuler />,
+        onClick: () => handleToolChange('AxialLine'),
+      },
+      {
+        label: `Polygon${activeTool === 'SmoothPolygon' ? ' (Active)' : ''}`,
+        icon: <FaDrawPolygon />,
+        onClick: () => handleToolChange('SmoothPolygon'),
+      },
+      {
+        label: `Angle${activeTool === 'Angle' ? ' (Active)' : ''}`,
+        icon: <FaDraftingCompass />,
+        onClick: () => handleToolChange('Angle'),
+      },
+      {
+        label: `Probe${activeTool === 'Probe' ? ' (Active)' : ''}`,
+        icon: <FaBullseye />,
+        onClick: () => handleToolChange('Probe'),
+      },
+      {
+        label: `ROI${activeTool === 'RectangleROI' ? ' (Active)' : ''}`,
+        icon: <FaVectorSquare />,
+        onClick: () => handleToolChange('RectangleROI'),
+      },
+      {
+        label: `Marker${activeTool === 'Label' ? ' (Active)' : ''}`,
+        icon: <FaMapMarkerAlt />,
+        onClick: () => handleToolChange('Label'),
+      },
+      {
+        label: `Circle${activeTool === 'CircleROI' ? ' (Active)' : ''}`,
+        icon: <FaCircle />,
+        onClick: () => handleToolChange('CircleROI'),
+      },
+      {
+        label: `Rectangle${activeTool === 'RectangleROI' ? ' (Active)' : ''}`,
+        icon: <FaRegSquare />,
+        onClick: () => handleToolChange('RectangleROI'),
+      },
+    ];
+
+    const workflowManagerInstance = getWorkflowManager();
+    const workflowMenuItems: ContextMenuItem[] = workflowManagerInstance
+      .getAllSteps()
+      .map((step) => {
+        const isCurrent = step.id === currentWorkflowStep?.id;
+        const isComplete = !!step.completed;
+        const labelSuffix = isCurrent ? ' (Current)' : isComplete ? ' (Done)' : '';
+        return {
+          label: `${step.name}${labelSuffix}`,
+          icon: isComplete ? <FaCheck className="text-green-400" /> : isCurrent ? <FaPlay className="text-blue-400" /> : undefined,
+          onClick: () => {
+            if (onWorkflowStepSelect) {
+              onWorkflowStepSelect(step.id);
+            }
+          },
+          disabled: !onWorkflowStepSelect,
+        };
+      });
+
+    const items: ContextMenuItem[] = [
+      {
+        label: 'Add Screenshot to Report',
+        icon: <FaCamera />,
+        disabled: !viewportId || !onAddScreenshotToReport,
+        onClick: () => {
+          if (viewportId) {
+            captureViewportScreenshot(viewportId);
+          }
+        },
+      },
+      {
+        label: 'Measurement Tools',
+        icon: <FaTools />,
+        disabled: measurementToolItems.length === 0,
+        children: measurementToolItems,
+      },
+    ];
+
+    if (workflowMenuItems.length > 0) {
+      items.push({
+        label: 'Workflow',
+        icon: <FaListUl />,
+        disabled: !onWorkflowStepSelect,
+        children: workflowMenuItems,
+      });
+    }
+
+    return items;
+  };
+
   const renderAnnotationOverlayElements = (viewportId: string) => {
     return annotationOverlays
       .filter(overlay => overlay.viewportId === viewportId)
@@ -313,10 +597,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
             onContextMenu={(e) => {
               e.preventDefault();
               e.stopPropagation();
+              setViewportContextMenu(null);
               setContextMenu({
                 x: e.clientX,
                 y: e.clientY,
-                annotationUID: overlay.annotationUID
+                annotationUID: overlay.annotationUID,
+                viewportId: overlay.viewportId
               });
             }}
             onMouseDown={(e) => {
@@ -410,10 +696,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       });
   };
 
-  // Annotation labeling
-  const [annotationLabels, setAnnotationLabels] = useState<{
-    [annotationUID: string]: { text: string; color: string }
-  }>({});
   const [labelModal, setLabelModal] = useState<{
     visible: boolean;
     annotationUID: string;
@@ -525,6 +807,11 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     setMeasurementReadyForConfirm(false);
     setCurrentMeasurementData(null);
   }, [currentWorkflowStep]);
+
+  useEffect(() => {
+    setContextMenu(null);
+    setViewportContextMenu(null);
+  }, [currentStage]);
 
   // Use centerline from props when available (during measurements stage)
   useEffect(() => {
@@ -4415,6 +4702,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       cornerstoneTools.addTool(AngleTool);
       cornerstoneTools.addTool(LabelTool);
       cornerstoneTools.addTool(RectangleROITool);
+      cornerstoneTools.addTool(ProbeTool);
+      cornerstoneTools.addTool(CircleROITool);
       cornerstoneTools.addTool(VerticalDistanceTool);
       cornerstoneTools.addTool(VerticalLineTool);
       cornerstoneTools.addTool(CurvedLeafletTool);
@@ -4485,6 +4774,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       // Add RectangleROI tool for volume cropping in ROOT_DEFINITION stage
       toolGroup.addTool(RectangleROITool.toolName);
+      toolGroup.addTool(ProbeTool.toolName);
+      toolGroup.addTool(CircleROITool.toolName);
       toolGroup.addTool(LabelTool.toolName, {
         configuration: {
           getTextCallback: (callback, defaultText) => callback(defaultText ?? ''),
@@ -5637,10 +5928,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               console.log(`  📊 Distance from annulus: ${distanceFromAnnulus.toFixed(2)}mm`);
 
               // Show context menu with special type for CPR line
+              setViewportContextMenu(null);
               setContextMenu({
                 x: evt.clientX,
                 y: evt.clientY,
                 annotationUID: 'cpr-position-line',
+                viewportId,
                 cprLineData: {
                   arcLength: currentDistance,
                   totalLength: totalDistance,
@@ -5721,10 +6014,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
             if (distToLine <= tolerance) {
               console.log(`  ✅ Showing context menu for line`);
+              setViewportContextMenu(null);
               setContextMenu({
                 x: evt.clientX,
                 y: evt.clientY,
-                annotationUID: annotation.annotationUID
+                annotationUID: annotation.annotationUID,
+                viewportId
               });
               return;
             } else {
@@ -5733,7 +6028,15 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           }
         }
 
-        // No annotation context menu fired - do nothing
+        // No annotation context menu fired - fall back to general viewport actions when appropriate
+        if (currentStage === WorkflowStage.MEASUREMENTS && viewportId) {
+          setContextMenu(null);
+          setViewportContextMenu({
+            x: evt.clientX,
+            y: evt.clientY,
+            viewportId,
+          });
+        }
 
         // Helper function to calculate distance from point to line segment
         function distanceToLineSegment(
@@ -6215,6 +6518,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       toolGroup.setToolPassive('AngleMeasurement');
       toolGroup.setToolPassive(LabelTool.toolName);
       toolGroup.setToolPassive(CurvedLeafletTool.toolName);
+      toolGroup.setToolPassive(ProbeTool.toolName);
+      toolGroup.setToolPassive(RectangleROITool.toolName);
+      toolGroup.setToolPassive(CircleROITool.toolName);
 
       // Set measurement tool instances to enabled (not passive!)
       // Enabled = annotations are visible and interactive but tool is not actively drawing
@@ -6225,6 +6531,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       toolGroup.setToolEnabled('AngleMeasurement');
       toolGroup.setToolEnabled(LabelTool.toolName);
       toolGroup.setToolEnabled(CurvedLeafletTool.toolName);
+      toolGroup.setToolEnabled(ProbeTool.toolName);
+      toolGroup.setToolEnabled(RectangleROITool.toolName);
+      toolGroup.setToolEnabled(CircleROITool.toolName);
 
       // Always keep these tools active with their default bindings
       toolGroup.setToolActive(StackScrollTool.toolName, {
@@ -6286,24 +6595,39 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         });
       } else if (toolName === 'Angle') {
         console.log('🎯 Activating AngleMeasurement tool');
-        toolGroup.setToolActive('AngleMeasurement', {
-          bindings: [{ mouseButton: MouseBindings.Primary }],
-        });
-      } else if (toolName === 'Label') {
-        console.log('🎯 Activating Label tool');
-        toolGroup.setToolActive(LabelTool.toolName, {
-          bindings: [{ mouseButton: MouseBindings.Primary }],
-        });
-      } else if (toolName === 'MPRLongAxisLine') {
-        console.log('🎯 Activating MPRLongAxisLine tool');
-        toolGroup.setToolActive('MPRLongAxisLine', {
-          bindings: [{ mouseButton: MouseBindings.Primary }],
-        });
-      } else if (toolName === 'CurvedLeafletTool') {
-        console.log('🎯 Activating CurvedLeafletTool for leaflet measurements');
-        toolGroup.setToolActive(CurvedLeafletTool.toolName, {
-          bindings: [{ mouseButton: MouseBindings.Primary }],
-        });
+      toolGroup.setToolActive('AngleMeasurement', {
+        bindings: [{ mouseButton: MouseBindings.Primary }],
+      });
+    } else if (toolName === 'Probe') {
+      console.log('🎯 Activating Probe tool');
+      toolGroup.setToolActive(ProbeTool.toolName, {
+        bindings: [{ mouseButton: MouseBindings.Primary }],
+      });
+    } else if (toolName === 'Label') {
+      console.log('🎯 Activating Label tool');
+      toolGroup.setToolActive(LabelTool.toolName, {
+        bindings: [{ mouseButton: MouseBindings.Primary }],
+      });
+    } else if (toolName === 'MPRLongAxisLine') {
+      console.log('🎯 Activating MPRLongAxisLine tool');
+      toolGroup.setToolActive('MPRLongAxisLine', {
+        bindings: [{ mouseButton: MouseBindings.Primary }],
+      });
+    } else if (toolName === 'RectangleROI') {
+      console.log('🎯 Activating Rectangle ROI tool');
+      toolGroup.setToolActive(RectangleROITool.toolName, {
+        bindings: [{ mouseButton: MouseBindings.Primary }],
+      });
+    } else if (toolName === 'CircleROI') {
+      console.log('🎯 Activating Circle ROI tool');
+      toolGroup.setToolActive(CircleROITool.toolName, {
+        bindings: [{ mouseButton: MouseBindings.Primary }],
+      });
+    } else if (toolName === 'CurvedLeafletTool') {
+      console.log('🎯 Activating CurvedLeafletTool for leaflet measurements');
+      toolGroup.setToolActive(CurvedLeafletTool.toolName, {
+        bindings: [{ mouseButton: MouseBindings.Primary }],
+      });
         console.log('  ℹ️ Click to add points on SAGITTAL/CORONAL views, creates open spline curve');
       }
 
@@ -8849,10 +9173,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                       onContextMenu={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
+                        setViewportContextMenu(null);
                         setContextMenu({
                           x: e.clientX,
                           y: e.clientY,
-                          annotationUID: annotation.annotationUID
+                          annotationUID: annotation.annotationUID,
+                          viewportId: 'axial'
                         });
                       }}
                     >
@@ -9070,10 +9396,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                       onContextMenu={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
+                        setViewportContextMenu(null);
                         setContextMenu({
                           x: e.clientX,
                           y: e.clientY,
-                          annotationUID: annotation.annotationUID
+                          annotationUID: annotation.annotationUID,
+                          viewportId: 'sagittal'
                         });
                       }}
                     >
@@ -9235,10 +9563,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                       onContextMenu={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
+                        setViewportContextMenu(null);
                         setContextMenu({
                           x: e.clientX,
                           y: e.clientY,
-                          annotationUID: annotation.annotationUID
+                          annotationUID: annotation.annotationUID,
+                          viewportId: 'coronal'
                         });
                       }}
                     >
@@ -9430,80 +9760,80 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           <ContextMenu
             x={contextMenu.x}
             y={contextMenu.y}
-            items={
-              contextMenu.annotationUID === 'cpr-position-line' && contextMenu.cprLineData
-                ? [
-                    {
-                      label: `Height: ${Math.abs(contextMenu.cprLineData.distanceFromAnnulus).toFixed(2)} mm`,
-                      icon: null,
-                      onClick: () => {
-                        // Add new height indicator line (allow multiple)
-                        if (contextMenu.cprLineData) {
-                          // Convert canvas Y coordinates to display Y coordinates for SVG rendering
-                          const viewport = renderingEngineRef.current?.getViewport(contextMenu.cprLineData.viewportId);
-                          if (viewport) {
-                            const canvas = viewport.getCanvas() as HTMLCanvasElement;
-                            const element = contextMenu.cprLineData.viewportId === 'sagittal'
-                              ? elementRefs.sagittal.current
-                              : elementRefs.coronal.current;
+            items={(() => {
+              if (contextMenu.annotationUID === 'cpr-position-line' && contextMenu.cprLineData) {
+                return [
+                  {
+                    label: `Height: ${Math.abs(contextMenu.cprLineData.distanceFromAnnulus).toFixed(2)} mm`,
+                    icon: <FaRuler />,
+                    onClick: () => {
+                      const data = contextMenu.cprLineData;
+                      const viewport = renderingEngineRef.current?.getViewport(data.viewportId);
+                      if (viewport) {
+                        const canvas = viewport.getCanvas() as HTMLCanvasElement;
+                        const element = data.viewportId === 'sagittal' ? elementRefs.sagittal.current : elementRefs.coronal.current;
+                        if (element && canvas) {
+                          const rect = element.getBoundingClientRect();
+                          const canvasHeight = canvas.height;
+                          const displayHeight = rect.height;
+                          const y1Display = (data.annulusYPixel / canvasHeight) * displayHeight;
+                          const y2Display = (data.clickedYPixel / canvasHeight) * displayHeight;
 
-                            if (element && canvas) {
-                              const rect = element.getBoundingClientRect();
-                              const canvasHeight = canvas.height;
-                              const displayHeight = rect.height;
-
-                              // Convert canvas pixels to display pixels
-                              const y1Display = (contextMenu.cprLineData.annulusYPixel / canvasHeight) * displayHeight;
-                              const y2Display = (contextMenu.cprLineData.clickedYPixel / canvasHeight) * displayHeight;
-
-                              const newIndicator = {
-                                id: `height-${Date.now()}`,
-                                viewportId: contextMenu.cprLineData.viewportId,
-                                y1: y1Display,
-                                y2: y2Display,
-                                height: contextMenu.cprLineData.distanceFromAnnulus
-                              };
-                              setCprHeightIndicators(prev => [...prev, newIndicator]);
-                            }
-                          }
+                          const newIndicator = {
+                            id: `height-${Date.now()}`,
+                            viewportId: data.viewportId,
+                            y1: y1Display,
+                            y2: y2Display,
+                            height: data.distanceFromAnnulus,
+                          };
+                          setCprHeightIndicators((prev) => [...prev, newIndicator]);
                         }
-                        setContextMenu(null);
-                      }
-                    }
-                  ]
-                : [
-                    {
-                      label: annotationLabels[contextMenu.annotationUID] ? 'Edit Label' : 'Add Label',
-                      icon: <FaTag />,
-                      onClick: () => {
-                        // Get the annotation to check for existing label
-                        const annotations = cornerstoneTools.annotation.state.getAllAnnotations();
-                        const annotation = annotations.find((ann: any) => ann.annotationUID === contextMenu.annotationUID);
-
-                        // Pre-fill with existing customLabel (used by both workflow and manual labels)
-                        const existingLabel = annotation?.metadata?.customLabel;
-                        const stateLabel = annotationLabels[contextMenu.annotationUID];
-
-                        setLabelModal({
-                          visible: true,
-                          annotationUID: contextMenu.annotationUID,
-                          currentLabel: stateLabel?.text || existingLabel?.text || '',
-                          currentColor: stateLabel?.color || existingLabel?.color || '#ffff00'
-                        });
-                        setContextMenu(null);
                       }
                     },
-                    {
-                      label: 'Delete Annotation',
-                      icon: <FaTrash />,
-                      onClick: () => {
-                        deleteAnnotation(contextMenu.annotationUID);
-                        setContextMenu(null);
-                      }
-                    }
-                  ]
-            }
+                  },
+                ];
+              }
+
+              if (contextMenu.annotationUID) {
+                const annotations = cornerstoneTools.annotation.state.getAllAnnotations();
+                const annotation = annotations.find((ann: any) => ann.annotationUID === contextMenu.annotationUID);
+                const existingLabel = annotation?.metadata?.customLabel;
+                const stateLabel = annotationLabels[contextMenu.annotationUID];
+
+                return [
+                  {
+                    label: stateLabel?.text || existingLabel?.text ? 'Edit Label' : 'Add Label',
+                    icon: <FaTag />,
+                    onClick: () => {
+                      setLabelModal({
+                        visible: true,
+                        annotationUID: contextMenu.annotationUID,
+                        currentLabel: stateLabel?.text || existingLabel?.text || '',
+                        currentColor: stateLabel?.color || existingLabel?.color || '#ffff00',
+                      });
+                    },
+                  },
+                  {
+                    label: 'Delete Annotation',
+                    icon: <FaTrash />,
+                    onClick: () => {
+                      deleteAnnotation(contextMenu.annotationUID);
+                    },
+                  },
+                ];
+              }
+
+              return [];
+            })()}
             onClose={() => setContextMenu(null)}
+          />
+        )}
+        {viewportContextMenu && (
+          <ContextMenu
+            x={viewportContextMenu.x}
+            y={viewportContextMenu.y}
+            items={getViewportMenuItems(viewportContextMenu.viewportId)}
+            onClose={() => setViewportContextMenu(null)}
           />
         )}
 
