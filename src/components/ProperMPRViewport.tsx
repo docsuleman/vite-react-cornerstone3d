@@ -8563,15 +8563,20 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     };
   }, [currentStage, elementRefs.volume3D]);
 
-  // Trigger resize when entering annulus definition or measurements stage to adapt to custom layout
+  // Trigger resize when entering root definition, annulus definition or measurements stage to adapt to custom layout
   useEffect(() => {
-    if ((currentStage === WorkflowStage.ANNULUS_DEFINITION || currentStage === WorkflowStage.MEASUREMENTS) && renderingEngineRef.current) {
+    if ((currentStage === WorkflowStage.ROOT_DEFINITION || currentStage === WorkflowStage.ANNULUS_DEFINITION || currentStage === WorkflowStage.MEASUREMENTS) && renderingEngineRef.current) {
       console.log(`📐 ${currentStage} stage: Triggering resize for custom layout`);
       setTimeout(() => {
         if (renderingEngineRef.current) {
-          const viewportIds = currentStage === WorkflowStage.MEASUREMENTS
-            ? ['axial', 'sagittal', 'coronal', 'measurement1']
-            : ['axial', 'sagittal', 'coronal'];
+          let viewportIds: string[];
+          if (currentStage === WorkflowStage.MEASUREMENTS) {
+            viewportIds = ['axial', 'sagittal', 'coronal', 'measurement1'];
+          } else if (currentStage === WorkflowStage.ROOT_DEFINITION) {
+            viewportIds = ['axial', 'sagittal', 'coronal', 'volume3D'];
+          } else {
+            viewportIds = ['axial', 'sagittal', 'coronal'];
+          }
           manualResize(renderingEngineId, viewportIds);
           console.log('✅ Resize complete for custom layout');
         }
@@ -8596,22 +8601,159 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   useEffect(() => {
     if (!renderingEngineRef.current) return;
 
-    // Wait for DOM layout to complete
-    setTimeout(() => {
-      const viewportIds = currentStage === WorkflowStage.MEASUREMENTS
-        ? ['axial', 'sagittal', 'coronal', 'measurement1']
-        : ['axial', 'sagittal', 'coronal'];
+    let resizeTimer: NodeJS.Timeout;
+    let secondResizeTimer: NodeJS.Timeout;
 
+    // Wait for DOM layout to complete
+    // Increased delay because React needs time to move viewport elements to new containers
+    resizeTimer = setTimeout(() => {
       console.log(`🔄 Resizing viewports after maximize/restore change: maximizedViewport=${maximizedViewport}`);
-      manualResize(renderingEngineId, viewportIds);
+
+      // In new layout, ALL viewports are always visible (75%/25% split when maximized)
+      // So we always resize all viewports
+      let viewportIdsToResize: string[];
+
+      if (currentStage === WorkflowStage.MEASUREMENTS) {
+        viewportIdsToResize = ['axial', 'sagittal', 'coronal', 'measurement1'];
+      } else if (currentStage === WorkflowStage.ROOT_DEFINITION) {
+        viewportIdsToResize = ['axial', 'sagittal', 'coronal', 'volume3D'];
+      } else {
+        viewportIdsToResize = ['axial', 'sagittal', 'coronal'];
+      }
+
+      console.log(`   Resizing all visible viewports:`, viewportIdsToResize);
+
+      // Filter out viewports with 0x0 dimensions to avoid resize errors
+      // CRITICAL: Check CANVAS dimensions, not just container div dimensions
+      const validViewportIds = viewportIdsToResize.filter(id => {
+        const elementRef = id === 'axial' ? elementRefs.axial :
+                          id === 'sagittal' ? elementRefs.sagittal :
+                          id === 'coronal' ? elementRefs.coronal :
+                          id === 'measurement1' ? elementRefs.measurement1 :
+                          id === 'volume3D' ? elementRefs.volume3D : null;
+
+        if (!elementRef?.current) {
+          console.warn(`   ⚠️ Skipping ${id}: element ref not available`);
+          return false;
+        }
+
+        const containerWidth = elementRef.current.offsetWidth;
+        const containerHeight = elementRef.current.offsetHeight;
+
+        // Check if viewport has a canvas element with valid dimensions
+        const viewport = renderingEngineRef.current?.getViewport(id);
+        if (!viewport) {
+          console.warn(`   ⚠️ Skipping ${id}: viewport not found in rendering engine`);
+          return false;
+        }
+
+        const canvas = viewport.canvas;
+        if (!canvas) {
+          console.warn(`   ⚠️ Skipping ${id}: no canvas element`);
+          return false;
+        }
+
+        const canvasWidth = canvas.width;
+        const canvasHeight = canvas.height;
+
+        if (containerWidth === 0 || containerHeight === 0) {
+          console.warn(`   ⚠️ Skipping ${id}: container has zero dimensions (${containerWidth}x${containerHeight})`);
+          return false;
+        }
+
+        if (canvasWidth === 0 || canvasHeight === 0) {
+          console.warn(`   ⚠️ Skipping ${id}: canvas has zero dimensions (${canvasWidth}x${canvasHeight}) even though container is ${containerWidth}x${containerHeight}`);
+          return false;
+        }
+
+        console.log(`   ✓ Including ${id}: container=${containerWidth}x${containerHeight}, canvas=${canvasWidth}x${canvasHeight}`);
+        return true;
+      });
+
+      if (validViewportIds.length === 0) {
+        console.warn('   ⚠️ No viewports with valid dimensions, skipping resize');
+        return;
+      }
+
+      console.log(`   Final resize list:`, validViewportIds);
+      manualResize(renderingEngineId, validViewportIds);
 
       // Force render all viewports
       if (renderingEngineRef.current) {
         renderingEngineRef.current.render();
       }
 
+      // Retry for viewports that were skipped due to zero dimensions
+      const skippedViewports = viewportIdsToResize.filter(id => !validViewportIds.includes(id));
+      if (skippedViewports.length > 0) {
+        console.log(`   🔄 Will retry resize for skipped viewports in 300ms:`, skippedViewports);
+        setTimeout(() => {
+          const retryValidIds = skippedViewports.filter(id => {
+            const elementRef = id === 'axial' ? elementRefs.axial :
+                              id === 'sagittal' ? elementRefs.sagittal :
+                              id === 'coronal' ? elementRefs.coronal :
+                              id === 'measurement1' ? elementRefs.measurement1 :
+                              id === 'volume3D' ? elementRefs.volume3D : null;
+
+            if (!elementRef?.current) return false;
+
+            const containerWidth = elementRef.current.offsetWidth;
+            const containerHeight = elementRef.current.offsetHeight;
+
+            // Check canvas dimensions
+            const viewport = renderingEngineRef.current?.getViewport(id);
+            if (!viewport?.canvas) return false;
+
+            const canvasWidth = viewport.canvas.width;
+            const canvasHeight = viewport.canvas.height;
+
+            if (containerWidth === 0 || containerHeight === 0 || canvasWidth === 0 || canvasHeight === 0) {
+              console.warn(`   ⚠️ Retry failed for ${id}: container=${containerWidth}x${containerHeight}, canvas=${canvasWidth}x${canvasHeight}`);
+              return false;
+            }
+
+            console.log(`   ✓ Retry successful for ${id}: container=${containerWidth}x${containerHeight}, canvas=${canvasWidth}x${canvasHeight}`);
+            return true;
+          });
+
+          if (retryValidIds.length > 0) {
+            console.log(`   🔄 Retrying resize for:`, retryValidIds);
+            manualResize(renderingEngineId, retryValidIds);
+            if (renderingEngineRef.current) {
+              renderingEngineRef.current.render();
+            }
+            console.log('✅ Retry resize complete');
+          }
+        }, 300);
+      }
+
       console.log('✅ Resize complete after maximize/restore');
-    }, 100);
+
+      // CRITICAL: Add a second resize attempt after DOM fully stabilizes
+      // First resize might hit viewports while they're being moved between containers
+      secondResizeTimer = setTimeout(() => {
+        console.log('🔄 Second resize attempt to ensure all viewports are properly sized...');
+
+        const allViewportIds = currentStage === WorkflowStage.MEASUREMENTS
+          ? ['axial', 'sagittal', 'coronal', 'measurement1']
+          : currentStage === WorkflowStage.ROOT_DEFINITION
+          ? ['axial', 'sagittal', 'coronal', 'volume3D']
+          : ['axial', 'sagittal', 'coronal'];
+
+        manualResize(renderingEngineId, allViewportIds);
+
+        if (renderingEngineRef.current) {
+          renderingEngineRef.current.render();
+        }
+
+        console.log('✅ Second resize complete');
+      }, 800); // Additional 400ms after first resize
+    }, 400); // Initial delay
+
+    return () => {
+      clearTimeout(resizeTimer);
+      clearTimeout(secondResizeTimer);
+    };
   }, [maximizedViewport, currentStage]);
 
   // Calculate current camera orientation angles
@@ -9261,8 +9403,115 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         
         {/* MPR views - Unified approach with conditional top row */}
         <div className="relative w-full h-full bg-slate-900">
-          {!maximizedViewport && (
-            <div className={currentStage === WorkflowStage.MEASUREMENTS ? "flex flex-col h-full gap-1" : "h-full"}>
+          {/* Maximized layout: large viewport on left (75%), others stacked on right (25%) */}
+          {maximizedViewport ? (
+            <div className="flex h-full gap-1">
+              {/* Maximized viewport (75% width) */}
+              <div className="w-3/4 relative bg-black border border-slate-700">
+                <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                  {maximizedViewport === 'axial' ? 'Axial' :
+                   maximizedViewport === 'sagittal' ? 'Sagittal' :
+                   maximizedViewport === 'coronal' ? 'Coronal' :
+                   maximizedViewport === 'measurement1' ? '3D View' :
+                   maximizedViewport === 'volume3D' ? '3D View' : maximizedViewport} (Maximized - Double-click to restore)
+                </div>
+                <div
+                  ref={
+                    maximizedViewport === 'axial' ? elementRefs.axial :
+                    maximizedViewport === 'sagittal' ? elementRefs.sagittal :
+                    maximizedViewport === 'coronal' ? elementRefs.coronal :
+                    maximizedViewport === 'measurement1' ? elementRefs.measurement1 :
+                    maximizedViewport === 'volume3D' ? elementRefs.volume3D : elementRefs.axial
+                  }
+                  className="w-full h-full"
+                  onDoubleClick={() => handleViewportDoubleClick(maximizedViewport)}
+                />
+                {maximizedViewport === 'axial' && renderAnnotationOverlayElements('axial')}
+                {maximizedViewport === 'sagittal' && renderAnnotationOverlayElements('sagittal')}
+                {maximizedViewport === 'coronal' && renderAnnotationOverlayElements('coronal')}
+              </div>
+
+              {/* Other viewports stacked on right (25% width) */}
+              <div className="w-1/4 flex flex-col gap-1">
+                {/* Show non-maximized viewports */}
+                {maximizedViewport !== 'axial' && (
+                  <div className="flex-1 relative bg-black border border-slate-700">
+                    <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                      Axial
+                    </div>
+                    <div
+                      ref={elementRefs.axial}
+                      className="w-full h-full"
+                      onDoubleClick={() => handleViewportDoubleClick('axial')}
+                    />
+                    {renderAnnotationOverlayElements('axial')}
+                  </div>
+                )}
+
+                {maximizedViewport !== 'sagittal' && (
+                  <div className="flex-1 relative bg-black border border-slate-700">
+                    <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                      Sagittal
+                    </div>
+                    <div
+                      ref={elementRefs.sagittal}
+                      className="w-full h-full"
+                      onDoubleClick={() => handleViewportDoubleClick('sagittal')}
+                    />
+                    {renderAnnotationOverlayElements('sagittal')}
+                  </div>
+                )}
+
+                {maximizedViewport !== 'coronal' && (
+                  <div className="flex-1 relative bg-black border border-slate-700">
+                    <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                      Coronal
+                    </div>
+                    <div
+                      ref={elementRefs.coronal}
+                      className="w-full h-full"
+                      onDoubleClick={() => handleViewportDoubleClick('coronal')}
+                    />
+                    {renderAnnotationOverlayElements('coronal')}
+                  </div>
+                )}
+
+                {/* Show 3D view if in measurements and not maximized */}
+                {currentStage === WorkflowStage.MEASUREMENTS && maximizedViewport !== 'measurement1' && (
+                  <div className="flex-1 relative bg-black border border-slate-700">
+                    <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                      3D View
+                    </div>
+                    <div
+                      ref={elementRefs.measurement1}
+                      className="w-full h-full"
+                      onDoubleClick={() => handleViewportDoubleClick('measurement1')}
+                    />
+                  </div>
+                )}
+
+                {/* Show 3D view if in root definition and not maximized */}
+                {currentStage === WorkflowStage.ROOT_DEFINITION && maximizedViewport !== 'volume3D' && (
+                  <div className="flex-1 relative bg-black border border-slate-700">
+                    <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
+                      3D View
+                    </div>
+                    <div
+                      ref={elementRefs.volume3D}
+                      className="w-full h-full"
+                      onDoubleClick={() => handleViewportDoubleClick('volume3D')}
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            /* Normal grid layout */
+            <div className={
+              currentStage === WorkflowStage.MEASUREMENTS ? "flex flex-col h-full gap-1" :
+              "h-full"
+            }>
+
               {/* Top row for MEASUREMENTS stage only */}
               {currentStage === WorkflowStage.MEASUREMENTS && (
                 <div className="flex gap-1 h-1/3">
@@ -9295,6 +9544,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 className={`grid gap-1 ${
                   currentStage === WorkflowStage.MEASUREMENTS ? 'h-2/3 grid-cols-3' :
                   currentStage === WorkflowStage.ROOT_DEFINITION ? 'h-full grid-cols-2 grid-rows-2' :
+                  currentStage === WorkflowStage.ANNULUS_DEFINITION ? 'h-full grid-cols-3' :
                   'h-full grid-cols-3'
                 }`}
               >
@@ -9383,599 +9633,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               )}
               </div>
             </div>
-          )}
-
-          {/* Maximized viewports */}
-          {maximizedViewport && (
-            <>
-          {maximizedViewport === 'axial' && (
-            <div className={`relative bg-black border border-slate-700 ${
-              maximizedViewport === 'axial' ? 'w-full h-full' : ''
-            }`} style={{ order: 1 }}>
-              <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
-                Axial {maximizedViewport === 'axial' && '(Maximized - Double-click to restore)'}
-              </div>
-              <div
-                ref={elementRefs.axial}
-                className="w-full h-full"
-                style={{ minHeight: '300px' }}
-                onDoubleClick={() => handleViewportDoubleClick('axial')}
-              />
-            {renderAnnotationOverlayElements('axial')}
-
-            {/* Custom labels for line annotations */}
-            {(() => {
-              const viewport = renderingEngineRef.current?.getViewport('axial');
-              if (!viewport) return null;
-
-              const annotations = cornerstoneTools.annotation.state.getAllAnnotations();
-              const lineAnnotations = annotations.filter((ann: any) =>
-                (ann?.metadata?.toolName === 'Length' || ann?.metadata?.toolName === 'AxialLine' || ann?.metadata?.toolName === 'MPRLongAxisLine') &&
-                ann?.data?.handles?.points?.length === 2 &&
-                annotationLabels[ann.annotationUID] &&
-                // Only show labels for annotations in current renderMode
-                (!ann?.metadata?.renderMode || ann.metadata.renderMode === renderMode)
-              );
-
-
-              return lineAnnotations.map((annotation: any) => {
-                const label = annotationLabels[annotation.annotationUID];
-                if (!label) return null;
-
-                // Check if annotation should be visible in this viewport
-                // AxialLine: only in axial viewport
-                // MPRLongAxisLine: only in sagittal/coronal viewports (handled in those sections)
-                if (annotation.metadata?.toolName === 'Length' || annotation.metadata?.toolName === 'AxialLine') {
-                  // AxialLine should only show in axial
-                } else if (annotation.metadata?.toolName === 'MPRLongAxisLine') {
-                  // MPRLongAxisLine should NOT show in axial
-                  return null;
-                }
-
-                // Get the midpoint of the line
-                const p1 = annotation.data.handles.points[0];
-                const p2 = annotation.data.handles.points[1];
-                const midpoint: Types.Point3 = [
-                  (p1[0] + p2[0]) / 2,
-                  (p1[1] + p2[1]) / 2,
-                  (p1[2] + p2[2]) / 2
-                ];
-
-                // Check visibility based on camera plane (like polygon overlays)
-                const camera = viewport.getCamera();
-                const { viewPlaneNormal, focalPoint } = camera;
-
-                const vectorToPoint = [
-                  midpoint[0] - focalPoint[0],
-                  midpoint[1] - focalPoint[1],
-                  midpoint[2] - focalPoint[2]
-                ];
-
-                const distanceToPlane = Math.abs(
-                  vectorToPoint[0] * viewPlaneNormal[0] +
-                  vectorToPoint[1] * viewPlaneNormal[1] +
-                  vectorToPoint[2] * viewPlaneNormal[2]
-                );
-
-                const slabThickness = (viewport as any).getSlabThickness?.() || 0.1;
-                const visibilityThreshold = slabThickness / 2;
-
-                if (distanceToPlane > visibilityThreshold) {
-                  return null;
-                }
-
-                // Convert to canvas coordinates
-                const canvasPoint = viewport.worldToCanvas(midpoint) as Types.Point2;
-                const viewportElement = getViewportElementById('axial');
-                const displayPoint = canvasToDisplayPoint(viewport, viewportElement, canvasPoint);
-
-                // Check if point is visible
-                const canvas = viewport.canvas;
-                if (canvasPoint[0] < -50 || canvasPoint[0] > canvas.width + 50 ||
-                    canvasPoint[1] < -50 || canvasPoint[1] > canvas.height + 50) {
-                  return null;
-                }
-
-                return (
-                  <div
-                    key={annotation.annotationUID}
-                    className="absolute z-50"
-                    style={{
-                      left: `${displayPoint[0]}px`,
-                      top: `${displayPoint[1] - 30}px`, // Position above the line
-                      transform: 'translateX(-50%)'
-                    }}
-                  >
-                    <div
-                      style={{
-                        color: label.color,
-                        fontSize: '15px',
-                        fontFamily: 'Arial, sans-serif',
-                        fontWeight: 'bold',
-                        textShadow: '1px 1px 3px rgba(0, 0, 0, 1), -1px -1px 3px rgba(0, 0, 0, 1)',
-                        whiteSpace: 'nowrap',
-                        backgroundColor: 'rgba(0, 0, 0, 0.5)',
-                        padding: '2px 6px',
-                        borderRadius: '3px',
-                        border: `1px solid ${label.color}`,
-                        cursor: 'pointer'
-                      }}
-                      onContextMenu={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setViewportContextMenu(null);
-                        setContextMenu({
-                          x: e.clientX,
-                          y: e.clientY,
-                          annotationUID: annotation.annotationUID,
-                          viewportId: 'axial'
-                        });
-                      }}
-                    >
-                      {label.text}
-                    </div>
-                  </div>
-                );
-              });
-            })()}
-
-            {/* Render axis lines for polygon annotations */}
-            {(() => {
-              const viewport = renderingEngineRef.current?.getViewport('axial');
-              if (!viewport) return null;
-
-              const annotations = cornerstoneTools.annotation.state.getAllAnnotations();
-              const polygonAnnotations = annotations.filter((ann: any) =>
-                ann?.metadata?.toolName === 'SmoothPolygon' &&
-                ann?.data?.contour?.closed &&
-                ann?.metadata?.axesMeasurements
-              );
-
-              return polygonAnnotations.map((annotation: any, idx: number) => {
-                const axes = annotation.metadata.axesMeasurements;
-                if (!axes) return null;
-
-                // Check if polygon is in current slice (same logic as overlay visibility)
-                const firstPoint = annotation.data?.handles?.points?.[0] || annotation.data?.contour?.polyline?.[0];
-                if (!firstPoint) return null;
-
-                const camera = viewport.getCamera();
-                const { viewPlaneNormal, focalPoint } = camera;
-
-                const vectorToPoint = [
-                  firstPoint[0] - focalPoint[0],
-                  firstPoint[1] - focalPoint[1],
-                  firstPoint[2] - focalPoint[2]
-                ];
-
-                const distanceToPlane = Math.abs(
-                  vectorToPoint[0] * viewPlaneNormal[0] +
-                  vectorToPoint[1] * viewPlaneNormal[1] +
-                  vectorToPoint[2] * viewPlaneNormal[2]
-                );
-
-                const slabThickness = (viewport as any).getSlabThickness?.() || 0.1;
-                const visibilityThreshold = slabThickness / 2;
-
-                // Only render axis lines if polygon is in current slice
-                if (distanceToPlane > visibilityThreshold) {
-                  return null;
-                }
-
-                // Convert world coordinates to display coordinates
-                const longAxisP1Display = canvasToDisplayPoint(
-                  viewport,
-                  getViewportElementById('axial'),
-                  viewport.worldToCanvas(axes.longAxisP1) as Types.Point2
-                );
-                const longAxisP2Display = canvasToDisplayPoint(
-                  viewport,
-                  getViewportElementById('axial'),
-                  viewport.worldToCanvas(axes.longAxisP2) as Types.Point2
-                );
-                const shortAxisP1Display = canvasToDisplayPoint(
-                  viewport,
-                  getViewportElementById('axial'),
-                  viewport.worldToCanvas(axes.shortAxisP1) as Types.Point2
-                );
-                const shortAxisP2Display = canvasToDisplayPoint(
-                  viewport,
-                  getViewportElementById('axial'),
-                  viewport.worldToCanvas(axes.shortAxisP2) as Types.Point2
-                );
-
-                // Find the text overlay for this annotation
-                const textOverlay = annotationOverlays.find(o => o.annotationUID === annotation.annotationUID);
-
-                const firstPointCanvas = viewport.worldToCanvas(firstPoint) as Types.Point2;
-                const firstPointDisplay = canvasToDisplayPoint(
-                  viewport,
-                  getViewportElementById('axial'),
-                  firstPointCanvas
-                );
-
-                return (
-                  <svg
-                    key={`${annotation.annotationUID}-${axisLinesKey}`}
-                    className="absolute top-0 left-0 pointer-events-none"
-                    style={{ width: '100%', height: '100%' }}
-                  >
-                    {/* Connector line from text to polygon (yellow dashed) */}
-                    {textOverlay && firstPointCanvas && (
-                      <line
-                        x1={textOverlay.x}
-                        y1={textOverlay.y}
-                        x2={firstPointDisplay[0]}
-                        y2={firstPointDisplay[1]}
-                        stroke="#ffff00"
-                        strokeWidth="1"
-                        strokeDasharray="3,3"
-                        opacity="0.6"
-                      />
-                    )}
-
-                    {/* Long axis line (red) */}
-                    <line
-                      x1={longAxisP1Display[0]}
-                      y1={longAxisP1Display[1]}
-                      x2={longAxisP2Display[0]}
-                      y2={longAxisP2Display[1]}
-                      stroke="#ff0000"
-                      strokeWidth="2"
-                      strokeDasharray="5,5"
-                    />
-
-                    {/* Short axis line (cyan) */}
-                    <line
-                      x1={shortAxisP1Display[0]}
-                      y1={shortAxisP1Display[1]}
-                      x2={shortAxisP2Display[0]}
-                      y2={shortAxisP2Display[1]}
-                      stroke="#00ffff"
-                      strokeWidth="2"
-                      strokeDasharray="5,5"
-                    />
-                  </svg>
-                );
-              });
-            })()}
-          </div>
-          )}
-
-          {/* Sagittal View */}
-          {(!maximizedViewport || maximizedViewport === 'sagittal') && (
-            <div className={`relative bg-black border border-slate-700 ${maximizedViewport === 'sagittal' ? 'w-full h-full' : ''}`} style={{ order: 3 }}>
-              <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
-                Sagittal {maximizedViewport === 'sagittal' && '(Maximized - Double-click to restore)'}
-              </div>
-              <div
-                ref={elementRefs.sagittal}
-                className="w-full h-full"
-                style={{ minHeight: '300px' }}
-                onDoubleClick={() => handleViewportDoubleClick('sagittal')}
-              />
-              {renderAnnotationOverlayElements('sagittal')}
-
-            {/* Custom labels for line annotations (Sagittal) */}
-            {(() => {
-              const viewport = renderingEngineRef.current?.getViewport('sagittal');
-              if (!viewport) return null;
-
-              const annotations = cornerstoneTools.annotation.state.getAllAnnotations();
-              // Sagittal only shows MPRLongAxisLine (not AxialLine)
-              const lineAnnotations = annotations.filter((ann: any) =>
-                ann?.metadata?.toolName === 'MPRLongAxisLine' &&
-                ann?.data?.handles?.points?.length === 2 &&
-                annotationLabels[ann.annotationUID] &&
-                // Only show labels for annotations in current renderMode
-                (!ann?.metadata?.renderMode || ann.metadata.renderMode === renderMode)
-              );
-
-              return lineAnnotations.map((annotation: any) => {
-                const label = annotationLabels[annotation.annotationUID];
-                if (!label) return null;
-
-                // Get the midpoint of the line
-                const p1 = annotation.data.handles.points[0];
-                const p2 = annotation.data.handles.points[1];
-                const midpoint: Types.Point3 = [
-                  (p1[0] + p2[0]) / 2,
-                  (p1[1] + p2[1]) / 2,
-                  (p1[2] + p2[2]) / 2
-                ];
-
-                // MPRLongAxisLine labels always show in sagittal/coronal (no depth check needed)
-                // They span the full volume
-
-                // Convert to canvas coordinates
-                const canvasPoint = viewport.worldToCanvas(midpoint) as Types.Point2;
-                const viewportElement = getViewportElementById('sagittal');
-                const displayPoint = canvasToDisplayPoint(viewport, viewportElement, canvasPoint);
-
-                // Check if point is visible
-                const canvas = viewport.canvas;
-                if (canvasPoint[0] < -50 || canvasPoint[0] > canvas.width + 50 ||
-                    canvasPoint[1] < -50 || canvasPoint[1] > canvas.height + 50) {
-                  return null;
-                }
-
-                return (
-                  <div
-                    key={annotation.annotationUID}
-                    className="absolute z-50"
-                    style={{
-                      left: `${displayPoint[0]}px`,
-                      top: `${displayPoint[1] - 30}px`,
-                      transform: 'translateX(-50%)'
-                    }}
-                  >
-                    <div
-                      style={{
-                        color: label.color,
-                        fontSize: '15px',
-                        fontFamily: 'Arial, sans-serif',
-                        fontWeight: 'bold',
-                        textShadow: '1px 1px 3px rgba(0, 0, 0, 1), -1px -1px 3px rgba(0, 0, 0, 1)',
-                        whiteSpace: 'nowrap',
-                        backgroundColor: 'rgba(0, 0, 0, 0.5)',
-                        padding: '2px 6px',
-                        borderRadius: '3px',
-                        border: `1px solid ${label.color}`,
-                        cursor: 'pointer'
-                      }}
-                      onContextMenu={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setViewportContextMenu(null);
-                        setContextMenu({
-                          x: e.clientX,
-                          y: e.clientY,
-                          annotationUID: annotation.annotationUID,
-                          viewportId: 'sagittal'
-                        });
-                      }}
-                    >
-                      {label.text}
-                    </div>
-                  </div>
-                );
-              });
-            })()}
-
-            {/* CPR Height Indicator Lines (Sagittal) */}
-            {cprHeightIndicators.filter(ind => ind.viewportId === 'sagittal').length > 0 && elementRefs.sagittal.current && (() => {
-              const rect = elementRefs.sagittal.current.getBoundingClientRect();
-              const viewportWidth = rect.width;
-
-              return (
-                <svg
-                  className="absolute top-0 left-0 pointer-events-none"
-                  style={{ width: '100%', height: '100%', zIndex: 20 }}
-                >
-                  {cprHeightIndicators
-                    .filter(ind => ind.viewportId === 'sagittal')
-                    .map((indicator, index) => {
-                      // Calculate actual pixel position from the right
-                      const xPosition = viewportWidth - (50 + index * 40);
-
-                      return (
-                        <g key={indicator.id}>
-                          {/* Vertical line from annulus to clicked position */}
-                          <line
-                            x1={xPosition}
-                            y1={indicator.y1}
-                            x2={xPosition}
-                            y2={indicator.y2}
-                            stroke="#ffff00"
-                            strokeWidth="2"
-                          />
-
-                          {/* Arrow markers at both ends - pointing down/up */}
-                          {/* Top arrow (pointing down) */}
-                          <polygon
-                            points={`${xPosition - 5},${indicator.y1} ${xPosition + 5},${indicator.y1} ${xPosition},${indicator.y1 + 8}`}
-                            fill="#ffff00"
-                          />
-                          {/* Bottom arrow (pointing up) */}
-                          <polygon
-                            points={`${xPosition - 5},${indicator.y2} ${xPosition + 5},${indicator.y2} ${xPosition},${indicator.y2 - 8}`}
-                            fill="#ffff00"
-                          />
-
-                          {/* Label showing height at midpoint */}
-                          <text
-                            x={xPosition - 8}
-                            y={(indicator.y1 + indicator.y2) / 2}
-                            fill="#ffff00"
-                            fontSize="13"
-                            fontWeight="bold"
-                            textAnchor="end"
-                            dominantBaseline="middle"
-                            style={{
-                              paintOrder: 'stroke',
-                              stroke: 'black',
-                              strokeWidth: '3px',
-                              strokeLinejoin: 'round'
-                            }}
-                          >
-                            {Math.abs(indicator.height).toFixed(2)} mm
-                          </text>
-                        </g>
-                      );
-                    })}
-                </svg>
-              );
-            })()}
-          </div>
-          )}
-
-          {/* Coronal View */}
-          {(!maximizedViewport || maximizedViewport === 'coronal') && (
-            <div className={`relative bg-black border border-slate-700 ${maximizedViewport === 'coronal' ? 'w-full h-full' : ''}`} style={{ order: 2 }}>
-              <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
-                Coronal {maximizedViewport === 'coronal' && '(Maximized - Double-click to restore)'}
-              </div>
-              <div
-                ref={elementRefs.coronal}
-                className="w-full h-full"
-                style={{ minHeight: '300px' }}
-                onDoubleClick={() => handleViewportDoubleClick('coronal')}
-              />
-              {renderAnnotationOverlayElements('coronal')}
-
-            {/* Custom labels for line annotations (Coronal) */}
-            {(() => {
-              const viewport = renderingEngineRef.current?.getViewport('coronal');
-              if (!viewport) return null;
-
-              const annotations = cornerstoneTools.annotation.state.getAllAnnotations();
-              // Coronal only shows MPRLongAxisLine (not AxialLine)
-              const lineAnnotations = annotations.filter((ann: any) =>
-                ann?.metadata?.toolName === 'MPRLongAxisLine' &&
-                ann?.data?.handles?.points?.length === 2 &&
-                annotationLabels[ann.annotationUID] &&
-                // Only show labels for annotations in current renderMode
-                (!ann?.metadata?.renderMode || ann.metadata.renderMode === renderMode)
-              );
-
-              return lineAnnotations.map((annotation: any) => {
-                const label = annotationLabels[annotation.annotationUID];
-                if (!label) return null;
-
-                // Get the midpoint of the line
-                const p1 = annotation.data.handles.points[0];
-                const p2 = annotation.data.handles.points[1];
-                const midpoint: Types.Point3 = [
-                  (p1[0] + p2[0]) / 2,
-                  (p1[1] + p2[1]) / 2,
-                  (p1[2] + p2[2]) / 2
-                ];
-
-                // MPRLongAxisLine labels always show in sagittal/coronal (no depth check needed)
-                // They span the full volume
-
-                // Convert to canvas coordinates
-                const canvasPoint = viewport.worldToCanvas(midpoint) as Types.Point2;
-                const viewportElement = getViewportElementById('coronal');
-                const displayPoint = canvasToDisplayPoint(viewport, viewportElement, canvasPoint);
-
-                // Check if point is visible
-                const canvas = viewport.canvas;
-                if (canvasPoint[0] < -50 || canvasPoint[0] > canvas.width + 50 ||
-                    canvasPoint[1] < -50 || canvasPoint[1] > canvas.height + 50) {
-                  return null;
-                }
-
-                return (
-                  <div
-                    key={annotation.annotationUID}
-                    className="absolute z-50"
-                    style={{
-                      left: `${displayPoint[0]}px`,
-                      top: `${displayPoint[1] - 30}px`,
-                      transform: 'translateX(-50%)'
-                    }}
-                  >
-                    <div
-                      style={{
-                        color: label.color,
-                        fontSize: '15px',
-                        fontFamily: 'Arial, sans-serif',
-                        fontWeight: 'bold',
-                        textShadow: '1px 1px 3px rgba(0, 0, 0, 1), -1px -1px 3px rgba(0, 0, 0, 1)',
-                        whiteSpace: 'nowrap',
-                        backgroundColor: 'rgba(0, 0, 0, 0.5)',
-                        padding: '2px 6px',
-                        borderRadius: '3px',
-                        border: `1px solid ${label.color}`,
-                        cursor: 'pointer'
-                      }}
-                      onContextMenu={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        setViewportContextMenu(null);
-                        setContextMenu({
-                          x: e.clientX,
-                          y: e.clientY,
-                          annotationUID: annotation.annotationUID,
-                          viewportId: 'coronal'
-                        });
-                      }}
-                    >
-                      {label.text}
-                    </div>
-                  </div>
-                );
-              });
-            })()}
-
-            {/* CPR Height Indicator Lines (Coronal) */}
-            {cprHeightIndicators.filter(ind => ind.viewportId === 'coronal').length > 0 && elementRefs.coronal.current && (() => {
-              const rect = elementRefs.coronal.current.getBoundingClientRect();
-              const viewportWidth = rect.width;
-
-              return (
-                <svg
-                  className="absolute top-0 left-0 pointer-events-none"
-                  style={{ width: '100%', height: '100%', zIndex: 20 }}
-                >
-                  {cprHeightIndicators
-                    .filter(ind => ind.viewportId === 'coronal')
-                    .map((indicator, index) => {
-                      // Calculate actual pixel position from the right
-                      const xPosition = viewportWidth - (50 + index * 40);
-
-                      return (
-                        <g key={indicator.id}>
-                          {/* Vertical line from annulus to clicked position */}
-                          <line
-                            x1={xPosition}
-                            y1={indicator.y1}
-                            x2={xPosition}
-                            y2={indicator.y2}
-                            stroke="#ffff00"
-                            strokeWidth="2"
-                          />
-
-                          {/* Arrow markers at both ends - pointing down/up */}
-                          {/* Top arrow (pointing down) */}
-                          <polygon
-                            points={`${xPosition - 5},${indicator.y1} ${xPosition + 5},${indicator.y1} ${xPosition},${indicator.y1 + 8}`}
-                            fill="#ffff00"
-                          />
-                          {/* Bottom arrow (pointing up) */}
-                          <polygon
-                            points={`${xPosition - 5},${indicator.y2} ${xPosition + 5},${indicator.y2} ${xPosition},${indicator.y2 - 8}`}
-                            fill="#ffff00"
-                          />
-
-                          {/* Label showing height at midpoint */}
-                          <text
-                            x={xPosition - 8}
-                            y={(indicator.y1 + indicator.y2) / 2}
-                            fill="#ffff00"
-                            fontSize="13"
-                            fontWeight="bold"
-                            textAnchor="end"
-                            dominantBaseline="middle"
-                            style={{
-                              paintOrder: 'stroke',
-                              stroke: 'black',
-                              strokeWidth: '3px',
-                              strokeLinejoin: 'round'
-                            }}
-                          >
-                            {Math.abs(indicator.height).toFixed(2)} mm
-                          </text>
-                        </g>
-                      );
-                    })}
-                </svg>
-              );
-            })()}
-          </div>
-          )}
-            </>
           )}
         </div>
 

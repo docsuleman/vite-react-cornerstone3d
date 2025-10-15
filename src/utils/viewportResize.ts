@@ -282,17 +282,30 @@ export function manualResize(
       .map(id => renderingEngine.getViewport(id))
       .filter(Boolean) as Types.IViewport[];
 
-    // Store presentations
+    if (viewports.length === 0) {
+      console.warn('No viewports to resize');
+      return;
+    }
+
+    // Store presentations before resize
     const presentations = viewports.map(vp => vp.getViewPresentation?.() || null);
 
-    // Resize
-    renderingEngine.resize(true, false);
+    // Resize using rendering engine (resizes all at once)
+    // CRITICAL: suppressEvents=true to prevent render attempts during resize
+    // When canvases are being resized, they temporarily have 0x0 dimensions
+    // which causes "Viewport is too small" errors if renders are triggered
+    console.log(`  Resizing ${viewports.length} viewports...`);
+    renderingEngine.resize(true, true); // immediate=true, suppressEvents=true
 
     // Restore presentations
     viewports.forEach((vp, idx) => {
       const presentation = presentations[idx];
       if (presentation && vp.setViewPresentation) {
-        vp.setViewPresentation(presentation);
+        try {
+          vp.setViewPresentation(presentation);
+        } catch (err) {
+          console.warn(`Failed to restore presentation for ${vp.id}:`, err);
+        }
       }
     });
 
