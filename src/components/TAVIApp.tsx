@@ -657,34 +657,15 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
         <div className="flex-1 p-6 overflow-y-auto">
           <div className="space-y-3">
             {state.currentStage === WorkflowStage.ROOT_DEFINITION && (
-              <>
-                <h3 className="text-sm font-semibold text-slate-200 mb-3 uppercase tracking-wide">Root Definition</h3>
-                <div className="mb-4 bg-slate-800/50 rounded-lg p-3 border border-slate-700">
-                  <img
-                    src="/src/assets/root.png"
-                    alt="Root Definition Instructions"
-                    className="w-48 h-auto rounded-lg mb-2 mx-auto"
-                  />
-                  <p className="text-center text-xs text-slate-400">
-                    Place 3 spheres along the aorta
-                  </p>
-                </div>
-              </>
-            )}
-            {state.currentStage === WorkflowStage.ANNULUS_DEFINITION && (
-              <>
-                <h3 className="text-sm font-semibold text-slate-200 mb-3 uppercase tracking-wide">Annulus Definition</h3>
-                <div className="mb-4 bg-slate-800/50 rounded-lg p-3 border border-slate-700">
-                  <img
-                    src="/src/assets/valve-transparent.png"
-                    alt="Annulus Definition Instructions"
-                    className="w-48 h-auto rounded-lg mb-2 mx-auto"
-                  />
-                  <p className="text-center text-xs text-slate-400">
-                    Mark 3 cusp nadir points
-                  </p>
-                </div>
-              </>
+              <div className="text-slate-300 text-sm">
+                <p className="mb-2">Click on the viewport to place centerline points.</p>
+                <p className="text-xs text-slate-400 mt-2">
+                  • Place at least 3 points along the aorta<br/>
+                  • First: LV outflow tract<br/>
+                  • Middle: Aortic valve<br/>
+                  • Last: Ascending aorta
+                </p>
+              </div>
             )}
           </div>
         </div>
