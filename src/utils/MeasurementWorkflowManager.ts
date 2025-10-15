@@ -129,7 +129,7 @@ export class MeasurementWorkflowManager {
         return 'SmoothPolygon';
       case MeasurementType.LINE:
         // Use appropriate line tool based on section
-        return step.section === 'axial' ? 'AxialLine' : 'MPRLongAxisLine';
+        return step.section === 'axial' ? 'Length' : 'MPRLongAxisLine';
       case MeasurementType.SPLINE:
         return 'CurvedLeafletTool';
       default:

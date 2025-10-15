@@ -124,8 +124,14 @@ interface ProperMPRViewportProps {
     workflowStepId?: string;
     workflowStepName?: string;
     annotationUID?: string;
+    details?: Array<{
+      title: string;
+      lines: string[];
+      color?: string;
+    }>;
   }) => void;
   onWorkflowStepSelect?: (stepId: string) => void;
+  autoAdvanceWorkflow?: boolean;
 }
 
 const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
@@ -149,8 +155,45 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   windowLevelPreset = 'cardiac',
   initializeCropBox = false,
   onAddScreenshotToReport,
-  onWorkflowStepSelect
-}) => {
+  onWorkflowStepSelect,
+  autoAdvanceWorkflow = false
+}
+
+  return (
+    <div className="w-20 bg-slate-900 border-r border-slate-700 flex flex-col items-center py-4 gap-4">
+      {stages.map(({ stage, icon: Icon, label }) => {
+        const status = getStageStatus(stage);
+        const colors = getStageColors(status);
+        const isClickable = status !== 'locked';
+
+        return (
+          <div
+            key={stage}
+            className={`relative w-14 h-14 rounded-lg border-2 flex items-center justify-center transition-all duration-200 ${colors}`}
+            onClick={() => isClickable && onStageClick(stage)}
+            title={stage.replace(/_/g, ' ').replace(/\w/g, l => l.toUpperCase())}
+          >
+            <div className="absolute -top-2 -left-2 w-6 h-6 rounded-full bg-slate-900 border-2 border-current flex items-center justify-center text-xs font-bold">
+              {label}
+            </div>
+
+            {status === 'completed' ? (
+              <FaCheck className="text-xl" />
+            ) : status === 'locked' ? (
+              <FaLock className="text-sm" />
+            ) : (
+              <Icon className="text-xl" />
+            )}
+
+            {status === 'current' && (
+              <div className="absolute -right-1 top-1/2 transform translate-x-full -translate-y-1/2 w-0 h-0 border-t-4 border-t-transparent border-b-4 border-b-transparent border-l-4 border-l-blue-600"></div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+) => {
   const elementRefs = {
     axial: useRef(null),
     sagittal: useRef(null),
@@ -349,15 +392,13 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           if (metaViewportId) {
             return metaViewportId === viewportId;
           }
-          // REMOVED: Viewport restrictions for testing
-          // if (toolName === 'SmoothPolygon' || toolName === 'Length' || toolName === 'AxialLine') {
-          //   return viewportId === 'axial';
-          // }
+          if (toolName === 'SmoothPolygon' || toolName === 'AxialLine') {
+            return viewportId === 'axial';
+          }
           if (toolName === 'MPRLongAxisLine') {
             return viewportId === 'sagittal' || viewportId === 'coronal';
           }
-          // Allow SmoothPolygon on all viewports for testing
-          return true;
+          return false;
         });
 
         overlays.forEach((overlay) => {
@@ -443,9 +484,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
     const measurementToolItems: ContextMenuItem[] = [
       {
-        label: `Line${activeTool === 'Length' ? ' (Active)' : ''}`,
+        label: `Line${activeTool === 'AxialLine' ? ' (Active)' : ''}`,
         icon: <FaRuler />,
-        onClick: () => handleToolChange('Length'),
+        onClick: () => handleToolChange('AxialLine'),
       },
       {
         label: `Polygon${activeTool === 'SmoothPolygon' ? ' (Active)' : ''}`,
@@ -565,14 +606,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           ...allLabelLines.map(line => line.length * 7 + 16)
         );
         const estimatedHeight = Math.max(18, allLabelLines.length * 16 || 18);
-        // Connect dashed line from LEFT edge of label (since label is positioned to the right)
-        const labelAttachX = overlay.x;
-        const labelAttachY = overlay.y + estimatedHeight / 2;
+        const labelAttachX = overlay.x + estimatedWidth / 2 - 10;
+        const labelAttachY = overlay.y + estimatedHeight / 2 - 10;
 
         return (
           <React.Fragment key={overlay.uid}>
-            {/* REMOVED: Dashed line connecting label to polygon - user requested removal */}
-            {/* {anchorDisplay && viewportElement && (
+            {anchorDisplay && viewportElement && (
               <svg
                 className="absolute top-0 left-0 w-full h-full pointer-events-none"
                 style={{ overflow: 'visible' }}
@@ -587,14 +626,15 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                   strokeDasharray="4 4"
                 />
               </svg>
-            )} */}
+            )}
           <div
-            className="absolute z-40"
+            className="absolute z-40 cursor-move"
             style={{
               left: `${overlay.x}px`,
               top: `${overlay.y}px`,
+              padding: '2px',
               userSelect: 'none',
-              cursor: 'default'
+              pointerEvents: 'auto'
             }}
             ref={undefined}
             onContextMenu={(e) => {
@@ -609,10 +649,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               });
             }}
             onMouseDown={(e) => {
-              const canStartDrag = e.button === 0 && (e.altKey || e.metaKey);
-              if (!canStartDrag) {
-                return;
-              }
               e.preventDefault();
               e.stopPropagation();
               const rect = e.currentTarget.parentElement?.getBoundingClientRect();
@@ -662,7 +698,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 setDraggingOverlay(null);
               }
             }}
-            title="Hold Alt/Option and drag to reposition label"
           >
             {labelInfo && (
               <div
@@ -735,17 +770,14 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const currentWorkflowStepRef = useRef<MeasurementStep | null>(currentWorkflowStep);
   const pendingToolRef = useRef<string | null>(null);
   const workflowLabelAnnotationsRef = useRef<Record<string, string>>({});
+  const autoAdvanceWorkflowRef = useRef<boolean>(autoAdvanceWorkflow);
+  const measurementAnnotationByStepRef = useRef<Record<string, string>>({});
   const onMeasurementCompleteRef = useRef(onMeasurementComplete);
-  const activeToolRef = useRef<string>(
-    currentStage === WorkflowStage.ROOT_DEFINITION ? 'SphereMarker' :
-    currentStage === WorkflowStage.ANNULUS_DEFINITION ? 'CuspNadir' :
-    'Zoom'
-  );
+
   // Track if we should skip auto-scroll (when user is manually scrolling)
   const skipAutoScrollRef = useRef<boolean>(false);
   const autoScrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastAutoScrolledStepRef = useRef<string | null>(null); // Track which step we last auto-scrolled to
-  const autoScrollRenderCompleteRef = useRef<boolean>(true); // Track if auto-scroll renders are complete
 
   // Track if current measurement step has been completed but not confirmed
   const [measurementReadyForConfirm, setMeasurementReadyForConfirm] = useState(false);
@@ -761,7 +793,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const [isPlayingCine, setIsPlayingCine] = useState(false); // Cine playback state
   const [isPreloading, setIsPreloading] = useState(false); // Track if we're in preloading mode
   const [cprActorsReady, setCprActorsReady] = useState(false); // Track when CPR actors are set up
-  const [autoScrollEnabled, setAutoScrollEnabled] = useState(false); // Toggle for auto-scroll in measurements
   const running = useRef(false);
   const cineIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const preloadedVolumesRef = useRef<{ [phaseIndex: number]: string }>({}); // Store preloaded volume IDs
@@ -808,18 +839,14 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const isSettingUpCPRRef = useRef<boolean>(false); // Prevent concurrent setupCPRActors calls
   const axialReferenceFrameRef = useRef<{ viewUp: Types.Point3; viewRight: Types.Point3; viewPlaneNormal: Types.Point3 } | null>(null); // Store axial camera reference frame for rotation
   const overlayUpdateIntervalRef = useRef<number | null>(null); // Store overlay update interval ID
-  const overlayCleanupRef = useRef<(() => void) | null>(null); // Cleanup listeners when reinitializing/cleanup
 
   // Keep workflow refs up to date to avoid closure issues in event handlers
   useEffect(() => {
     workflowControlledRef.current = workflowControlled;
     currentWorkflowStepRef.current = currentWorkflowStep;
     onMeasurementCompleteRef.current = onMeasurementComplete;
-  }, [workflowControlled, currentWorkflowStep, onMeasurementComplete]);
-
-  useEffect(() => {
-    activeToolRef.current = activeTool;
-  }, [activeTool]);
+    autoAdvanceWorkflowRef.current = autoAdvanceWorkflow;
+  }, [workflowControlled, currentWorkflowStep, onMeasurementComplete, autoAdvanceWorkflow]);
 
   // Reset confirmation state when workflow step changes
   useEffect(() => {
@@ -1112,6 +1139,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         delete workflowLabelAnnotationsRef.current[annotationUID];
       }
 
+      Object.keys(measurementAnnotationByStepRef.current).forEach((stepId) => {
+        if (measurementAnnotationByStepRef.current[stepId] === annotationUID) {
+          delete measurementAnnotationByStepRef.current[stepId];
+        }
+      });
+
       // Remove associated overlay from React state
       setAnnotationOverlays(prev => prev.filter(o => o.annotationUID !== annotationUID));
 
@@ -1158,22 +1191,18 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     }
   }, [activeTool, onActiveToolChange]);
 
+  useEffect(() => {
+    if (currentStage !== WorkflowStage.MEASUREMENTS) {
+      measurementAnnotationByStepRef.current = {};
+    }
+  }, [currentStage]);
 
   // Respond to tool change requests from parent
   useEffect(() => {
-    if (!requestedTool || requestedTool === activeTool) {
-      return;
+    if (requestedTool && requestedTool !== activeTool) {
+      handleToolChange(requestedTool);
     }
-
-    // CRITICAL: Don't respond to external tool requests during workflow mode
-    // The workflow auto-activation will handle tool changes
-    if (workflowControlled && currentWorkflowStep) {
-      console.log('⚠️ Ignoring external tool request during workflow:', requestedTool);
-      return;
-    }
-
-    handleToolChange(requestedTool);
-  }, [requestedTool, activeTool, workflowControlled, currentWorkflowStep]);
+  }, [requestedTool]);
 
   // Auto-activate appropriate tool when stage changes
   useEffect(() => {
@@ -2031,12 +2060,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         } catch (error) {
           console.warn('Failed to remove orientation listener:', error);
         }
-      }
-
-      // Remove any overlay/context menu listeners registered during initialization
-      if (overlayCleanupRef.current) {
-        overlayCleanupRef.current();
-        overlayCleanupRef.current = null;
       }
 
       // Clear locked camera ref
@@ -3566,36 +3589,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                           }
                         }
                       } else {
-                        // AFTER 3 cusp dots: Update ONLY axial viewport to follow center dot
-                        // Sagittal and coronal stay locked to annular plane orientation
+                        // AFTER 3 cusp dots: Viewports stay locked to annular plane orientation
                         console.log('🔒 Viewports locked to annular plane (after 3 cusp dots)');
-                        console.log('   But updating axial viewport to follow center dot for centerline scrolling');
-
-                        const renderingEngine = renderingEngineRef.current;
-                        if (renderingEngine) {
-                          const currentAxialVp = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
-                          if (currentAxialVp) {
-                            // Get current axial camera settings
-                            const currentAxialCamera = currentAxialVp.getCamera();
-                            const cameraDistance = 200;
-
-                            // Update only axial viewport focal point to follow center dot
-                            const newAxialCameraPos = [
-                              newPosition[0] + currentAxialCamera.viewPlaneNormal[0] * cameraDistance,
-                              newPosition[1] + currentAxialCamera.viewPlaneNormal[1] * cameraDistance,
-                              newPosition[2] + currentAxialCamera.viewPlaneNormal[2] * cameraDistance
-                            ] as Types.Point3;
-
-                            currentAxialVp.setCamera({
-                              ...currentAxialCamera,
-                              position: newAxialCameraPos,
-                              focalPoint: newPosition
-                            });
-                            currentAxialVp.render();
-
-                            console.log('✅ Axial viewport updated to scroll along centerline');
-                          }
-                        }
                       }
                     });
 
@@ -4628,36 +4623,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           }
           }
         } else {
-          // AFTER 3 cusp dots: Update ONLY axial viewport to follow center dot
-          // Sagittal and coronal stay locked to annular plane orientation
+          // AFTER 3 cusp dots: Viewports stay locked to annular plane orientation
           console.log('🔒 Viewports locked to annular plane (after 3 cusp dots)');
-          console.log('   But updating axial viewport to follow center dot for centerline scrolling');
-
-          const renderingEngine = getRenderingEngine(renderingEngineId);
-          if (renderingEngine) {
-            const currentAxialVp = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
-            if (currentAxialVp) {
-              // Get current axial camera settings
-              const currentAxialCamera = currentAxialVp.getCamera();
-              const cameraDistance = 200;
-
-              // Update only axial viewport focal point to follow center dot
-              const newAxialCameraPos = [
-                newPosition[0] + currentAxialCamera.viewPlaneNormal[0] * cameraDistance,
-                newPosition[1] + currentAxialCamera.viewPlaneNormal[1] * cameraDistance,
-                newPosition[2] + currentAxialCamera.viewPlaneNormal[2] * cameraDistance
-              ] as Types.Point3;
-
-              currentAxialVp.setCamera({
-                ...currentAxialCamera,
-                position: newAxialCameraPos,
-                focalPoint: newPosition
-              });
-              currentAxialVp.render();
-
-              console.log('✅ Axial viewport updated to scroll along centerline');
-            }
-          }
         }
       });
 
@@ -4768,8 +4735,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   };
 
   const setupTools = async () => {
-    try {
-      console.log('🔧🔧🔧 SETUP TOOLS STARTING...');
+    console.log('🔧🔧🔧 SETUP TOOLS STARTING...');
 
       // Add tools to Cornerstone3D (exactly like App.tsx)
       cornerstoneTools.addTool(CrosshairsTool);
@@ -4789,8 +4755,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       // Add measurement tools
       cornerstoneTools.addTool(SplineROITool);
-      // REMOVED: Blocking logic no longer needed since label overlays have been removed
-      // The original issue was labels blocking mouse clicks, which is now resolved
       cornerstoneTools.addTool(LengthTool);
       cornerstoneTools.addTool(AngleTool);
       cornerstoneTools.addTool(LabelTool);
@@ -5189,32 +5153,76 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       // Configure measurement tools with viewport restrictions
       console.log('📐 Configuring measurement tools...');
 
-      // 1. Smooth Polygon Tool (SplineROI with CatmullRom) - Works on ALL viewports
+      // 1. Smooth Polygon Tool (SplineROI with CatmullRom) - Axial only
       toolGroup.addToolInstance('SmoothPolygon', SplineROITool.toolName, {
         configuration: {
-          calculateStats: false,  // Disable stats to prevent labels
+          calculateStats: true,
         },
-        // REMOVED: Viewport restriction - now works on all viewports for testing
-        // getViewportsForAnnotation: (annotation: any, viewportIds: string[]) => {
-        //   return viewportIds.filter(id => id === 'axial');
-        // }
+        // Viewport filter function: only enable on axial viewport
+        getViewportsForAnnotation: (annotation: any, viewportIds: string[]) => {
+          return viewportIds.filter(id => id === 'axial');
+        }
       });
 
-      // Override the SplineROI text rendering to hide all labels
+      // Override the SplineROI statistics calculation to include our custom measurements
       const smoothPolygonTool = toolGroup.getToolInstance('SmoothPolygon');
       if (smoothPolygonTool) {
+        // Get the tool's class (constructor)
         const ToolClass = (smoothPolygonTool as any).constructor;
 
-        // Return empty array to hide all text labels
+        // Store the original _getTextLines method if it exists (fallback)
+        const original_getTextLines = ToolClass.prototype._getTextLines || ToolClass.prototype.getTextLines;
+
         ToolClass.prototype._getTextLines = function(data: any, targetId: string) {
-          return [];
+          const lines: string[] = [];
+
+          if (data?.label) {
+            lines.push(data.label);
+          }
+
+          const cachedStats = data?.cachedStats || {};
+          const volumeIds = Object.keys(cachedStats);
+          const stats = volumeIds.length > 0 ? cachedStats[volumeIds[0]] : null;
+
+          const addNumericLine = (prefix: string, value: unknown, suffix: string = '') => {
+            if (typeof value === 'number' && isFinite(value)) {
+              lines.push(`${prefix}: ${value.toFixed(2)}${suffix}`.trim());
+            }
+          };
+
+          if (stats) {
+            if (Array.isArray(stats.textLines) && stats.textLines.length > 0) {
+              lines.push(...stats.textLines);
+            } else {
+              addNumericLine('Area', stats.area, ' mm²');
+              addNumericLine('Area Ø', stats['Area Ø'] ?? stats.areaDerivedDiameter, ' mm');
+              addNumericLine('Perim', stats.perimeter, ' mm');
+              addNumericLine('Perim Ø', stats['Perimeter Ø'] ?? stats.perimeterDerivedDiameter, ' mm');
+              addNumericLine('Long', stats['Long Axis'], ' mm');
+              addNumericLine('Short', stats['Short Axis'], ' mm');
+            }
+          }
+
+          // Fallback to original implementation if nothing generated
+          if (lines.length === 0 && typeof original_getTextLines === 'function') {
+            try {
+              const fallback = original_getTextLines.call(this, data, targetId);
+              if (Array.isArray(fallback)) {
+                return fallback;
+              }
+            } catch (error) {
+              // ignore fallback errors
+            }
+          }
+
+          return lines;
         };
 
         ToolClass.prototype.getTextLines = ToolClass.prototype._getTextLines;
       }
 
       // 2. Axial Line Tool - Axial only, renderMode-aware
-      toolGroup.addToolInstance('Length', LengthTool.toolName, {
+      toolGroup.addToolInstance('AxialLine', LengthTool.toolName, {
         // Viewport filter function: only enable on axial viewport AND only show in matching renderMode
         getViewportsForAnnotation: (annotation: any, viewportIds: string[]) => {
           // Check if annotation has renderMode metadata
@@ -5264,93 +5272,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       const annotationModifiedHandler = (evt: any) => {
         const { annotation, element: annotationElement } = evt.detail;
 
-        const toolName = annotation?.metadata?.toolName;
-
-        // Process line annotations (Length, AxialLine, MPRLongAxisLine)
-        if (toolName === 'Length' || toolName === 'AxialLine' || toolName === 'MPRLongAxisLine') {
-          const handles = annotation?.data?.handles;
-          if (handles?.points && handles.points.length === 2) {
-            // Get the length from cached stats
-            const lengthValue = annotation?.data?.cachedStats?.length;
-            if (typeof lengthValue === 'number' && lengthValue > 0) {
-              // Determine label based on tool name
-              let labelText = 'Line';
-              let labelColor = '#00ff00';
-
-              // Check for custom label
-              const customLabel = annotation.metadata?.customLabel;
-              if (customLabel?.text) {
-                labelText = customLabel.text;
-                labelColor = customLabel.color || labelColor;
-              }
-
-              // Add to annotationLabels state for backward compatibility
-              setAnnotationLabels(prev => ({
-                ...prev,
-                [annotation.annotationUID]: {
-                  text: `${labelText}: ${lengthValue.toFixed(2)} mm`,
-                  color: labelColor,
-                },
-              }));
-
-              // Create custom overlay (like polygon annotations)
-              const viewportId = annotation.metadata?.viewportId || 'axial';
-              const p1 = handles.points[0];
-              const p2 = handles.points[1];
-
-              // Get viewport to convert world to canvas
-              const viewport = renderingEngineRef.current?.getViewport(viewportId);
-              if (viewport) {
-                // Calculate midpoint of the line
-                const midPoint: Types.Point3 = [
-                  (p1[0] + p2[0]) / 2,
-                  (p1[1] + p2[1]) / 2,
-                  (p1[2] + p2[2]) / 2
-                ];
-
-                const canvasPoint = viewport.worldToCanvas(midPoint) as Types.Point2;
-                const viewportElement = getViewportElementById(viewportId);
-                const displayPoint = canvasToDisplayPoint(viewport, viewportElement, canvasPoint);
-
-                // Build text lines for overlay
-                const overlayTextLines = [
-                  `${labelText}: ${lengthValue.toFixed(2)} mm`
-                ];
-
-                // Update React state to show overlay
-                setAnnotationOverlays(prev => {
-                  // Find existing overlay for this annotation
-                  const existingOverlay = prev.find(o => o.uid === annotation.annotationUID);
-                  const filtered = prev.filter(o => o.uid !== annotation.annotationUID);
-
-                  // Check if user has moved the text (stored in annotation metadata)
-                  const customPos = annotation.metadata?.customTextPosition;
-                  const userMoved = customPos?.userMoved || existingOverlay?.userMoved || false;
-
-                  // If user moved it, use the stored custom position
-                  // Otherwise position label to the right of the line midpoint
-                  const overlayX = userMoved && customPos ? customPos.x : displayPoint[0] + 20;
-                  const overlayY = userMoved && customPos ? customPos.y : displayPoint[1] - 10;
-
-                  // Add new overlay with preserved position if user moved it
-                  return [...filtered, {
-                    uid: annotation.annotationUID,
-                    x: overlayX,
-                    y: overlayY,
-                    lines: overlayTextLines,
-                    viewportId,
-                    annotationUID: annotation.annotationUID,
-                    userMoved: userMoved
-                  }];
-                });
-              }
-            }
-          }
-          return;
-        }
-
         // Only process SmoothPolygon annotations (our tool instance name)
-        if (toolName !== 'SmoothPolygon') {
+        if (annotation?.metadata?.toolName !== 'SmoothPolygon') {
           return;
         }
 
@@ -5484,24 +5407,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               const viewportElement = getViewportElementById(viewportId);
               const displayPoint = canvasToDisplayPoint(viewport, viewportElement, canvasPoint);
 
-              // Calculate polygon bounding box to position label FAR outside the polygon
-              let minX = displayPoint[0];
-              let maxX = displayPoint[0];
-              let minY = displayPoint[1];
-              let maxY = displayPoint[1];
-              annotation.data.handles.points.forEach((point: Types.Point3) => {
-                const cp = viewport.worldToCanvas(point) as Types.Point2;
-                const dp = canvasToDisplayPoint(viewport, viewportElement, cp);
-                minX = Math.min(minX, dp[0]);
-                maxX = Math.max(maxX, dp[0]);
-                minY = Math.min(minY, dp[1]);
-                maxY = Math.max(maxY, dp[1]);
-              });
-
-              // Calculate center of polygon for anchor point reference
-              const centerX = (minX + maxX) / 2;
-              const centerY = (minY + maxY) / 2;
-
               // Update React state to show overlay
               setAnnotationOverlays(prev => {
                 // Find existing overlay for this annotation
@@ -5513,10 +5418,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 const userMoved = customPos?.userMoved || existingOverlay?.userMoved || false;
 
                 // If user moved it, use the stored custom position
-                // Otherwise position label FAR to the right of the polygon (150px away from edge)
-                // Position it at the vertical center of the polygon for better visual balance
-                const overlayX = userMoved && customPos ? customPos.x : maxX + 150;
-                const overlayY = userMoved && customPos ? customPos.y : centerY;
+                // Otherwise use default position from first point
+                const overlayX = userMoved && customPos ? customPos.x : displayPoint[0] + 10;
+                const overlayY = userMoved && customPos ? customPos.y : displayPoint[1] - 10;
 
                 // Add new overlay with preserved position if user moved it
                 return [...filtered, {
@@ -5639,8 +5543,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         console.log('   toolName:', annotation?.metadata?.toolName);
 
         // Tag line annotations with current renderMode
-        if (annotation?.metadata?.toolName === 'Length' ||
-            annotation?.metadata?.toolName === 'AxialLine' ||
+        if (annotation?.metadata?.toolName === 'AxialLine' ||
             annotation?.metadata?.toolName === 'MPRLongAxisLine') {
           if (!annotation.metadata) {
             annotation.metadata = {};
@@ -5649,26 +5552,30 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         }
 
         // Workflow auto-labeling: apply label from workflow step
-        if (currentWorkflowControlled && currentStep && annotation) {
-          console.log('✅ Entering workflow auto-labeling logic');
-          console.log('   Current step ID:', currentStep.id);
-          console.log('   Current step name:', currentStep.name);
-          console.log('   Current step autoLabel:', currentStep.autoLabel);
-
+        if (currentStep && annotation) {
+          const isWorkflowControlled = workflowControlledRef.current;
           const workflowManager = getWorkflowManager();
-          const labelData = workflowManager.getLabelForStep(currentStep);
-
-          console.log(`🏷️ Auto-labeling annotation for step: ${currentStep.name}`);
-          console.log(`   Label from manager: "${labelData.text}", Color: ${labelData.color}`);
+          const expectedToolName = workflowManager.getToolNameForStep(currentStep);
 
           let measuredValue: any = null;
           const toolName = annotation?.metadata?.toolName;
 
+          if (toolName !== expectedToolName) {
+            console.warn('⚠️ Annotation tool does not match step requirement, ignoring.', {
+              expectedToolName,
+              actualTool: toolName,
+              step: currentStep.id,
+            });
+            if (annotation.annotationUID) {
+              workflowProcessedAnnotations.add(annotation.annotationUID);
+            }
+            return;
+          }
+
           if (toolName === 'SplineROITool' || toolName === 'SmoothPolygon') {
             const stats = annotation?.data?.cachedStats;
             if (stats) {
-              const volumeIds = Object.keys(stats);
-              const volumeId = volumeIds[0];
+              const volumeId = Object.keys(stats)[0];
               measuredValue = {
                 area: stats[volumeId]?.area,
                 perimeter: stats[volumeId]?.perimeter,
@@ -5676,32 +5583,11 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 perimeterDerivedDiameter: stats[volumeId]?.perimeterDerivedDiameter,
               };
             }
-          } else if (toolName === 'Length' || toolName === 'AxialLine' || toolName === 'MPRLongAxisLine') {
+          } else if (toolName === 'AxialLine' || toolName === 'MPRLongAxisLine') {
             const handles = annotation?.data?.handles;
             if (handles?.points) {
-              let lengthValue = annotation?.data?.cachedStats?.length;
-            if (lengthValue === undefined) {
-              const volumeStats = annotation?.data?.cachedStats;
-              if (volumeStats) {
-                for (const key of Object.keys(volumeStats)) {
-                  const stats = volumeStats[key];
-                  if (stats && typeof stats.length === 'number') {
-                    lengthValue = stats.length;
-                    break;
-                  }
-                }
-              }
-              if (lengthValue === undefined && annotation?.data?.handles?.points?.length === 2) {
-                const [p1, p2] = annotation.data.handles.points;
-                if (Array.isArray(p1) && Array.isArray(p2)) {
-                  const dx = p2[0] - p1[0];
-                  const dy = p2[1] - p1[1];
-                  const dz = p2[2] - p1[2];
-                  lengthValue = Math.sqrt(dx * dx + dy * dy + dz * dz);
-                }
-              }
-            }
-            measuredValue = { length: lengthValue };
+              const length = annotation?.data?.cachedStats?.length;
+              measuredValue = { length };
             }
           } else if (toolName === CurvedLeafletTool.toolName) {
             const splinePoints = annotation?.data?.spline?.points;
@@ -5710,6 +5596,44 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               measuredValue = { length };
             }
           }
+
+          const measurementAnnotations = measurementAnnotationByStepRef.current;
+          const existingAnnotationUID = measurementAnnotations[currentStep.id];
+          if (existingAnnotationUID && existingAnnotationUID !== annotation.annotationUID) {
+            console.log('🗑️ Removing previous workflow annotation for step:', currentStep.name);
+            deleteAnnotation(existingAnnotationUID);
+            delete measurementAnnotations[currentStep.id];
+          }
+
+          const isAutoMode = isWorkflowControlled && autoAdvanceWorkflowRef.current;
+
+          if (!isAutoMode) {
+            measurementAnnotations[currentStep.id] = annotation.annotationUID;
+            if (annotation.annotationUID) {
+              workflowProcessedAnnotations.add(annotation.annotationUID);
+            }
+
+            setCurrentMeasurementData({
+              annotationUID: annotation.annotationUID,
+              measuredValue,
+            });
+            setMeasurementReadyForConfirm(true);
+
+            console.log(`✅ Annotation recorded for step ${currentStep.name} (manual mode). Waiting for user confirmation.`);
+            return;
+          }
+
+          measurementAnnotations[currentStep.id] = annotation.annotationUID;
+
+          console.log('✅ Entering workflow auto-labeling logic');
+          console.log('   Current step ID:', currentStep.id);
+          console.log('   Current step name:', currentStep.name);
+          console.log('   Current step autoLabel:', currentStep.autoLabel);
+
+          const labelData = workflowManager.getLabelForStep(currentStep);
+
+          console.log(`🏷️ Auto-labeling annotation for step: ${currentStep.name}`);
+          console.log(`   Label from manager: "${labelData.text}", Color: ${labelData.color}`);
 
           const cachedStats = annotation?.data?.cachedStats;
           const overlayVolumeIds = cachedStats ? Object.keys(cachedStats) : [];
@@ -5755,260 +5679,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
             appendLine('Perim Ø', perimeterDiameter, ' mm');
             appendLine('Length', mv.length, ' mm');
           }
-
-          // Create overlay lines with label and measurements
-          const overlayLines: string[] = [labelData.text, ...measurementLines];
-          const labelText = '';  // Keep native Cornerstone label empty
-
-          if (!annotation.metadata) {
-            annotation.metadata = {};
-          }
-          annotation.metadata.customLabel = {
-            text: labelData.text,
-            color: labelData.color,
-          };
-
-          if (!annotation.data) {
-            annotation.data = {} as any;
-          }
-          (annotation.data as any).label = labelText;
-
-          if (!annotation.data.handles) {
-            annotation.data.handles = {} as any;
-          }
-
-          if (annotation.data?.handles?.textBox) {
-            annotation.data.handles.textBox.text = labelText;
-            annotation.data.handles.textBox.color = labelData.color;
-            annotation.data.handles.textBox.hasMoved = annotation.data.handles.textBox.hasMoved || false;
-          }
-
-          let anchorPoint: Types.Point3 | null = null;
-
-          // For line annotations, use midpoint as anchor
-          if ((toolName === 'Length' || toolName === 'AxialLine' || toolName === 'MPRLongAxisLine') &&
-              Array.isArray(annotation.data.handles?.points) && annotation.data.handles.points.length === 2) {
-            const p1 = annotation.data.handles.points[0];
-            const p2 = annotation.data.handles.points[1];
-            anchorPoint = [
-              (p1[0] + p2[0]) / 2,
-              (p1[1] + p2[1]) / 2,
-              (p1[2] + p2[2]) / 2
-            ] as Types.Point3;
-          } else if (currentStage === WorkflowStage.MEASUREMENTS && Array.isArray(annotation.data.handles?.points) && annotation.data.handles.points.length > 0) {
-            anchorPoint = [...annotation.data.handles.points[0]] as Types.Point3;
-          } else if (Array.isArray(annotation.data?.handles?.points) && annotation.data.handles.points.length > 0) {
-            anchorPoint = [...annotation.data.handles.points[0]] as Types.Point3;
-          } else if (Array.isArray(annotation?.data?.handles?.textBox?.worldPosition)) {
-            anchorPoint = [...annotation.data.handles.textBox.worldPosition] as Types.Point3;
-          }
-
-          if (!anchorPoint && measuredValue?.worldPosition) {
-            anchorPoint = [...(measuredValue as any).worldPosition];
-          }
-
-          if (!annotation.data.handles.textBox && anchorPoint) {
-            annotation.data.handles.textBox = {
-              hasMoved: false,
-              worldPosition: anchorPoint,
-              worldBoundingBox: {
-                topLeft: anchorPoint,
-                topRight: anchorPoint,
-                bottomLeft: anchorPoint,
-                bottomRight: anchorPoint,
-              },
-            };
-          }
-
-          // Clear textBox labels - user requested no labels
-          if (annotation.data.handles.textBox) {
-            annotation.data.handles.textBox.text = '';  // Empty string to hide label
-          }
-
-          setAnnotationLabels(prev => ({
-            ...prev,
-            [annotation.annotationUID]: {
-              text: labelData.text,
-              color: labelData.color,
-            },
-          }));
-
-          setAnnotationOverlays(prev => {
-            let overlayFound = false;
-            const updated = prev.map(overlay => {
-              if (overlay.annotationUID === annotation.annotationUID) {
-                overlayFound = true;
-                return {
-                  ...overlay,
-                  lines: overlayLines,
-                };
-              }
-              return overlay;
-            });
-
-            if (!overlayFound && overlayLines.length > 0 && anchorPoint) {
-              const viewportId = annotation.metadata?.viewportId || 'axial';
-              const viewport = renderingEngineRef.current?.getViewport(viewportId);
-              if (viewport) {
-                const canvasPoint = viewport.worldToCanvas(anchorPoint) as Types.Point2;
-                const viewportElement = getViewportElementById(viewportId);
-                const displayPoint = canvasToDisplayPoint(viewport, viewportElement, canvasPoint);
-                return [
-                  ...updated,
-                  {
-                    uid: annotation.annotationUID,
-                    annotationUID: annotation.annotationUID,
-                    x: displayPoint[0] + 10,
-                    y: displayPoint[1] - 10,
-                    lines: overlayLines,
-                    viewportId,
-                    userMoved: false,
-                  },
-                ];
-              }
-            }
-
-            return updated;
-          });
-
-          const targetElement = annotationElement || elementRefs.axial.current;
-          if (targetElement) {
-            const enabled = getEnabledElement(targetElement);
-            const viewport = enabled?.viewport;
-            if (viewport) {
-              const handlesPoints = annotation.data?.handles?.points;
-              const textBoxPos = annotation.data?.handles?.textBox?.worldPosition;
-              let labelWorldPos: Types.Point3 | null = null;
-
-              if (Array.isArray(handlesPoints) && handlesPoints.length > 0) {
-                labelWorldPos = [...handlesPoints[0]] as Types.Point3;
-              } else if (anchorPoint) {
-                labelWorldPos = [...anchorPoint] as Types.Point3;
-              } else if (Array.isArray(textBoxPos)) {
-                labelWorldPos = [...textBoxPos] as Types.Point3;
-              }
-
-              if (!annotation.metadata) {
-                annotation.metadata = {};
-              }
-              annotation.metadata.viewportId = annotation.metadata.viewportId || viewport.id;
-
-              if (labelWorldPos) {
-                const existingLabelUid = workflowLabelAnnotationsRef.current[annotation.annotationUID];
-                if (existingLabelUid) {
-                  cornerstoneTools.annotation.state.removeAnnotation(existingLabelUid);
-                  delete workflowLabelAnnotationsRef.current[annotation.annotationUID];
-                }
-
-                const labelAnnotation = LabelTool.hydrate?.(viewport.id, labelWorldPos, labelText);
-                if (labelAnnotation) {
-                  labelAnnotation.metadata = {
-                    ...(labelAnnotation.metadata || {}),
-                    toolName: LabelTool.toolName,
-                    workflowParentUID: annotation.annotationUID,
-                    isVisible: false,
-                  };
-
-                  labelAnnotation.isVisible = false;
-                  labelAnnotation.data.text = '';
-                  labelAnnotation.data.label = '';
-                  labelAnnotation.data.handles = labelAnnotation.data.handles || ({} as any);
-                  labelAnnotation.data.handles.points = [labelWorldPos];
-                  labelAnnotation.data.handles.textBox = {
-                    ...(labelAnnotation.data.handles.textBox || {}),
-                    hasMoved: false,
-                    worldPosition: labelWorldPos,
-                    worldBoundingBox: {
-                      topLeft: labelWorldPos,
-                      topRight: labelWorldPos,
-                      bottomLeft: labelWorldPos,
-                      bottomRight: labelWorldPos,
-                    },
-                    text: '',
-                    color: labelData.color,
-                  };
-
-                  cornerstoneTools.annotation.state.addAnnotation(labelAnnotation, targetElement);
-                  workflowLabelAnnotationsRef.current[annotation.annotationUID] = labelAnnotation.annotationUID;
-
-                  if (toolUtilities.triggerAnnotationRenderForViewportIds) {
-                    toolUtilities.triggerAnnotationRenderForViewportIds([viewport.id]);
-                  } else {
-                    viewport.render?.();
-                  }
-                }
-              }
-            }
-          }
-
-          const targetVolumeId = overlayVolumeIds.length > 0 ? overlayVolumeIds[0] : '__workflow__';
-          if (!annotation.data.cachedStats) {
-            annotation.data.cachedStats = {};
-          }
-          annotation.data.cachedStats[targetVolumeId] = {
-            ...(annotation.data.cachedStats[targetVolumeId] || {}),
-            textLines: overlayLines,
-          };
-
-          annotation.invalidated = true;
-
-          if (renderingEngineRef.current) {
-            renderingEngineRef.current.render();
-          }
-
-          if (!annotation.metadata) {
-            annotation.metadata = {};
-          }
-          annotation.metadata.workflowStepId = currentStep.id;
-          annotation.metadata.workflowStepName = currentStep.name;
-
-          setCurrentMeasurementData({
-            annotationUID: annotation.annotationUID,
-            measuredValue,
-          });
-
-          setMeasurementReadyForConfirm(true);
-
-          // Mark as processed to prevent duplicate handling
-          if (annotation.annotationUID) {
-            workflowProcessedAnnotations.add(annotation.annotationUID);
-          }
-
-          // Clear highlight so the tool can start a fresh annotation
-          if (annotation) {
-            annotation.highlighted = false;
-            annotation.isActive = false;
-            annotation.invalidated = true;
-          }
-          const deselectAnnotation = cornerstoneTools.stateManagement?.annotationSelection?.deselectAnnotation;
-          // Deselect the completed annotation so tool is ready for new drawing
-          if (typeof deselectAnnotation === 'function') {
-            deselectAnnotation();
-          }
-
-          // DON'T lock annotations - it prevents new drawings in workflow
-          // Users can still edit completed annotations if needed
-          console.log('ℹ️ Annotation completed but NOT locked to allow continued workflow');
-
-          // Force annotation to be unlocked and editable
-          if (annotation) {
-            annotation.isLocked = false;
-            annotation.isVisible = true;
-            console.log('✅ Forced annotation to be unlocked and editable');
-          }
-
-          // SIMPLIFIED: Removed all complex tool reset logic for debugging
-
-          console.log(`✅ Annotation auto-labeled for step: ${currentStep.name}`);
-          console.log(`   Measured value:`, measuredValue);
-          console.log(`   User must click tick button to confirm and advance`)
-        } else {
-          console.log('❌ Skipping auto-labeling:', {
-            workflowControlled: currentWorkflowControlled,
-            hasStep: !!currentStep,
-            hasAnnotation: !!annotation
-          });
-        }
       };
 
       // Delay attaching event listeners until DOM elements are ready
@@ -6179,14 +5849,14 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           // (see onContextMenu handler in the text overlay div above)
 
           // Check for line annotations (AxialLine, MPRLongAxisLine)
-          if ((annotation.metadata?.toolName === 'Length' || annotation.metadata?.toolName === 'AxialLine' || annotation.metadata?.toolName === 'MPRLongAxisLine')
+          if ((annotation.metadata?.toolName === 'AxialLine' || annotation.metadata?.toolName === 'MPRLongAxisLine')
               && annotation.data?.handles?.points?.length === 2) {
             console.log(`Found line: ${annotation.metadata?.toolName}, uid: ${annotation.annotationUID.substring(0, 8)}`);
             const p1 = annotation.data.handles.points[0];
             const p2 = annotation.data.handles.points[1];
 
             // For AxialLine, check if line is in current slice
-            if (annotation.metadata?.toolName === 'Length' || annotation.metadata?.toolName === 'AxialLine') {
+            if (annotation.metadata?.toolName === 'AxialLine') {
               const camera = viewport.getCamera();
               const { viewPlaneNormal, focalPoint } = camera;
 
@@ -6354,34 +6024,11 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                   const customPos = annotation.metadata?.customTextPosition;
                   const userMoved = customPos?.userMoved || overlay.userMoved || false;
 
-                  let finalX, finalY;
-
-                  if (userMoved && customPos) {
-                    // Preserve user's dragged position
-                    finalX = customPos.x;
-                    finalY = customPos.y;
-                  } else {
-                    // Calculate polygon bounding box to position label FAR outside
-                    const viewportElement = getViewportElementById(overlay.viewportId);
-                    let minX = Infinity;
-                    let maxX = -Infinity;
-                    let minY = Infinity;
-                    let maxY = -Infinity;
-
-                    annotation.data.handles.points.forEach((point: Types.Point3) => {
-                      const cp = viewport.worldToCanvas(point) as Types.Point2;
-                      const dp = canvasToDisplayPoint(viewport, viewportElement, cp);
-                      minX = Math.min(minX, dp[0]);
-                      maxX = Math.max(maxX, dp[0]);
-                      minY = Math.min(minY, dp[1]);
-                      maxY = Math.max(maxY, dp[1]);
-                    });
-
-                    // Position label 150px to the right of polygon, vertically centered
-                    const centerY = (minY + maxY) / 2;
-                    finalX = maxX + 150;
-                    finalY = centerY;
-                  }
+                  // Preserve user's dragged position if they moved it
+                  const viewportElement = getViewportElementById(overlay.viewportId);
+                  const displayPoint = canvasToDisplayPoint(viewport, viewportElement, canvasPoint);
+                  const finalX = userMoved && customPos ? customPos.x : displayPoint[0] + 10;
+                  const finalY = userMoved && customPos ? customPos.y : displayPoint[1] - 10;
 
                   updated.push({
                     ...overlay,
@@ -6584,10 +6231,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           axialEl.removeEventListener(Enums.Events.IMAGE_RENDERED, updateOverlayPositions);
           axialEl.removeEventListener('contextmenu', handleAnnotationContextMenu as any);
           axialEl.removeEventListener(csToolsEnums.Events.ANNOTATION_RENDERED, handleAnnotationRendered);
-          axialEl.removeEventListener('wheel', updateOverlayPositions);
-          axialEl.removeEventListener('wheel', handleManualScroll);
+          document.removeEventListener('wheel', updateOverlayPositions);
         }
-        document.removeEventListener('wheel', updateOverlayPositions);
 
         // Remove context menu listeners from sagittal and coronal
         const sagittalEl = elementRefs.sagittal.current;
@@ -6603,12 +6248,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         // Remove global annotation completed listener
         eventTarget.removeEventListener(csToolsEnums.Events.ANNOTATION_COMPLETED, annotationCompletedHandler);
       };
-
-      // Ensure previous listeners are removed before registering new ones
-      if (overlayCleanupRef.current) {
-        overlayCleanupRef.current();
-      }
-      overlayCleanupRef.current = cleanupOverlayListeners;
 
       // Handler to detect manual scrolling (wheel event) and temporarily disable auto-scroll
       const handleManualScroll = () => {
@@ -6710,44 +6349,25 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
         // CRITICAL: Enable FixedCrosshairTool for rotation (like in ANNULUS_DEFINITION)
         // This allows crosshair rotation to update the other viewport cameras
-        // NOTE: Don't activate with Primary mouse button here - let workflow auto-activation handle it
-        // FixedCrosshairTool will be activated when no measurement tool is actively drawing
-        toolGroup.setToolEnabled(FixedCrosshairTool.toolName);
+        toolGroup.setToolActive(FixedCrosshairTool.toolName, {
+          bindings: [{ mouseButton: MouseBindings.Primary }],
+        });
 
-        // Don't set active tool here - let workflow auto-activation handle it
-        console.log('  ✅ Measurements stage tools configured:');
-        console.log('     - Left drag: Will be set by workflow auto-activation');
-        console.log('     - Shift+Left drag: Scroll slices');
-        console.log('     - Right drag: Zoom');
-        console.log('     - Middle drag: Window/Level');
-        console.log('     - Mouse wheel: Scroll slices');
-        console.log('     - Crosshair rotation: Updates other viewport cameras');
+        setActiveTool('FixedCrosshair');
       }
-
-      console.log('✅✅✅ SETUP TOOLS COMPLETE');
 
       if (pendingToolRef.current) {
-        console.log('  🔁 Applying pending tool request:', pendingToolRef.current);
         handleToolChange(pendingToolRef.current);
       }
-    } catch (error) {
-      console.error('❌ Failed to setup tools:', error);
-      throw error;
-    }
   };
 
   const handleToolChange = (toolName: string) => {
-    console.log('🔧 handleToolChange called with:', toolName);
-    console.trace('Call stack:');
-
     try {
       const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
       if (!toolGroup) {
         pendingToolRef.current = toolName;
         return;
       }
-
-      // SIMPLIFIED: Removed all cancel/highlight clearing logic for debugging
 
       // Always disable CrosshairsTool when switching to other tools (completely hide it)
       // We use FixedCrosshairTool for custom crosshairs instead
@@ -6759,8 +6379,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       toolGroup.setToolPassive(SphereMarkerTool.toolName);
       toolGroup.setToolPassive(CuspNadirTool.toolName);
       toolGroup.setToolPassive(WindowLevelTool.toolName);
+      toolGroup.setToolPassive(FixedCrosshairTool.toolName); // Also disable fixed crosshairs when switching tools
       toolGroup.setToolPassive('SmoothPolygon');
-      toolGroup.setToolPassive('Length');
+      toolGroup.setToolPassive('AxialLine');
       toolGroup.setToolPassive('MPRLongAxisLine');
       toolGroup.setToolPassive('AngleMeasurement');
       toolGroup.setToolPassive(LabelTool.toolName);
@@ -6773,7 +6394,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       // Enabled = annotations are visible and interactive but tool is not actively drawing
       // Passive = annotations become invisible
       toolGroup.setToolEnabled('SmoothPolygon');
-      toolGroup.setToolEnabled('Length');
+      toolGroup.setToolEnabled('AxialLine');
       toolGroup.setToolEnabled('MPRLongAxisLine');
       toolGroup.setToolEnabled('AngleMeasurement');
       toolGroup.setToolEnabled(LabelTool.toolName);
@@ -6791,8 +6412,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       });
 
       // Activate selected tool
-      toolGroup.setToolEnabled(FixedCrosshairTool.toolName);
-
       if (toolName === 'SphereMarker') {
         console.log('🎯 Activating SphereMarker tool for dragging spheres');
         toolGroup.setToolActive(SphereMarkerTool.toolName, {
@@ -6828,15 +6447,18 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         });
       } else if (toolName === 'SmoothPolygon') {
         console.log('🎯 Activating SmoothPolygon tool (SplineROI)');
+        // Activate on axial viewport - the tool is already configured with viewport filter
+        // at tool registration (getViewportsForAnnotation) so it will only work on axial
         toolGroup.setToolActive('SmoothPolygon', {
           bindings: [
-            { mouseButton: MouseBindings.Primary }
+            { mouseButton: MouseBindings.Primary }  // Single clicks to add points
           ],
         });
+
         console.log('  ℹ️ Click to add points on AXIAL view only, click near first point to close polygon');
-      } else if (toolName === 'Length') {
-        console.log('🎯 Activating Length tool');
-        toolGroup.setToolActive('Length', {
+      } else if (toolName === 'AxialLine') {
+        console.log('🎯 Activating AxialLine tool');
+        toolGroup.setToolActive('AxialLine', {
           bindings: [{ mouseButton: MouseBindings.Primary }],
         });
       } else if (toolName === 'Angle') {
@@ -6877,7 +6499,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         console.log('  ℹ️ Click to add points on SAGITTAL/CORONAL views, creates open spline curve');
       }
 
-      activeToolRef.current = toolName;
       setActiveTool(toolName);
       pendingToolRef.current = null;
     } catch (error) {
@@ -6916,85 +6537,49 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   };
 
   // Workflow auto-activation: when currentWorkflowStep changes, auto-activate the appropriate tool
-  // IMPORTANT: This runs AFTER the auto-scroll useEffect below to ensure camera is positioned first
   useEffect(() => {
-    console.log('🔍🔍🔍 WORKFLOW ACTIVATION EFFECT FIRED - START');
-    console.log('   workflowControlled:', workflowControlled);
-    console.log('   currentWorkflowStep:', currentWorkflowStep);
-    console.log('   autoScrollRenderCompleteRef.current:', autoScrollRenderCompleteRef.current);
-
     if (!workflowControlled || !currentWorkflowStep) {
       console.log('⚠️ Workflow auto-activation skipped:', { workflowControlled, hasStep: !!currentWorkflowStep });
       return; // Only activate when workflow is in control
     }
 
-    console.log('🎯 Workflow auto-activation triggered for step:', currentWorkflowStep.name);
+    // Add a small delay to ensure tool group is ready
+    const activationTimeout = setTimeout(() => {
+      const workflowManager = getWorkflowManager();
+      const toolName = workflowManager.getToolNameForStep(currentWorkflowStep);
 
-    // CRITICAL: Restore grid layout if any viewport is maximized
-    // The workflow step might require a specific viewport (e.g., axial for polygons)
-    // If another viewport is maximized, the required viewport will be hidden
-    if (maximizedViewport) {
-      console.log('↩️ Auto-restoring grid layout (was maximized:', maximizedViewport, ')');
-      setMaximizedViewport(null);
-    }
+      // Check if tool group exists
+      const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+      if (!toolGroup) {
+        console.warn('Tool group not found for workflow step:', currentWorkflowStep.name);
+        return;
+      }
 
-    // Get the tool name for this workflow step
-    const workflowManager = getWorkflowManager();
-    const toolName = workflowManager.getToolNameForStep(currentWorkflowStep);
-
-    console.log('🎯 Auto-activating tool:', toolName, 'for step:', currentWorkflowStep.name);
-
-    if (!toolName) {
-      console.warn('❌ No tool resolved for workflow step:', currentWorkflowStep.name);
-      return;
-    }
-
-    // Simple tool activation - no workarounds or delays
-    setTimeout(() => {
       handleToolChange(toolName);
-      console.log('✅ Tool activation complete:', toolName);
-    }, 100);
+    }, 100); // Small delay to ensure everything is initialized
+
+    return () => clearTimeout(activationTimeout);
   }, [currentWorkflowStep, workflowControlled]);
 
   // Workflow auto-scroll: automatically scroll to the correct slice height for the current measurement step
   useEffect(() => {
-    // Check if auto-scroll is enabled
-    if (!autoScrollEnabled) {
-      console.log('⚠️ Auto-scroll DISABLED by user toggle - skipping');
-      return;
-    }
-
     if (!workflowControlled || !currentWorkflowStep || !annularPlane || !renderingEngineRef.current) {
-      // If auto-scroll can't run (e.g., no annular plane for annulus step), mark as complete
-      autoScrollRenderCompleteRef.current = true;
-      console.log('⚠️ Auto-scroll skipped (no annular plane) - marking renders as complete');
       return;
     }
 
     // Only auto-scroll if the step has changed (not already auto-scrolled to this step)
     if (lastAutoScrolledStepRef.current === currentWorkflowStep.id) {
-      autoScrollRenderCompleteRef.current = true;
-      console.log('⚠️ Auto-scroll already completed for this step - marking as complete');
       return;
     }
 
     // Skip if user is manually scrolling
     if (skipAutoScrollRef.current) {
-      autoScrollRenderCompleteRef.current = true;
-      console.log('⚠️ Auto-scroll skipped (user scrolling) - marking as complete');
       return;
     }
 
     // Calculate the offset from annulus based on the step configuration
     const workflowManager = getWorkflowManager();
     const offsetMm = workflowManager.calculateSliceOffset(currentWorkflowStep, annulusArea);
-
-    console.log(`📜 Workflow auto-scroll for step: ${currentWorkflowStep.name}`);
-    console.log(`   Offset from annulus: ${offsetMm}mm`);
-
-    // CRITICAL: Mark renders as incomplete - tool activation must wait
-    autoScrollRenderCompleteRef.current = false;
-    console.log(`   🚧 Auto-scroll renders starting - tool activation will wait`);
 
     // The annular plane normal points from LV towards ascending aorta
     // Positive offset = move UP (towards ascending aorta) = opposite to normal
@@ -7005,8 +6590,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       annularPlane.center[1] - (annularPlane.normal[1] * offsetMm),
       annularPlane.center[2] - (annularPlane.normal[2] * offsetMm)
     ];
-
-    console.log(`   Target position:`, targetPosition);
 
     // Update both the crosshair position AND viewport cameras to actually scroll the slices
     const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
@@ -7039,21 +6622,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
         // Mark this step as auto-scrolled
         lastAutoScrolledStepRef.current = currentWorkflowStep.id;
-
-        // CRITICAL: Wait for renders to complete before logging "ready"
-        setTimeout(() => {
-          // Force another render to ensure everything is stable
-          renderingEngineRef.current?.render();
-
-          // Mark renders as complete - tool activation can now proceed
-          autoScrollRenderCompleteRef.current = true;
-
-          console.log(`✅ Workflow auto-scroll complete for step: ${currentWorkflowStep.name}`);
-          console.log(`   Camera repositioned, renders complete, ready for tool activation`);
-        }, 800); // Increased from 500ms to 800ms for safety
       }
     }
-  }, [currentWorkflowStep, workflowControlled, annularPlane, annulusArea, autoScrollEnabled]);
+  }, [currentWorkflowStep, workflowControlled, annularPlane, annulusArea]);
 
   // Handle stage changes to lock/unlock tools and switch crosshair modes
   useEffect(() => {
@@ -7070,7 +6641,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       const allAnnotations = cornerstoneTools.annotation.state.getAllAnnotations();
       const measurementAnnotations = allAnnotations.filter((ann: any) =>
         ann?.metadata?.toolName === 'SmoothPolygon' ||
-        ann?.metadata?.toolName === 'Length' || ann?.metadata?.toolName === 'AxialLine' ||
+        ann?.metadata?.toolName === 'AxialLine' ||
         ann?.metadata?.toolName === 'MPRLongAxisLine'
       );
 
@@ -7238,7 +6809,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       // CRITICAL: Enable measurement tools so annotations remain visible
       // Enabled = annotations are visible and interactive but not actively drawing
       toolGroup.setToolEnabled('SmoothPolygon');
-      toolGroup.setToolEnabled('Length');
+      toolGroup.setToolEnabled('AxialLine');
       toolGroup.setToolEnabled('MPRLongAxisLine');
       console.log('✅ Measurement tools enabled (annotations visible)');
 
@@ -8592,28 +8163,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     }
   };
 
-  // Resize viewports when maximizing/restoring
-  useEffect(() => {
-    if (!renderingEngineRef.current) return;
-
-    // Wait for DOM layout to complete
-    setTimeout(() => {
-      const viewportIds = currentStage === WorkflowStage.MEASUREMENTS
-        ? ['axial', 'sagittal', 'coronal', 'measurement1']
-        : ['axial', 'sagittal', 'coronal'];
-
-      console.log(`🔄 Resizing viewports after maximize/restore change: maximizedViewport=${maximizedViewport}`);
-      manualResize(renderingEngineId, viewportIds);
-
-      // Force render all viewports
-      if (renderingEngineRef.current) {
-        renderingEngineRef.current.render();
-      }
-
-      console.log('✅ Resize complete after maximize/restore');
-    }, 100);
-  }, [maximizedViewport, currentStage]);
-
   // Calculate current camera orientation angles
   const calculateCameraOrientation = (camera: Types.ICamera) => {
     const { position, focalPoint, viewUp } = camera;
@@ -9303,25 +8852,14 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
               <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded flex items-center gap-2">
                 <span>Axial</span>
                 {currentStage === WorkflowStage.MEASUREMENTS && onRenderModeChange && (
-                  <>
-                    <select
-                      value={renderMode}
-                      onChange={(e) => onRenderModeChange(e.target.value as 'mpr' | 'cpr')}
-                      className="text-[10px] bg-slate-800 text-white border border-slate-600 rounded px-1.5 py-0.5 cursor-pointer hover:bg-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    >
-                      <option value="mpr">Curved</option>
-                      <option value="cpr">Straight</option>
-                    </select>
-                    <label className="flex items-center gap-1 text-[10px] cursor-pointer hover:text-blue-400">
-                      <input
-                        type="checkbox"
-                        checked={autoScrollEnabled}
-                        onChange={(e) => setAutoScrollEnabled(e.target.checked)}
-                        className="w-3 h-3 cursor-pointer"
-                      />
-                      <span>Auto-scroll</span>
-                    </label>
-                  </>
+                  <select
+                    value={renderMode}
+                    onChange={(e) => onRenderModeChange(e.target.value as 'mpr' | 'cpr')}
+                    className="text-[10px] bg-slate-800 text-white border border-slate-600 rounded px-1.5 py-0.5 cursor-pointer hover:bg-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  >
+                    <option value="mpr">Curved</option>
+                    <option value="cpr">Straight</option>
+                  </select>
                 )}
               </div>
               <div
@@ -9410,7 +8948,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
               const annotations = cornerstoneTools.annotation.state.getAllAnnotations();
               const lineAnnotations = annotations.filter((ann: any) =>
-                (ann?.metadata?.toolName === 'Length' || ann?.metadata?.toolName === 'AxialLine' || ann?.metadata?.toolName === 'MPRLongAxisLine') &&
+                (ann?.metadata?.toolName === 'AxialLine' || ann?.metadata?.toolName === 'MPRLongAxisLine') &&
                 ann?.data?.handles?.points?.length === 2 &&
                 annotationLabels[ann.annotationUID] &&
                 // Only show labels for annotations in current renderMode
@@ -9425,7 +8963,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 // Check if annotation should be visible in this viewport
                 // AxialLine: only in axial viewport
                 // MPRLongAxisLine: only in sagittal/coronal viewports (handled in those sections)
-                if (annotation.metadata?.toolName === 'Length' || annotation.metadata?.toolName === 'AxialLine') {
+                if (annotation.metadata?.toolName === 'AxialLine') {
                   // AxialLine should only show in axial
                 } else if (annotation.metadata?.toolName === 'MPRLongAxisLine') {
                   // MPRLongAxisLine should NOT show in axial

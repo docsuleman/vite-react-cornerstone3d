@@ -39,7 +39,9 @@
       "Bash(cat:*)",
       "mcp__ide__getDiagnostics",
       "WebFetch(domain:discourse.vtk.org)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(awk:*)",
+      "Read(//c//**)"
     ],
     "deny": []
   }

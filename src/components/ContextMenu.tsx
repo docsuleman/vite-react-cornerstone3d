@@ -83,9 +83,9 @@ const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, items, onClose }) => {
                   : 'text-white hover:bg-slate-700 cursor-pointer'
               }`}
             >
-              {item.icon && <span className="text-lg">{item.icon}</span>}
-              <span className="flex-1">{item.label}</span>
-              {hasChildren && <span className="text-xs">▶</span>}
+                {item.icon && <span className="text-lg">{item.icon}</span>}
+                <span className="flex-1">{item.label}</span>
+                {hasChildren && <span className="text-xs">&gt;</span>}
             </button>
 
             {hasChildren && isSubmenuOpen && (

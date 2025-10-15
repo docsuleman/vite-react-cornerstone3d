@@ -50,7 +50,6 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
   const [currentWorkflowStep, setCurrentWorkflowStep] = useState<MeasurementStep | null>(null);
   const [reportScreenshots, setReportScreenshots] = useState<ReportScreenshot[]>([]);
 
-
   useEffect(() => {
     // Initialize the workflow with patient selection
     if (state.currentStage === WorkflowStage.PATIENT_SELECTION && !state.patientInfo) {
@@ -88,30 +87,6 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
   }, [state.currentStage, state.measurementWorkflowActive, workflowManager, actions]);
 
   useEffect(() => {
-    if (state.currentStage !== WorkflowStage.MEASUREMENTS || !currentWorkflowStep) {
-      return;
-    }
-
-    const stepIndex = workflowSteps.findIndex(step => step.id === currentWorkflowStep.id);
-    if (stepIndex !== -1 && state.currentMeasurementStepIndex !== stepIndex) {
-      actions.setMeasurementStepIndex(stepIndex);
-    }
-
-    const desiredTool = workflowManager.getToolNameForStep(currentWorkflowStep);
-    if (desiredTool) {
-      setRequestedTool(desiredTool);
-      setActiveTool(desiredTool);
-    }
-  }, [
-    state.currentStage,
-    currentWorkflowStep,
-    workflowSteps,
-    state.currentMeasurementStepIndex,
-    actions,
-    workflowManager
-  ]);
-
-  useEffect(() => {
     if (state.currentStage !== WorkflowStage.MEASUREMENTS || workflowSteps.length === 0) {
       return;
     }
@@ -127,11 +102,14 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
     }
 
     if (!currentWorkflowStep || currentWorkflowStep.id !== desiredStep.id) {
-      setCurrentWorkflowStep(desiredStep);
       const managerStep = workflowManager.setCurrentStepIndex(desiredIndex) ?? desiredStep;
-      const tool = workflowManager.getToolNameForStep(managerStep);
-      setRequestedTool(tool);
-      setActiveTool(tool);
+      setCurrentWorkflowStep(managerStep);
+
+      const stepTool = workflowManager.getToolNameForStep(managerStep);
+      if (stepTool) {
+        setRequestedTool(stepTool);
+        setActiveTool(stepTool);
+      }
     }
   }, [
     state.currentStage,
@@ -242,22 +220,20 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
 
   // Handle activating a measurement step
   const handleActivateMeasurementStep = (step: MeasurementStep) => {
-    setCurrentWorkflowStep(step);
-
-    // Update the workflow state's current step index
     const stepIndex = workflowSteps.findIndex(s => s.id === step.id);
-    if (stepIndex !== -1) {
-      actions.setMeasurementStepIndex(stepIndex);
-      const managerStep = workflowManager.setCurrentStepIndex(stepIndex); // Also update workflow manager for consistency
-      if (managerStep) {
-        setCurrentWorkflowStep(managerStep);
-        const nextTool = workflowManager.getToolNameForStep(managerStep);
-        setRequestedTool(nextTool);
-        setActiveTool(nextTool);
-      }
+    if (stepIndex === -1) {
+      return;
     }
 
-    // The ProperMPRViewport will receive this step and auto-activate the tool
+    actions.setMeasurementStepIndex(stepIndex);
+    const managerStep = workflowManager.setCurrentStepIndex(stepIndex) ?? step;
+    setCurrentWorkflowStep(managerStep);
+
+    const nextTool = workflowManager.getToolNameForStep(managerStep);
+    if (nextTool) {
+      setRequestedTool(nextTool);
+      setActiveTool(nextTool);
+    }
   };
 
   // Handle completing a measurement step
@@ -272,13 +248,14 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
     // Move to next step
     const nextStep = workflowManager.getCurrentStep();
     setCurrentWorkflowStep(nextStep);
+
     if (nextStep) {
       const tool = workflowManager.getToolNameForStep(nextStep);
-      setRequestedTool(tool);
-      setActiveTool(tool);
-    }
-
-    if (!nextStep) {
+      if (tool) {
+        setRequestedTool(tool);
+        setActiveTool(tool);
+      }
+    } else {
       actions.markStageComplete(WorkflowStage.MEASUREMENTS);
     }
   };
@@ -648,9 +625,9 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
                   <FaDraftingCompass className="text-sm" />
                 </button>
                 <button
-                  onClick={() => handleToolClick('AxialLine')}
+                  onClick={() => handleToolClick('Length')}
                   className={`p-1.5 rounded transition-colors flex items-center justify-center ${
-                    activeTool === 'AxialLine'
+                    activeTool === 'Length'
                       ? 'bg-blue-600 text-white'
                       : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
                   }`}
@@ -792,6 +769,14 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
               // Move to next step
               const nextStep = workflowManager.getCurrentStep();
               setCurrentWorkflowStep(nextStep);
+
+              if (nextStep) {
+                const nextTool = workflowManager.getToolNameForStep(nextStep);
+                if (nextTool) {
+                  setRequestedTool(nextTool);
+                  setActiveTool(nextTool);
+                }
+              }
 
               if (!nextStep) {
                 actions.markStageComplete(WorkflowStage.MEASUREMENTS);
