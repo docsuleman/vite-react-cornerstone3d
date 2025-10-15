@@ -2039,8 +2039,16 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         overlayCleanupRef.current = null;
       }
 
-      // Clear locked camera ref
-      lockedAxialCameraRef.current = null;
+      // CRITICAL: DO NOT clear locked camera ref when transitioning to MEASUREMENTS stage
+      // The locked camera orientation from ANNULUS_DEFINITION stage must be preserved
+      // to maintain correct annular plane alignment during measurements
+      // Only clear it when fully unmounting or going back to earlier stages
+      if (currentStage !== WorkflowStage.MEASUREMENTS) {
+        console.log('🧹 Clearing locked camera ref (not in MEASUREMENTS stage)');
+        lockedAxialCameraRef.current = null;
+      } else {
+        console.log('💾 Preserving locked camera ref for MEASUREMENTS stage');
+      }
 
       // DON'T destroy synchronizer - keep it alive for reuse (fixes sync issues)
       // slabSynchronizerRef.current = null;
@@ -4276,25 +4284,81 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       newFocalPoint[2] + planeNormal[2] * cameraDistance
     ];
 
-    // CRITICAL: Calculate viewUp using EXACT same method as scroll handler (lines 6086-6100)
-    // Use tangent × reference where reference depends on tangent[2]
+    // CRITICAL: Preserve the viewUp from first adjustment (anterior-posterior orientation)
+    // BUT: viewUp must be perpendicular to the viewing direction (plane normal)
+    // So we need to project the initial viewUp onto the plane to make it orthogonal
     let viewUp: Types.Point3;
-    const reference = Math.abs(tangent[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
-    const cross = [
-      tangent[1] * reference[2] - tangent[2] * reference[1],
-      tangent[2] * reference[0] - tangent[0] * reference[2],
-      tangent[0] * reference[1] - tangent[1] * reference[0]
-    ];
 
-    const crossLen = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
-    if (crossLen > 0) {
-      viewUp = [cross[0] / crossLen, cross[1] / crossLen, cross[2] / crossLen] as Types.Point3;
-      console.log('✅ ViewUp calculated using EXACT scroll handler method:', viewUp);
-      console.log('   tangent:', tangent);
-      console.log('   reference:', reference);
+    if (initialViewUpRef.current) {
+      const initialViewUp = initialViewUpRef.current;
+
+      // Calculate dot product of initialViewUp and plane normal
+      const dotProduct =
+        initialViewUp[0] * planeNormal[0] +
+        initialViewUp[1] * planeNormal[1] +
+        initialViewUp[2] * planeNormal[2];
+
+      console.log('📐 Dot product of initialViewUp and planeNormal:', dotProduct.toFixed(3));
+
+      // If they're nearly perpendicular (dot product close to 0), we can use initialViewUp directly
+      if (Math.abs(dotProduct) < 0.1) {
+        viewUp = initialViewUp;
+        console.log('✅ Using initial viewUp directly (already perpendicular to plane normal):', viewUp);
+      } else {
+        // Project initialViewUp onto the plane (remove component along plane normal)
+        // projectedViewUp = initialViewUp - (initialViewUp · planeNormal) * planeNormal
+        const projectedViewUp = [
+          initialViewUp[0] - dotProduct * planeNormal[0],
+          initialViewUp[1] - dotProduct * planeNormal[1],
+          initialViewUp[2] - dotProduct * planeNormal[2]
+        ];
+
+        // Normalize the projected vector
+        const projLen = Math.sqrt(
+          projectedViewUp[0] ** 2 +
+          projectedViewUp[1] ** 2 +
+          projectedViewUp[2] ** 2
+        );
+
+        if (projLen > 0.01) {
+          viewUp = [
+            projectedViewUp[0] / projLen,
+            projectedViewUp[1] / projLen,
+            projectedViewUp[2] / projLen
+          ] as Types.Point3;
+          console.log('✅ Using projected viewUp (orthogonalized to plane normal):', viewUp);
+        } else {
+          // If projection is too small, use cross product fallback
+          console.warn('⚠️ Projected viewUp too small, using cross product fallback');
+          const reference = Math.abs(planeNormal[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+          const cross = [
+            planeNormal[1] * reference[2] - planeNormal[2] * reference[1],
+            planeNormal[2] * reference[0] - planeNormal[0] * reference[2],
+            planeNormal[0] * reference[1] - planeNormal[1] * reference[0]
+          ];
+
+          const crossLen = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
+          viewUp = crossLen > 0
+            ? [cross[0] / crossLen, cross[1] / crossLen, cross[2] / crossLen] as Types.Point3
+            : [0, 0, 1] as Types.Point3;
+        }
+      }
     } else {
-      viewUp = [0, 0, 1] as Types.Point3;
-      console.warn('⚠️ Cross product too small, using fallback [0,0,1]');
+      // Fallback: Calculate viewUp perpendicular to plane normal (old logic)
+      console.warn('⚠️ No stored viewUp - calculating new one (this should not happen in ANNULUS_DEFINITION)');
+      const reference = Math.abs(planeNormal[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+      const cross = [
+        planeNormal[1] * reference[2] - planeNormal[2] * reference[1],
+        planeNormal[2] * reference[0] - planeNormal[0] * reference[2],
+        planeNormal[0] * reference[1] - planeNormal[1] * reference[0]
+      ];
+
+      const crossLen = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
+      if (crossLen > 0) {
+        viewUp = [cross[0] / crossLen, cross[1] / crossLen, cross[2] / crossLen] as Types.Point3;
+      } else {
+        viewUp = [0, 0, 1] as Types.Point3;
+      }
     }
 
     // Preserve current zoom level
@@ -4304,7 +4368,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     console.log('🎥 Setting axial camera perpendicular to annular plane (SECOND ADJUSTMENT):');
     console.log('   Camera position:', cameraPos);
     console.log('   Focal point (centerline):', newFocalPoint);
-    console.log('   ViewUp (using same cross product as scroll):', viewUp);
+    console.log('   ViewUp (preserved from first adjustment):', viewUp);
     console.log('   Preserving parallelScale:', currentParallelScale);
 
     // Set camera - spread existing camera to preserve clippingRange and other properties
