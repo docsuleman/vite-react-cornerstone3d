@@ -211,9 +211,11 @@ class CuspNadirTool extends BaseTool {
 
     const dotId = `cusp-${Date.now()}`;
 
-    // Temporarily assign placeholder cusp type - will be determined after all 3 are placed
-    const cuspType = `temp-${this.cuspDots.length}` as any;
-    const color = '#999999'; // Temporary gray color
+    // Assign colors immediately: Red, Green, Yellow for 1st, 2nd, 3rd dots
+    const colors = ['#FF0000', '#00FF00', '#FFFF00']; // Red, Green, Yellow
+    const tempTypes = ['left', 'right', 'non-coronary'] as const;
+    const cuspType = tempTypes[this.cuspDots.length] as any;
+    const color = colors[this.cuspDots.length];
 
     // Use accurate world coordinates from canvasToWorld conversion
     const finalPos: Vector3 = [worldPos[0], worldPos[1], worldPos[2]];
@@ -300,19 +302,26 @@ class CuspNadirTool extends BaseTool {
   };
 
   // Determine anatomical cusp positions based on 3D coordinates
+  // IDENTIFICATION LOGIC (relative to valve/centerline):
+  // - Most anterior (highest Y) to valve = RIGHT cusp (RCA)
+  // - Left side (lowest X) of valve = LEFT cusp
+  // - Right side (highest X) of valve = NON-coronary cusp
+  // COLOR MAPPING (CORRECT): Red=Left, Green=Right, Yellow=Non
   _determineAnatomicalPositions() {
     if (this.cuspDots.length !== 3) return;
 
-    console.log('🔍 Determining anatomical cusp positions...');
+    console.log('🔍 Determining anatomical cusp positions relative to valve centerline...');
 
-    // Calculate centroid
+    // Calculate centroid (represents valve/annulus center)
     const centroid: Vector3 = [
       (this.cuspDots[0].pos[0] + this.cuspDots[1].pos[0] + this.cuspDots[2].pos[0]) / 3,
       (this.cuspDots[0].pos[1] + this.cuspDots[1].pos[1] + this.cuspDots[2].pos[1]) / 3,
       (this.cuspDots[0].pos[2] + this.cuspDots[1].pos[2] + this.cuspDots[2].pos[2]) / 3,
     ];
 
-    // Find the most anterior dot (highest Y value) - this is RIGHT (RCA)
+    console.log('  Valve center (centroid):', centroid);
+
+    // Find the most anterior dot (highest Y value relative to centroid) - this is RIGHT (RCA)
     let rightIndex = 0;
     let maxY = this.cuspDots[0].pos[1];
     for (let i = 1; i < 3; i++) {
@@ -325,30 +334,27 @@ class CuspNadirTool extends BaseTool {
     // Get the other two dots
     const otherIndices = [0, 1, 2].filter(i => i !== rightIndex);
 
-    // Between the other two: LEFT is on patient's left (LOWER X, negative), NON is on patient's right (HIGHER X, positive)
+    // Between the other two: LEFT is on patient's left (LOWER X), NON is on patient's right (HIGHER X)
     // In patient coordinates: +X = patient's right, -X = patient's left
     const leftIndex = this.cuspDots[otherIndices[0]].pos[0] < this.cuspDots[otherIndices[1]].pos[0]
       ? otherIndices[0]
       : otherIndices[1];
     const nonIndex = otherIndices.find(i => i !== leftIndex)!;
 
-    // Assign cusp types based on anatomical coordinates (now order-independent)
-    // Right cusp (RCA): highest Y (most anterior)
-    // Left cusp: lowest X (patient's left)
-    // Non-coronary: highest X (patient's right)
-    this.cuspDots[rightIndex].cuspType = 'right';      // highest Y = RCA (anterior)
-    this.cuspDots[leftIndex].cuspType = 'left';        // lowest X = left cusp
-    this.cuspDots[nonIndex].cuspType = 'non-coronary'; // highest X = non cusp
+    // Assign cusp types based on anatomical position relative to valve center
+    this.cuspDots[rightIndex].cuspType = 'right';      // Most anterior = RIGHT (RCA)
+    this.cuspDots[leftIndex].cuspType = 'left';        // Patient's left side = LEFT
+    this.cuspDots[nonIndex].cuspType = 'non-coronary'; // Patient's right side = NON
 
-    // Assign colors: Red=Left, Yellow=Right/RCA, Green=Non
-    this.cuspDots[leftIndex].color = '#00FF00';  // Green for LEFT cusp (lowest X, patient's left)
-    this.cuspDots[rightIndex].color = '#FFFF00'; // Yellow for RIGHT/RCA (highest Y, anterior)
-    this.cuspDots[nonIndex].color = '#FF0000';   // Red for NON-coronary (highest X, patient's right)
+    // Assign colors: Red=Left, Green=Right, Yellow=Non (CORRECT MAPPING)
+    this.cuspDots[leftIndex].color = '#FF0000';  // Red for LEFT cusp
+    this.cuspDots[rightIndex].color = '#00FF00'; // Green for RIGHT/RCA
+    this.cuspDots[nonIndex].color = '#FFFF00';   // Yellow for NON-coronary
 
     console.log(`✅ Determined cusp positions (order-independent, anatomical coordinates):`);
-    console.log(`  - Left cusp (Green): dot ${leftIndex}, pos:`, this.cuspDots[leftIndex].pos);
-    console.log(`  - Right/RCA cusp (Yellow): dot ${rightIndex}, pos:`, this.cuspDots[rightIndex].pos);
-    console.log(`  - Non-coronary cusp (Red): dot ${nonIndex}, pos:`, this.cuspDots[nonIndex].pos);
+    console.log(`  - Left cusp (Red): dot ${leftIndex}, pos:`, this.cuspDots[leftIndex].pos);
+    console.log(`  - Right/RCA cusp (Green): dot ${rightIndex}, pos:`, this.cuspDots[rightIndex].pos);
+    console.log(`  - Non-coronary cusp (Yellow): dot ${nonIndex}, pos:`, this.cuspDots[nonIndex].pos);
 
     // Update colors in all viewports
     this.cuspDots.forEach(dot => {

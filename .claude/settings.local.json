@@ -41,7 +41,8 @@
       "WebFetch(domain:discourse.vtk.org)",
       "Bash(find:*)",
       "Bash(awk:*)",
-      "Read(//c//**)"
+      "Read(//c//**)",
+      "Read(//c/Users/Shahroze/MPR/**)"
     ],
     "deny": []
   }

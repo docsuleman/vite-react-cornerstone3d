@@ -165,4 +165,70 @@ export class SCurveGenerator {
 
     return [x, y, z];
   }
+
+  /**
+   * Calculate COPV (Coplanar Optimal Projection View) - the 3-cusp "en-face" view
+   * This is the optimal view with RCC anterior (centered), LCC and NCC on sides
+   * Based on COPV_LCC_P from NAVICath.py (which produces RCC Anterior view)
+   *
+   * @param leftCusp - Left Coronary Cusp coordinates
+   * @param rightCusp - Right Coronary Cusp coordinates
+   * @param nonCoronaryCusp - Non-Coronary Cusp coordinates
+   * @returns LAO/RAO and CRAN/CAUD angles for 3-cusp view
+   */
+  static calculate3CuspView(
+    leftCusp: CuspPoint,
+    rightCusp: CuspPoint,
+    nonCoronaryCusp: CuspPoint
+  ): { laoRao: number; cranCaud: number } {
+    const { x: Lx, y: Ly, z: Lz } = leftCusp;
+    const { x: Rx, y: Ry, z: Rz } = rightCusp;
+    const { x: Nx, y: Ny, z: Nz } = nonCoronaryCusp;
+
+    // COPV_LCC_P: RCC Anterior view (centers RCC, separates LCC and NCC)
+    // xLR = -(atan2((2*Ry - Ly - Ny), -(2*Rx - Lx - Nx))) - 90
+    const xLR = -((Math.atan2((2 * Ry - Ly - Ny), -(2 * Rx - Lx - Nx)) * 180) / Math.PI) - 90;
+
+    // xCC = atan((2*Rz - Lz - Nz) / sqrt((2*Rx - Lx - Nx)^2 + (2*Ry - Ly - Ny)^2))
+    const denominator = Math.sqrt(
+      Math.pow(2 * Rx - Lx - Nx, 2) + Math.pow(2 * Ry - Ly - Ny, 2)
+    );
+    const xCC = (Math.atan((2 * Rz - Lz - Nz) / denominator) * 180) / Math.PI;
+
+    console.log('📐 3-cusp view (RCC Anterior):', { laoRao: xLR, cranCaud: xCC });
+    return { laoRao: xLR, cranCaud: xCC };
+  }
+
+  /**
+   * Calculate cusp-overlap view (LR overlap, N isolated)
+   * This centers the non-coronary cusp, causing left and right cusps to overlap
+   * Based on COPV_NCC_P from NAVICath.py
+   *
+   * @param leftCusp - Left Coronary Cusp coordinates
+   * @param rightCusp - Right Coronary Cusp coordinates
+   * @param nonCoronaryCusp - Non-Coronary Cusp coordinates
+   * @returns LAO/RAO and CRAN/CAUD angles for cusp-overlap view
+   */
+  static calculateCuspOverlapView(
+    leftCusp: CuspPoint,
+    rightCusp: CuspPoint,
+    nonCoronaryCusp: CuspPoint
+  ): { laoRao: number; cranCaud: number } {
+    const { x: Lx, y: Ly, z: Lz } = leftCusp;
+    const { x: Rx, y: Ry, z: Rz } = rightCusp;
+    const { x: Nx, y: Ny, z: Nz } = nonCoronaryCusp;
+
+    // COPV_NCC_P: NCC Posterior view (centers N, overlaps L and R)
+    // xLR = atan2(-(2*Ny - Ry - Ly), -(2*Nx - Rx - Lx)) + 90
+    const xLR = ((Math.atan2(-(2 * Ny - Ry - Ly), -(2 * Nx - Rx - Lx)) * 180) / Math.PI) + 90;
+
+    // xCC = atan((2*Nz - Rz - Lz) / sqrt((2*Nx - Rx - Lx)^2 + (2*Ny - Ry - Ly)^2)) * -1
+    const denominator = Math.sqrt(
+      Math.pow(2 * Nx - Rx - Lx, 2) + Math.pow(2 * Ny - Ry - Ly, 2)
+    );
+    const xCC = -((Math.atan((2 * Nz - Rz - Lz) / denominator) * 180) / Math.PI);
+
+    console.log('📐 Cusp-overlap view (NCC centered):', { laoRao: xLR, cranCaud: xCC });
+    return { laoRao: xLR, cranCaud: xCC };
+  }
 }

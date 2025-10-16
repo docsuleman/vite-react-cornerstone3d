@@ -23,8 +23,10 @@ export const SCurveOverlay: React.FC<SCurveOverlayProps> = React.memo(({
   const [sCurve, setSCurve] = useState<SCurveData | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [redDotPos, setRedDotPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [threeCuspView, setThreeCuspView] = useState<{ laoRao: number; cranCaud: number } | null>(null);
+  const [twoCuspView, setTwoCuspView] = useState<{ laoRao: number; cranCaud: number } | null>(null);
 
-  // Generate S-curve when cusp points change
+  // Generate S-curve and calculate optimal viewing angles when cusp points change
   useEffect(() => {
     if (annulusPoints.length === 3) {
       const leftCusp = annulusPoints.find(
@@ -38,24 +40,51 @@ export const SCurveOverlay: React.FC<SCurveOverlayProps> = React.memo(({
       );
 
       if (leftCusp && rightCusp && nonCoronaryCusp) {
+        console.log('🔍 Cusp identification (CORRECT COLOR MAPPING):');
+        console.log('  Left (RED):', leftCusp.type, leftCusp.position);
+        console.log('  Right (GREEN):', rightCusp.type, rightCusp.position);
+        console.log('  Non-coronary (YELLOW):', nonCoronaryCusp.type, nonCoronaryCusp.position);
+
+        const leftCuspPoint = {
+          x: leftCusp.position[0],
+          y: leftCusp.position[1],
+          z: leftCusp.position[2],
+        };
+        const rightCuspPoint = {
+          x: rightCusp.position[0],
+          y: rightCusp.position[1],
+          z: rightCusp.position[2],
+        };
+        const nonCoronaryCuspPoint = {
+          x: nonCoronaryCusp.position[0],
+          y: nonCoronaryCusp.position[1],
+          z: nonCoronaryCusp.position[2],
+        };
+
+        // Generate S-curve
         const curve = SCurveGenerator.generateFromCusps(
-          {
-            x: leftCusp.position[0],
-            y: leftCusp.position[1],
-            z: leftCusp.position[2],
-          },
-          {
-            x: rightCusp.position[0],
-            y: rightCusp.position[1],
-            z: rightCusp.position[2],
-          },
-          {
-            x: nonCoronaryCusp.position[0],
-            y: nonCoronaryCusp.position[1],
-            z: nonCoronaryCusp.position[2],
-          }
+          leftCuspPoint,
+          rightCuspPoint,
+          nonCoronaryCuspPoint
         );
         setSCurve(curve);
+
+        // Calculate 3-cusp optimal view (COPV_RCC_A - centers RCC)
+        const threeCusp = SCurveGenerator.calculate3CuspView(
+          leftCuspPoint,
+          rightCuspPoint,
+          nonCoronaryCuspPoint
+        );
+        setThreeCuspView(threeCusp);
+
+        // Calculate cusp-overlap view (COPV_NCC_P - centers NCC, overlaps L and R)
+        const overlapView = SCurveGenerator.calculateCuspOverlapView(
+          leftCuspPoint,
+          rightCuspPoint,
+          nonCoronaryCuspPoint
+        );
+        console.log('🔵 Setting overlap view in overlay:', overlapView);
+        setTwoCuspView(overlapView);
       }
     }
   }, [annulusPoints]);
@@ -201,7 +230,56 @@ export const SCurveOverlay: React.FC<SCurveOverlayProps> = React.memo(({
     }
     ctx.stroke();
 
-    // Draw red dot at current position
+    // Draw 3-cusp view marker (green dot)
+    if (threeCuspView) {
+      const threeCuspPos = angleToCanvasCoords(
+        threeCuspView.laoRao,
+        threeCuspView.cranCaud
+      );
+      ctx.fillStyle = '#10b981'; // green-500
+      ctx.beginPath();
+      ctx.arc(threeCuspPos.x, threeCuspPos.y, 10, 0, 2 * Math.PI);
+      ctx.fill();
+
+      // Draw outline
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(threeCuspPos.x, threeCuspPos.y, 10, 0, 2 * Math.PI);
+      ctx.stroke();
+
+      // Add label
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 11px Inter, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText('3-cusp', threeCuspPos.x, threeCuspPos.y - 14);
+    }
+
+    // Draw 2-cusp view marker (purple dot)
+    if (twoCuspView) {
+      const twoCuspPos = angleToCanvasCoords(twoCuspView.laoRao, twoCuspView.cranCaud);
+      ctx.fillStyle = '#a855f7'; // purple-500
+      ctx.beginPath();
+      ctx.arc(twoCuspPos.x, twoCuspPos.y, 10, 0, 2 * Math.PI);
+      ctx.fill();
+
+      // Draw outline
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(twoCuspPos.x, twoCuspPos.y, 10, 0, 2 * Math.PI);
+      ctx.stroke();
+
+      // Add label
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 11px Inter, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText('Overlap', twoCuspPos.x, twoCuspPos.y - 14);
+    }
+
+    // Draw red dot at current position (on top of other markers)
     ctx.fillStyle = '#ef4444'; // red-500
     ctx.beginPath();
     ctx.arc(redDotPos.x, redDotPos.y, 8, 0, 2 * Math.PI);
@@ -210,6 +288,8 @@ export const SCurveOverlay: React.FC<SCurveOverlayProps> = React.memo(({
     // Draw outline on red dot
     ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(redDotPos.x, redDotPos.y, 8, 0, 2 * Math.PI);
     ctx.stroke();
 
     // Draw axis labels and tick labels
@@ -246,12 +326,12 @@ export const SCurveOverlay: React.FC<SCurveOverlayProps> = React.memo(({
       ctx.textBaseline = 'middle';
       ctx.fillText(i.toString(), padding - 5, y);
     }
-  }, [sCurve, width, height, redDotPos, angleToCanvasCoords]);
+  }, [sCurve, width, height, redDotPos, angleToCanvasCoords, threeCuspView, twoCuspView]);
 
   // Redraw when dependencies change
   useEffect(() => {
     drawSCurve();
-  }, [drawSCurve]);
+  }, [drawSCurve, threeCuspView, twoCuspView]);
 
   // Mouse event handlers for dragging red dot
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -338,6 +418,20 @@ export const SCurveOverlay: React.FC<SCurveOverlayProps> = React.memo(({
       <div className="mt-2 text-xs text-slate-400 flex justify-between">
         <span>LAO/RAO: {(currentLaoRao ?? 0).toFixed(1)}°</span>
         <span>CRAN/CAUD: {(currentCranCaud ?? 0).toFixed(1)}°</span>
+      </div>
+      <div className="mt-2 flex gap-4 text-xs">
+        <div className="flex items-center gap-1">
+          <div className="w-3 h-3 bg-red-500 rounded-full border border-white"></div>
+          <span className="text-slate-300">Current</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <div className="w-3 h-3 bg-green-500 rounded-full border border-white"></div>
+          <span className="text-slate-300">3-cusp</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <div className="w-3 h-3 bg-purple-500 rounded-full border border-white"></div>
+          <span className="text-slate-300">Cusp-overlap</span>
+        </div>
       </div>
     </div>
   );
