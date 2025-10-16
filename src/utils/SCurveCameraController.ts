@@ -182,6 +182,44 @@ export class SCurveCameraController {
   }
 
   /**
+   * Jump to 3-cusp optimal view (COPV_LCC_P - centers RCC)
+   * This view shows all three cusps separated with RCC anterior
+   */
+  jumpTo3CuspView(
+    leftCusp: { x: number; y: number; z: number },
+    rightCusp: { x: number; y: number; z: number },
+    nonCoronaryCusp: { x: number; y: number; z: number },
+    animate: boolean = false
+  ) {
+    const { laoRao, cranCaud } = SCurveGenerator.calculate3CuspView(
+      leftCusp,
+      rightCusp,
+      nonCoronaryCusp
+    );
+    console.log(`📹 Jumping to 3-cusp view: LAO/RAO=${laoRao.toFixed(1)}°, CRAN/CAUD=${cranCaud.toFixed(1)}°`);
+    this.rotateTo(laoRao, cranCaud, animate);
+  }
+
+  /**
+   * Jump to cusp-overlap view (COPV_NCC_P - centers NCC, overlaps L and R)
+   * This view shows NCC isolated with LCC and RCC overlapping
+   */
+  jumpToCuspOverlapView(
+    leftCusp: { x: number; y: number; z: number },
+    rightCusp: { x: number; y: number; z: number },
+    nonCoronaryCusp: { x: number; y: number; z: number },
+    animate: boolean = false
+  ) {
+    const { laoRao, cranCaud } = SCurveGenerator.calculateCuspOverlapView(
+      leftCusp,
+      rightCusp,
+      nonCoronaryCusp
+    );
+    console.log(`📹 Jumping to cusp-overlap view: LAO/RAO=${laoRao.toFixed(1)}°, CRAN/CAUD=${cranCaud.toFixed(1)}°`);
+    this.rotateTo(laoRao, cranCaud, animate);
+  }
+
+  /**
    * Get common preset views for TAVI planning
    */
   static getPresetViews() {

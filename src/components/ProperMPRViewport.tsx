@@ -33,6 +33,8 @@ import { SCurveCameraController } from '../utils/SCurveCameraController';
 import { SCurveGenerator } from '../utils/SCurveGenerator';
 import { SCurveOverlay } from './SCurveOverlay';
 import { FluoroAngleIndicator } from './FluoroAngleIndicator';
+import { DRRViewport } from './DRRViewport';
+import { VolumeRenderingPresetLoader } from '../utils/VolumeRenderingPresetLoader';
 import { calculateSplineAxes, formatAxisMeasurement } from '../utils/SplineStatistics';
 import { manualResize } from '../utils/viewportResize';
 import vtkImageData from '@kitware/vtk.js/Common/DataModel/ImageData';
@@ -773,6 +775,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const [sCurveAnnulusPoints, setSCurveAnnulusPoints] = useState<any>(null); // Store annulus points to keep S-curve stable
   const [sCurveStableAngles, setSCurveStableAngles] = useState<{ laoRao: number; cranCaud: number } | null>(null); // Store angles to prevent unmounting
   const [rootDefinition3DAngles, setRootDefinition3DAngles] = useState<{ laoRao: number; cranCaud: number }>({ laoRao: 0, cranCaud: 0 }); // Track 3D view angles for ROOT_DEFINITION stage
+  const [showDRR, setShowDRR] = useState(false); // Toggle between S-curve and DRR view
+  const [drrPreset, setDrrPreset] = useState<any>(null); // Current DRR rendering preset
+  const [currentVolumeId, setCurrentVolumeId] = useState<string | null>(null); // Track current volume ID for DRR
   const running = useRef(false);
   const cineIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const preloadedVolumesRef = useRef<{ [phaseIndex: number]: string }>({}); // Store preloaded volume IDs
@@ -869,6 +874,20 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       sCurveCameraControllerRef.current = controller;
     }
   }, [renderingEngineRef.current, sCurveAngles, annularPlane]);
+
+  // Load default DRR preset on component mount
+  useEffect(() => {
+    const loadDefaultPreset = async () => {
+      try {
+        const preset = VolumeRenderingPresetLoader.createEnhancedFluoroPreset();
+        setDrrPreset(preset);
+        console.log('✅ Loaded default DRR preset:', preset.name);
+      } catch (error) {
+        console.error('Failed to load DRR preset:', error);
+      }
+    };
+    loadDefaultPreset();
+  }, []);
 
   // Track previous angles to prevent unnecessary rotations
   const previousAnglesRef = useRef<{ laoRao: number; cranCaud: number } | null>(null);
@@ -2970,6 +2989,10 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       // Store volume for CPR conversion
       currentVolumeRef.current = volume;
+
+      // Store volume ID for DRR viewport
+      setCurrentVolumeId(volumeId);
+      console.log(`💾 Stored volume ID for DRR: ${volumeId}`);
 
       // Start volume loading (streaming)
       volume.load();
@@ -9401,28 +9424,61 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                     )}
                   </div>
                   <div className="relative bg-slate-800 border border-slate-700 w-1/2 overflow-hidden">
-                    <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
-                      S-Curve
+                    <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded flex items-center gap-2">
+                      <span>{showDRR ? 'DRR View' : 'S-Curve'}</span>
+                      {sCurveAnnulusPoints && drrPreset && (
+                        <button
+                          onClick={() => setShowDRR(!showDRR)}
+                          className="text-[10px] bg-blue-600 hover:bg-blue-500 text-white px-2 py-0.5 rounded transition-colors"
+                          title={showDRR ? 'Switch to S-Curve' : 'Switch to DRR'}
+                        >
+                          {showDRR ? 'S-Curve' : 'DRR'}
+                        </button>
+                      )}
                     </div>
                     {sCurveAnnulusPoints ? (
-                      <div className="w-full h-full flex items-center justify-center p-2">
-                        <SCurveOverlay
-                          key="s-curve-overlay"
-                          annulusPoints={sCurveAnnulusPoints}
-                          currentLaoRao={sCurveStableAngles?.laoRao ?? 0}
-                          currentCranCaud={sCurveStableAngles?.cranCaud ?? 0}
-                          onAngleChange={(laoRao, cranCaud) => {
-                            // Update stable angles immediately
-                            setSCurveStableAngles({ laoRao, cranCaud });
-                            // Call parent callback if available
-                            if (onSCurveAngleChange) {
-                              onSCurveAngleChange(laoRao, cranCaud);
-                            }
-                          }}
-                          width={400}
-                          height={400}
-                        />
-                      </div>
+                      <>
+                        {!showDRR ? (
+                          <div className="w-full h-full flex items-center justify-center p-2">
+                            <SCurveOverlay
+                              key="s-curve-overlay"
+                              annulusPoints={sCurveAnnulusPoints}
+                              currentLaoRao={sCurveStableAngles?.laoRao ?? 0}
+                              currentCranCaud={sCurveStableAngles?.cranCaud ?? 0}
+                              onAngleChange={(laoRao, cranCaud) => {
+                                // Update stable angles immediately
+                                setSCurveStableAngles({ laoRao, cranCaud });
+                                // Call parent callback if available
+                                if (onSCurveAngleChange) {
+                                  onSCurveAngleChange(laoRao, cranCaud);
+                                }
+                              }}
+                              width={400}
+                              height={400}
+                            />
+                          </div>
+                        ) : drrPreset && currentVolumeId ? (
+                          <div className="w-full h-full flex items-center justify-center p-2">
+                            <DRRViewport
+                              volumeId={currentVolumeId}
+                              laoRao={sCurveStableAngles?.laoRao ?? 0}
+                              cranCaud={sCurveStableAngles?.cranCaud ?? 0}
+                              focalPoint={annularPlane?.center}
+                              cameraDistance={500}
+                              preset={drrPreset}
+                              width={400}
+                              height={400}
+                              showAngleIndicators={true}
+                            />
+                          </div>
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <span className="text-slate-500 text-sm">
+                              {!drrPreset ? 'Loading preset...' : !currentVolumeId ? 'Loading volume...' : 'Loading DRR...'}
+                            </span>
+                          </div>
+                        )}
+                      </>
                     ) : (
                       <div className="w-full h-full flex items-center justify-center">
                         <span className="text-slate-500 text-sm">
