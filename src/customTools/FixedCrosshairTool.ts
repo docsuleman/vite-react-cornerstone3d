@@ -40,15 +40,19 @@ class FixedCrosshairTool extends BaseTool {
   private windowingStartPos: { x: number; y: number } | null = null;
   private windowingStartValues: { windowCenter: number; windowWidth: number } | null = null;
 
-  // Color scheme per viewport
-  private redColor = 'rgba(255, 50, 50, 0.7)'; // Red with 70% opacity - for coronal and axial horizontal
-  private greenColor = 'rgba(50, 255, 50, 0.7)'; // Green with 70% opacity - for sagittal and axial vertical
-  private centerColor = 'rgba(255, 50, 50, 0.9)'; // Red sphere at center (90% opacity)
-  private gapSizeShortAxis = 20; // Gap size for axial (short axis) view in pixels
-  private gapSizeLongAxis = 35; // Gap size for sagittal/coronal (long axis) views in pixels
-  private lineMargin = 50; // Margin from viewport edges in pixels
-  private endMarkerRadius = 5; // Radius of end marker circles
-  private endMarkerBuffer = 10; // Extra buffer for end markers (radius + stroke width + safety margin)
+  // Color scheme per viewport - pinkish red and lighter green with black shadows
+  private redColor = 'rgba(255, 105, 135, 0.9)'; // Pinkish red with 90% opacity
+  private greenColor = 'rgba(144, 238, 144, 0.9)'; // Light green with 90% opacity
+  private centerColor = 'rgba(255, 105, 135, 0.95)'; // Pinkish red sphere at center
+  private shadowColor = 'rgba(0, 0, 0, 0.8)'; // Darker shadow with 80% opacity
+  private gapSizeMM = 30; // Gap size in millimeters (world coordinates)
+  private lineLengthMM = 80; // Length of each crosshair segment in millimeters (equal for all)
+  private lineMargin = 50; // Margin from viewport edges in pixels (used as fallback)
+  private endMarkerRadius = 7; // Radius of end marker circles (increased from 5 to 7)
+  private endMarkerBuffer = 12; // Extra buffer for end markers (radius + stroke width + safety margin)
+
+  // Hover state
+  private hoveredLine: string | null = null; // Track which line is hovered (e.g., "axial-horizontal-left")
 
   constructor(toolProps = {}, defaultToolProps = {}) {
     super(toolProps, defaultToolProps);
@@ -277,7 +281,40 @@ class FixedCrosshairTool extends BaseTool {
 
           // Determine if this is a long axis view (sagittal/coronal) or short axis (axial)
           const isLongAxisView = viewportId === 'sagittal' || viewportId === 'coronal';
-          const gapSize = isLongAxisView ? this.gapSizeLongAxis : this.gapSizeShortAxis;
+
+          // Convert gap size from millimeters to canvas pixels
+          // Use a test world point offset to calculate scale
+          const testWorldPoint1 = [...this.fixedPosition] as Types.Point3;
+          const testWorldPoint2 = [...this.fixedPosition] as Types.Point3;
+          testWorldPoint2[0] += this.gapSizeMM; // Add gap distance in world coordinates
+          const testCanvas1 = viewport.worldToCanvas(testWorldPoint1);
+          const testCanvas2 = viewport.worldToCanvas(testWorldPoint2);
+          const gapSize = Math.abs(testCanvas2[0] - testCanvas1[0]); // Gap in canvas pixels
+
+          // Convert line length from millimeters to canvas pixels
+          const testWorldPoint3 = [...this.fixedPosition] as Types.Point3;
+          testWorldPoint3[0] += this.lineLengthMM;
+          const testCanvas3 = viewport.worldToCanvas(testWorldPoint3);
+          const desiredLineLength = Math.abs(testCanvas3[0] - testCanvas1[0]); // Desired line length in canvas pixels
+
+          // Calculate maximum line length for EACH line independently
+          // Minimum line length to ensure visibility
+          const minLineLength = 20; // At least 20 pixels
+
+          // Left line: from center-gap to left edge (with margin)
+          const maxLeftLength = Math.max(minLineLength, clientPoint[0] - gapSize - this.lineMargin - this.endMarkerBuffer);
+          // Right line: from center+gap to right edge (with margin)
+          const maxRightLength = Math.max(minLineLength, width - (clientPoint[0] + gapSize) - this.lineMargin - this.endMarkerBuffer);
+          // Top line: from center-gap to top edge (with margin)
+          const maxTopLength = Math.max(minLineLength, clientPoint[1] - gapSize - this.lineMargin - this.endMarkerBuffer);
+          // Bottom line: from center+gap to bottom edge (with margin)
+          const maxBottomLength = Math.max(minLineLength, height - (clientPoint[1] + gapSize) - this.lineMargin - this.endMarkerBuffer);
+
+          // Each line uses its own available space (not the minimum of both sides)
+          const leftLineLength = Math.min(desiredLineLength, maxLeftLength);
+          const rightLineLength = Math.min(desiredLineLength, maxRightLength);
+          const topLineLength = Math.min(desiredLineLength, maxTopLength);
+          const bottomLineLength = Math.min(desiredLineLength, maxBottomLength);
 
           // Debug logging (disabled to reduce console noise)
           // if (Date.now() % 1000 < 16) {
@@ -308,6 +345,44 @@ class FixedCrosshairTool extends BaseTool {
             svgLayer.style.zIndex = '1000';
             svgLayer.style.overflow = 'visible'; // Ensure markers don't get clipped
             element.appendChild(svgLayer);
+
+            // Add drop shadow filter definition
+            const defs = document.createElementNS(svgns, 'defs');
+            const filter = document.createElementNS(svgns, 'filter');
+            filter.setAttribute('id', `${viewportId}-drop-shadow`);
+            filter.setAttribute('x', '-50%');
+            filter.setAttribute('y', '-50%');
+            filter.setAttribute('width', '200%');
+            filter.setAttribute('height', '200%');
+
+            const feGaussianBlur = document.createElementNS(svgns, 'feGaussianBlur');
+            feGaussianBlur.setAttribute('in', 'SourceAlpha');
+            feGaussianBlur.setAttribute('stdDeviation', '1');
+
+            const feOffset = document.createElementNS(svgns, 'feOffset');
+            feOffset.setAttribute('dx', '1');
+            feOffset.setAttribute('dy', '1');
+            feOffset.setAttribute('result', 'offsetblur');
+
+            const feComponentTransfer = document.createElementNS(svgns, 'feComponentTransfer');
+            const feFuncA = document.createElementNS(svgns, 'feFuncA');
+            feFuncA.setAttribute('type', 'linear');
+            feFuncA.setAttribute('slope', '0.6');
+            feComponentTransfer.appendChild(feFuncA);
+
+            const feMerge = document.createElementNS(svgns, 'feMerge');
+            const feMergeNode1 = document.createElementNS(svgns, 'feMergeNode');
+            const feMergeNode2 = document.createElementNS(svgns, 'feMergeNode');
+            feMergeNode2.setAttribute('in', 'SourceGraphic');
+            feMerge.appendChild(feMergeNode1);
+            feMerge.appendChild(feMergeNode2);
+
+            filter.appendChild(feGaussianBlur);
+            filter.appendChild(feOffset);
+            filter.appendChild(feComponentTransfer);
+            filter.appendChild(feMerge);
+            defs.appendChild(filter);
+            svgLayer.appendChild(defs);
           }
 
           // Remove old elements if they exist
@@ -326,12 +401,12 @@ class FixedCrosshairTool extends BaseTool {
             };
           };
 
-          // Calculate line endpoints - account for marker size so markers are fully visible
-          // Use buffer instead of radius to account for stroke width
-          const leftLineStart = this.lineMargin + this.endMarkerBuffer;
+          // Calculate line endpoints - each line uses its own calculated length
+          // Left and right lines can have different lengths based on available space
           const leftLineEnd = clientPoint[0] - gapSize;
+          const leftLineStart = leftLineEnd - leftLineLength;
           const rightLineStart = clientPoint[0] + gapSize;
-          const rightLineEnd = width - this.lineMargin - this.endMarkerBuffer;
+          const rightLineEnd = rightLineStart + rightLineLength;
 
           // Apply rotation ONLY to axial view crosshairs, not long axis views
           const rotationToApply = isLongAxisView ? 0 : FixedCrosshairTool.globalRotationAngle;
@@ -347,6 +422,19 @@ class FixedCrosshairTool extends BaseTool {
           //   console.log(`  📏 ${viewportId} rotation=${(this.rotationAngle * 180 / Math.PI).toFixed(1)}°`);
           // }
 
+          // Draw shadow for horizontal line LEFT
+          const horizontalLineLeftShadow = document.createElementNS(svgns, 'line');
+          horizontalLineLeftShadow.setAttribute('id', `${viewportId}-fixed-horizontal-left-shadow`);
+          horizontalLineLeftShadow.setAttribute('x1', (hLineLeftStart.x + 1).toString());
+          horizontalLineLeftShadow.setAttribute('y1', (hLineLeftStart.y + 1).toString());
+          horizontalLineLeftShadow.setAttribute('x2', (hLineLeftEnd.x + 1).toString());
+          horizontalLineLeftShadow.setAttribute('y2', (hLineLeftEnd.y + 1).toString());
+          horizontalLineLeftShadow.setAttribute('stroke', this.shadowColor);
+          horizontalLineLeftShadow.setAttribute('stroke-width', (lineWidth + 1).toString());
+          horizontalLineLeftShadow.setAttribute('shape-rendering', 'geometricPrecision');
+          horizontalLineLeftShadow.style.pointerEvents = 'none';
+          horizontalLineLeftShadow.style.filter = 'blur(1px)';
+
           // Draw horizontal line with gap (LEFT side) - ALL VIEWS
           const horizontalLineLeft = document.createElementNS(svgns, 'line');
           horizontalLineLeft.setAttribute('id', `${viewportId}-fixed-horizontal-left`);
@@ -358,6 +446,19 @@ class FixedCrosshairTool extends BaseTool {
           horizontalLineLeft.setAttribute('stroke-width', lineWidth.toString());
           horizontalLineLeft.setAttribute('shape-rendering', 'geometricPrecision');
           horizontalLineLeft.style.pointerEvents = 'none'; // Lines are NOT interactive
+
+          // Draw shadow for horizontal line RIGHT
+          const horizontalLineRightShadow = document.createElementNS(svgns, 'line');
+          horizontalLineRightShadow.setAttribute('id', `${viewportId}-fixed-horizontal-right-shadow`);
+          horizontalLineRightShadow.setAttribute('x1', (hLineRightStart.x + 1).toString());
+          horizontalLineRightShadow.setAttribute('y1', (hLineRightStart.y + 1).toString());
+          horizontalLineRightShadow.setAttribute('x2', (hLineRightEnd.x + 1).toString());
+          horizontalLineRightShadow.setAttribute('y2', (hLineRightEnd.y + 1).toString());
+          horizontalLineRightShadow.setAttribute('stroke', this.shadowColor);
+          horizontalLineRightShadow.setAttribute('stroke-width', (lineWidth + 1).toString());
+          horizontalLineRightShadow.setAttribute('shape-rendering', 'geometricPrecision');
+          horizontalLineRightShadow.style.pointerEvents = 'none';
+          horizontalLineRightShadow.style.filter = 'blur(1px)';
 
           // Draw horizontal line with gap (RIGHT side) - ALL VIEWS
           const horizontalLineRight = document.createElementNS(svgns, 'line');
@@ -371,57 +472,131 @@ class FixedCrosshairTool extends BaseTool {
           horizontalLineRight.setAttribute('shape-rendering', 'geometricPrecision');
           horizontalLineRight.style.pointerEvents = 'none'; // Lines are NOT interactive
 
+          // IDs for hover tracking
+          const hLeftLineId = `${viewportId}-horizontal-left`;
+          const hRightLineId = `${viewportId}-horizontal-right`;
+
           // Draw end markers for horizontal line
-          // Left end: filled circle at the START of left line
+          // Left end: FILLED circle at the START of left line
           const horizontalLeftMarker = document.createElementNS(svgns, 'circle');
           horizontalLeftMarker.setAttribute('id', `${viewportId}-fixed-horizontal-left-marker`);
           horizontalLeftMarker.setAttribute('cx', hLineLeftStart.x.toString());
           horizontalLeftMarker.setAttribute('cy', hLineLeftStart.y.toString());
           horizontalLeftMarker.setAttribute('r', this.endMarkerRadius.toString());
           horizontalLeftMarker.setAttribute('fill', horizontalColor);
-          horizontalLeftMarker.setAttribute('stroke', 'rgba(255, 255, 255, 0.8)');
-          horizontalLeftMarker.setAttribute('stroke-width', '1');
-          horizontalLeftMarker.style.cursor = 'grab';
-          horizontalLeftMarker.style.pointerEvents = 'all'; // Markers ARE interactive for rotation
+          horizontalLeftMarker.setAttribute('stroke', 'rgba(0, 0, 0, 0.9)'); // Dark border
+          horizontalLeftMarker.setAttribute('stroke-width', '2'); // Thicker border
+          horizontalLeftMarker.setAttribute('filter', `url(#${viewportId}-drop-shadow)`);
+          horizontalLeftMarker.style.cursor = isLongAxisView ? 'default' : 'grab'; // Only draggable in axial
+          horizontalLeftMarker.style.pointerEvents = 'all'; // Markers ARE interactive for rotation and hover
 
-          // Add direct mouse event listener for marker
-          this.addMarkerEventListeners(horizontalLeftMarker, viewport, viewportId);
+          // Add hover listeners to left marker
+          horizontalLeftMarker.addEventListener('mouseenter', () => {
+            this.hoveredLine = hLeftLineId;
+          });
+          horizontalLeftMarker.addEventListener('mouseleave', () => {
+            if (this.hoveredLine === hLeftLineId) {
+              this.hoveredLine = null;
+            }
+          });
 
-          // Right end: hollow circle at the END of right line
+          // Add direct mouse event listener for marker rotation (only in axial view)
+          if (!isLongAxisView) {
+            this.addMarkerEventListeners(horizontalLeftMarker, viewport, viewportId);
+          }
+
+          // Right end: TRANSPARENT circle with layered borders
+          // Layer 1: Transparent fill with colored border
+          const horizontalRightMarkerBase = document.createElementNS(svgns, 'circle');
+          horizontalRightMarkerBase.setAttribute('id', `${viewportId}-fixed-horizontal-right-marker-base`);
+          horizontalRightMarkerBase.setAttribute('cx', hLineRightEnd.x.toString());
+          horizontalRightMarkerBase.setAttribute('cy', hLineRightEnd.y.toString());
+          horizontalRightMarkerBase.setAttribute('r', this.endMarkerRadius.toString());
+          horizontalRightMarkerBase.setAttribute('fill', horizontalColor.replace('0.9)', '0.3)')); // Transparent fill (30% opacity)
+          horizontalRightMarkerBase.setAttribute('stroke', horizontalColor); // Full opacity colored border
+          horizontalRightMarkerBase.setAttribute('stroke-width', '2');
+          horizontalRightMarkerBase.setAttribute('filter', `url(#${viewportId}-drop-shadow)`);
+          horizontalRightMarkerBase.style.pointerEvents = 'none';
+
+          // Layer 2: Black outer border (same size)
           const horizontalRightMarker = document.createElementNS(svgns, 'circle');
           horizontalRightMarker.setAttribute('id', `${viewportId}-fixed-horizontal-right-marker`);
           horizontalRightMarker.setAttribute('cx', hLineRightEnd.x.toString());
           horizontalRightMarker.setAttribute('cy', hLineRightEnd.y.toString());
           horizontalRightMarker.setAttribute('r', this.endMarkerRadius.toString());
-          horizontalRightMarker.setAttribute('fill', 'none');
-          horizontalRightMarker.setAttribute('stroke', horizontalColor);
-          horizontalRightMarker.setAttribute('stroke-width', '2');
-          horizontalRightMarker.style.cursor = 'grab';
-          horizontalRightMarker.style.pointerEvents = 'all'; // Markers ARE interactive for rotation
+          horizontalRightMarker.setAttribute('fill', 'none'); // No fill for outer layer
+          horizontalRightMarker.setAttribute('stroke', 'rgba(0, 0, 0, 0.9)'); // Black outer border
+          horizontalRightMarker.setAttribute('stroke-width', '1'); // Thin black border
+          horizontalRightMarker.style.cursor = isLongAxisView ? 'default' : 'grab'; // Only draggable in axial
+          horizontalRightMarker.style.pointerEvents = 'all'; // Markers ARE interactive for rotation and hover
 
-          // Add direct mouse event listener for marker
-          this.addMarkerEventListeners(horizontalRightMarker, viewport, viewportId);
+          // Add hover listeners to right marker
+          horizontalRightMarker.addEventListener('mouseenter', () => {
+            this.hoveredLine = hRightLineId;
+          });
+          horizontalRightMarker.addEventListener('mouseleave', () => {
+            if (this.hoveredLine === hRightLineId) {
+              this.hoveredLine = null;
+            }
+          });
 
-          // Append horizontal lines and markers
+          // Add direct mouse event listener for marker rotation (only in axial view)
+          if (!isLongAxisView) {
+            this.addMarkerEventListeners(horizontalRightMarker, viewport, viewportId);
+          }
+
+          // Append horizontal lines and markers (shadows first, then main elements, then layered markers)
+          svgLayer.appendChild(horizontalLineLeftShadow);
+          svgLayer.appendChild(horizontalLineRightShadow);
           svgLayer.appendChild(horizontalLineLeft);
           svgLayer.appendChild(horizontalLineRight);
           svgLayer.appendChild(horizontalLeftMarker);
-          svgLayer.appendChild(horizontalRightMarker);
+          svgLayer.appendChild(horizontalRightMarkerBase); // Base layer: transparent fill + colored border
+          svgLayer.appendChild(horizontalRightMarker); // Top layer: black outer border
+
+          // Draw gap filler connecting opposite lines on hover (thinner and more transparent)
+          if (this.hoveredLine === hLeftLineId || this.hoveredLine === hRightLineId) {
+            const gapFiller = document.createElementNS(svgns, 'line');
+            gapFiller.setAttribute('id', `${viewportId}-fixed-horizontal-filler`);
+            gapFiller.setAttribute('x1', hLineLeftEnd.x.toString());
+            gapFiller.setAttribute('y1', hLineLeftEnd.y.toString());
+            gapFiller.setAttribute('x2', hLineRightStart.x.toString());
+            gapFiller.setAttribute('y2', hLineRightStart.y.toString());
+            gapFiller.setAttribute('stroke', horizontalColor.replace('0.7', '0.3')); // More transparent
+            gapFiller.setAttribute('stroke-width', '1'); // Thinner
+            gapFiller.setAttribute('stroke-dasharray', '4,4'); // Dashed line
+            gapFiller.setAttribute('shape-rendering', 'geometricPrecision');
+            gapFiller.style.pointerEvents = 'none';
+            svgLayer.appendChild(gapFiller);
+          }
 
           // Draw vertical lines ONLY for short axis (axial) view
           if (!isLongAxisView) {
-            // Calculate vertical line endpoints - account for marker size so markers are fully visible
-            // Use buffer instead of radius to account for stroke width
-            const topLineStart = this.lineMargin + this.endMarkerBuffer;
+            // Calculate vertical line endpoints - each line uses its own calculated length
+            // Top and bottom lines can have different lengths based on available space
             const topLineEnd = clientPoint[1] - gapSize;
+            const topLineStart = topLineEnd - topLineLength;
             const bottomLineStart = clientPoint[1] + gapSize;
-            const bottomLineEnd = height - this.lineMargin - this.endMarkerBuffer;
+            const bottomLineEnd = bottomLineStart + bottomLineLength;
 
             // Apply rotation to vertical line endpoints (rotationToApply already calculated above)
             const vLineTopStart = rotatePoint(clientPoint[0], topLineStart, clientPoint[0], clientPoint[1], rotationToApply);
             const vLineTopEnd = rotatePoint(clientPoint[0], topLineEnd, clientPoint[0], clientPoint[1], rotationToApply);
             const vLineBottomStart = rotatePoint(clientPoint[0], bottomLineStart, clientPoint[0], clientPoint[1], rotationToApply);
             const vLineBottomEnd = rotatePoint(clientPoint[0], bottomLineEnd, clientPoint[0], clientPoint[1], rotationToApply);
+
+            // Draw shadow for vertical line TOP
+            const verticalLineTopShadow = document.createElementNS(svgns, 'line');
+            verticalLineTopShadow.setAttribute('id', `${viewportId}-fixed-vertical-top-shadow`);
+            verticalLineTopShadow.setAttribute('x1', (vLineTopStart.x + 1).toString());
+            verticalLineTopShadow.setAttribute('y1', (vLineTopStart.y + 1).toString());
+            verticalLineTopShadow.setAttribute('x2', (vLineTopEnd.x + 1).toString());
+            verticalLineTopShadow.setAttribute('y2', (vLineTopEnd.y + 1).toString());
+            verticalLineTopShadow.setAttribute('stroke', this.shadowColor);
+            verticalLineTopShadow.setAttribute('stroke-width', (lineWidth + 1).toString());
+            verticalLineTopShadow.setAttribute('shape-rendering', 'geometricPrecision');
+            verticalLineTopShadow.style.pointerEvents = 'none';
+            verticalLineTopShadow.style.filter = 'blur(1px)';
 
             // Draw vertical line with gap (TOP side)
             const verticalLineTop = document.createElementNS(svgns, 'line');
@@ -435,6 +610,19 @@ class FixedCrosshairTool extends BaseTool {
             verticalLineTop.setAttribute('shape-rendering', 'geometricPrecision');
             verticalLineTop.style.pointerEvents = 'none'; // Lines are NOT interactive
 
+            // Draw shadow for vertical line BOTTOM
+            const verticalLineBottomShadow = document.createElementNS(svgns, 'line');
+            verticalLineBottomShadow.setAttribute('id', `${viewportId}-fixed-vertical-bottom-shadow`);
+            verticalLineBottomShadow.setAttribute('x1', (vLineBottomStart.x + 1).toString());
+            verticalLineBottomShadow.setAttribute('y1', (vLineBottomStart.y + 1).toString());
+            verticalLineBottomShadow.setAttribute('x2', (vLineBottomEnd.x + 1).toString());
+            verticalLineBottomShadow.setAttribute('y2', (vLineBottomEnd.y + 1).toString());
+            verticalLineBottomShadow.setAttribute('stroke', this.shadowColor);
+            verticalLineBottomShadow.setAttribute('stroke-width', (lineWidth + 1).toString());
+            verticalLineBottomShadow.setAttribute('shape-rendering', 'geometricPrecision');
+            verticalLineBottomShadow.style.pointerEvents = 'none';
+            verticalLineBottomShadow.style.filter = 'blur(1px)';
+
             // Draw vertical line with gap (BOTTOM side)
             const verticalLineBottom = document.createElementNS(svgns, 'line');
             verticalLineBottom.setAttribute('id', `${viewportId}-fixed-vertical-bottom`);
@@ -447,61 +635,120 @@ class FixedCrosshairTool extends BaseTool {
             verticalLineBottom.setAttribute('shape-rendering', 'geometricPrecision');
             verticalLineBottom.style.pointerEvents = 'none'; // Lines are NOT interactive
 
+            // IDs for hover tracking
+            const vTopLineId = `${viewportId}-vertical-top`;
+            const vBottomLineId = `${viewportId}-vertical-bottom`;
+
             // Draw end markers for vertical line
-            // Top end: filled circle at the START of top line
+            // Top end: FILLED circle at the START of top line
             const verticalTopMarker = document.createElementNS(svgns, 'circle');
             verticalTopMarker.setAttribute('id', `${viewportId}-fixed-vertical-top-marker`);
             verticalTopMarker.setAttribute('cx', vLineTopStart.x.toString());
             verticalTopMarker.setAttribute('cy', vLineTopStart.y.toString());
             verticalTopMarker.setAttribute('r', this.endMarkerRadius.toString());
-            verticalTopMarker.setAttribute('fill', verticalColor);
-            verticalTopMarker.setAttribute('stroke', 'rgba(255, 255, 255, 0.8)');
-            verticalTopMarker.setAttribute('stroke-width', '1');
+            verticalTopMarker.setAttribute('fill', verticalColor); // FILLED
+            verticalTopMarker.setAttribute('stroke', 'rgba(0, 0, 0, 0.9)'); // Dark border
+            verticalTopMarker.setAttribute('stroke-width', '2'); // Thicker border
+            verticalTopMarker.setAttribute('filter', `url(#${viewportId}-drop-shadow)`);
             verticalTopMarker.style.cursor = 'grab';
-            verticalTopMarker.style.pointerEvents = 'all'; // Markers ARE interactive for rotation
+            verticalTopMarker.style.pointerEvents = 'all'; // Markers ARE interactive for rotation and hover
 
-            // Add direct mouse event listener for marker
+            // Add hover listeners to top marker
+            verticalTopMarker.addEventListener('mouseenter', () => {
+              this.hoveredLine = vTopLineId;
+            });
+            verticalTopMarker.addEventListener('mouseleave', () => {
+              if (this.hoveredLine === vTopLineId) {
+                this.hoveredLine = null;
+              }
+            });
+
+            // Add direct mouse event listener for marker rotation
             this.addMarkerEventListeners(verticalTopMarker, viewport, viewportId);
 
-            // Bottom end: hollow circle at the END of bottom line
+            // Bottom end: TRANSPARENT circle with layered borders (transparent green → green border → black border)
+            // Layer 1: Transparent fill with colored border
+            const verticalBottomMarkerBase = document.createElementNS(svgns, 'circle');
+            verticalBottomMarkerBase.setAttribute('id', `${viewportId}-fixed-vertical-bottom-marker-base`);
+            verticalBottomMarkerBase.setAttribute('cx', vLineBottomEnd.x.toString());
+            verticalBottomMarkerBase.setAttribute('cy', vLineBottomEnd.y.toString());
+            verticalBottomMarkerBase.setAttribute('r', this.endMarkerRadius.toString());
+            verticalBottomMarkerBase.setAttribute('fill', verticalColor.replace('0.9)', '0.3)')); // Transparent fill (30% opacity)
+            verticalBottomMarkerBase.setAttribute('stroke', verticalColor); // Full opacity colored border
+            verticalBottomMarkerBase.setAttribute('stroke-width', '2');
+            verticalBottomMarkerBase.setAttribute('filter', `url(#${viewportId}-drop-shadow)`);
+            verticalBottomMarkerBase.style.pointerEvents = 'none';
+
+            // Layer 2: Black outer border (same size)
             const verticalBottomMarker = document.createElementNS(svgns, 'circle');
             verticalBottomMarker.setAttribute('id', `${viewportId}-fixed-vertical-bottom-marker`);
             verticalBottomMarker.setAttribute('cx', vLineBottomEnd.x.toString());
             verticalBottomMarker.setAttribute('cy', vLineBottomEnd.y.toString());
             verticalBottomMarker.setAttribute('r', this.endMarkerRadius.toString());
-            verticalBottomMarker.setAttribute('fill', 'none');
-            verticalBottomMarker.setAttribute('stroke', verticalColor);
-            verticalBottomMarker.setAttribute('stroke-width', '2');
+            verticalBottomMarker.setAttribute('fill', 'none'); // No fill for outer layer
+            verticalBottomMarker.setAttribute('stroke', 'rgba(0, 0, 0, 0.9)'); // Black outer border
+            verticalBottomMarker.setAttribute('stroke-width', '1'); // Thin black border
             verticalBottomMarker.style.cursor = 'grab';
-            verticalBottomMarker.style.pointerEvents = 'all'; // Markers ARE interactive for rotation
+            verticalBottomMarker.style.pointerEvents = 'all'; // Markers ARE interactive for rotation and hover
 
-            // Add direct mouse event listener for marker
+            // Add hover listeners to bottom marker
+            verticalBottomMarker.addEventListener('mouseenter', () => {
+              this.hoveredLine = vBottomLineId;
+            });
+            verticalBottomMarker.addEventListener('mouseleave', () => {
+              if (this.hoveredLine === vBottomLineId) {
+                this.hoveredLine = null;
+              }
+            });
+
+            // Add direct mouse event listener for marker rotation
             this.addMarkerEventListeners(verticalBottomMarker, viewport, viewportId);
 
-            // Append vertical lines and markers
+            // Append vertical lines and markers (shadows first, then main elements, then layered markers)
+            svgLayer.appendChild(verticalLineTopShadow);
+            svgLayer.appendChild(verticalLineBottomShadow);
             svgLayer.appendChild(verticalLineTop);
             svgLayer.appendChild(verticalLineBottom);
             svgLayer.appendChild(verticalTopMarker);
-            svgLayer.appendChild(verticalBottomMarker);
+            svgLayer.appendChild(verticalBottomMarkerBase); // Base layer: transparent fill + colored border
+            svgLayer.appendChild(verticalBottomMarker); // Top layer: black outer border
+
+            // Draw gap filler connecting opposite vertical lines on hover (thinner and more transparent)
+            if (this.hoveredLine === vTopLineId || this.hoveredLine === vBottomLineId) {
+              const gapFiller = document.createElementNS(svgns, 'line');
+              gapFiller.setAttribute('id', `${viewportId}-fixed-vertical-filler`);
+              gapFiller.setAttribute('x1', vLineTopEnd.x.toString());
+              gapFiller.setAttribute('y1', vLineTopEnd.y.toString());
+              gapFiller.setAttribute('x2', vLineBottomStart.x.toString());
+              gapFiller.setAttribute('y2', vLineBottomStart.y.toString());
+              gapFiller.setAttribute('stroke', verticalColor.replace('0.7', '0.3')); // More transparent
+              gapFiller.setAttribute('stroke-width', '1'); // Thinner
+              gapFiller.setAttribute('stroke-dasharray', '4,4'); // Dashed line
+              gapFiller.setAttribute('shape-rendering', 'geometricPrecision');
+              gapFiller.style.pointerEvents = 'none';
+              svgLayer.appendChild(gapFiller);
+            }
           }
 
-          // Draw red sphere at center - ALL VIEWS
-          const centerSphere = document.createElementNS(svgns, 'circle');
-          centerSphere.setAttribute('id', `${viewportId}-fixed-center`);
-          centerSphere.setAttribute('cx', clientPoint[0].toString());
-          centerSphere.setAttribute('cy', clientPoint[1].toString());
-          centerSphere.setAttribute('r', '6'); // 6 pixel radius
-          centerSphere.setAttribute('fill', this.centerColor);
-          centerSphere.setAttribute('stroke', 'rgba(255, 255, 255, 0.8)'); // Semi-transparent white border
-          centerSphere.setAttribute('stroke-width', '1');
-          centerSphere.style.pointerEvents = 'all'; // Make center sphere interactive
-          centerSphere.style.cursor = this.centerDraggingDisabled ? 'default' : 'grab'; // Show draggable state
+          // Draw center dot (smaller than rotation markers) - ALL VIEWS
+          const centerRadius = 5; // Smaller than rotation markers (7px)
+          const centerDot = document.createElementNS(svgns, 'circle');
+          centerDot.setAttribute('id', `${viewportId}-fixed-center`);
+          centerDot.setAttribute('cx', clientPoint[0].toString());
+          centerDot.setAttribute('cy', clientPoint[1].toString());
+          centerDot.setAttribute('r', centerRadius.toString());
+          centerDot.setAttribute('fill', this.centerColor); // Pinkish red
+          centerDot.setAttribute('stroke', 'rgba(0, 0, 0, 0.9)'); // Black border
+          centerDot.setAttribute('stroke-width', '2');
+          centerDot.setAttribute('filter', `url(#${viewportId}-drop-shadow)`);
+          centerDot.style.pointerEvents = 'all'; // Make center dot interactive
+          centerDot.style.cursor = this.centerDraggingDisabled ? 'default' : 'grab'; // Show draggable state
 
-          // Add direct event listeners for center sphere dragging
-          this.addCenterSphereEventListeners(centerSphere, viewport, viewportId);
+          // Add direct event listeners for center dot dragging
+          this.addCenterSphereEventListeners(centerDot as any, viewport, viewportId);
 
-          // Append center sphere
-          svgLayer.appendChild(centerSphere);
+          // Append center dot
+          svgLayer.appendChild(centerDot);
 
           // Draw distance measurement text if enabled (measurements stage)
           if (this.showDistanceFromAnnulus && this.annulusReferencePosition) {

@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { FaUser, FaStethoscope, FaEye, FaRuler, FaCog, FaChevronRight, FaCheck, FaExclamationTriangle, FaCircle, FaTrash, FaFileAlt, FaCrosshairs, FaAdjust, FaSearchPlus, FaHandPaper, FaDotCircle, FaDrawPolygon, FaSquare, FaDraftingCompass } from 'react-icons/fa';
 import appIcon from '../assets/app-icon.png';
+import rootImage from '../assets/root.png';
+import valveImage from '../assets/valve-transparent.png';
 import PatientSearch from './PatientSearch';
 import LeftSidebarSteps from './LeftSidebarSteps';
 import MultiPhaseModal from './MultiPhaseModal';
@@ -49,6 +51,12 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
   const [workflowSteps, setWorkflowSteps] = useState<MeasurementStep[]>([]);
   const [currentWorkflowStep, setCurrentWorkflowStep] = useState<MeasurementStep | null>(null);
   const [reportScreenshots, setReportScreenshots] = useState<ReportScreenshot[]>([]);
+
+  // S-curve state for tracking current 3D view orientation
+  const [current3DAngles, setCurrent3DAngles] = useState<{ laoRao: number; cranCaud: number }>({
+    laoRao: 0,
+    cranCaud: 0,
+  });
 
   useEffect(() => {
     // Initialize the workflow with patient selection
@@ -268,6 +276,13 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
         ...payload,
       },
     ]);
+  }, []);
+
+  // Handle S-curve angle changes (when user drags red dot)
+  const handleSCurveAngleChange = useCallback((laoRao: number, cranCaud: number) => {
+    // Update current angles state - this will trigger camera rotation in ProperMPRViewport
+    setCurrent3DAngles({ laoRao, cranCaud });
+    console.log(`📐 S-curve angle changed: LAO/RAO=${laoRao.toFixed(1)}°, CRAN/CAUD=${cranCaud.toFixed(1)}°`);
   }, []);
 
   // Handle toolbar button clicks
@@ -658,12 +673,42 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
           <div className="space-y-3">
             {state.currentStage === WorkflowStage.ROOT_DEFINITION && (
               <div className="text-slate-300 text-sm">
+                <div className="mb-4">
+                  <h3 className="text-lg font-semibold text-white mb-3">Aortic Root Definition</h3>
+                  <div className="bg-slate-800 rounded-lg p-3 mb-3">
+                    <img
+                      src={rootImage}
+                      alt="Aortic Root"
+                      className="w-full h-auto rounded"
+                    />
+                  </div>
+                </div>
                 <p className="mb-2">Click on the viewport to place centerline points.</p>
                 <p className="text-xs text-slate-400 mt-2">
                   • Place at least 3 points along the aorta<br/>
                   • First: LV outflow tract<br/>
                   • Middle: Aortic valve<br/>
                   • Last: Ascending aorta
+                </p>
+              </div>
+            )}
+            {state.currentStage === WorkflowStage.ANNULUS_DEFINITION && (
+              <div className="text-slate-300 text-sm">
+                <div className="mb-4">
+                  <h3 className="text-lg font-semibold text-white mb-3">Annulus Definition</h3>
+                  <div className="bg-slate-800 rounded-lg p-3 mb-3">
+                    <img
+                      src={valveImage}
+                      alt="Aortic Valve"
+                      className="w-full h-auto rounded"
+                    />
+                  </div>
+                </div>
+                <p className="mb-2">Mark the three cusp nadir points on the annular plane.</p>
+                <p className="text-xs text-slate-400 mt-2">
+                  • Left Coronary Cusp<br/>
+                  • Right Coronary Cusp<br/>
+                  • Non-Coronary Cusp
                 </p>
               </div>
             )}
@@ -731,7 +776,8 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
       ) : (state.currentStage === WorkflowStage.ROOT_DEFINITION ||
             state.currentStage === WorkflowStage.ANNULUS_DEFINITION ||
             state.currentStage === WorkflowStage.MEASUREMENTS) && state.patientInfo ? (
-        <ProperMPRViewport
+        <div className="relative w-full h-full">
+          <ProperMPRViewport
             renderMode={viewType}
             onRenderModeChange={setViewType}
             patientInfo={state.patientInfo}
@@ -755,6 +801,9 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             windowLevelPreset={windowLevelPreset}
             initializeCropBox={state.currentStage === WorkflowStage.ROOT_DEFINITION}
             onAddScreenshotToReport={handleAddScreenshotToReport}
+            sCurveAngles={state.currentStage === WorkflowStage.MEASUREMENTS ? current3DAngles : undefined}
+            onSCurveAngleChange={state.currentStage === WorkflowStage.MEASUREMENTS ? setCurrent3DAngles : undefined}
+            annulusPoints={state.annulusPoints}
             onWorkflowStepSelect={(stepId) => {
               const targetStep = workflowSteps.find(step => step.id === stepId);
               if (targetStep) {
@@ -917,6 +966,7 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
               }
             }}
           />
+        </div>
       ) : (
         <div className="h-full flex items-center justify-center">
           <div className="text-center text-gray-400">

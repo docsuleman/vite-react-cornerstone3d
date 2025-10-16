@@ -27,8 +27,12 @@ import CurvedLeafletTool from '../customTools/CurvedLeafletTool';
 import ContextMenu, { ContextMenuItem } from './ContextMenu';
 import { WorkflowStage, RootPointType } from '../types/WorkflowTypes';
 import { CenterlineGenerator } from '../utils/CenterlineGenerator';
-import { MeasurementStep } from '../types/MeasurementWorkflowTypes';
+import { MeasurementStep, MeasurementSection } from '../types/MeasurementWorkflowTypes';
 import { getWorkflowManager } from '../utils/MeasurementWorkflowManager';
+import { SCurveCameraController } from '../utils/SCurveCameraController';
+import { SCurveGenerator } from '../utils/SCurveGenerator';
+import { SCurveOverlay } from './SCurveOverlay';
+import { FluoroAngleIndicator } from './FluoroAngleIndicator';
 import { calculateSplineAxes, formatAxisMeasurement } from '../utils/SplineStatistics';
 import { manualResize } from '../utils/viewportResize';
 import vtkImageData from '@kitware/vtk.js/Common/DataModel/ImageData';
@@ -51,7 +55,6 @@ import vtkPiecewiseFunction from '@kitware/vtk.js/Common/DataModel/PiecewiseFunc
 import html2canvas from 'html2canvas';
 import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction';
 import { mat3, vec3 } from 'gl-matrix';
-import HumanVTP from '../assets/Human.vtp?url';
 
 const {
   ToolGroupManager,
@@ -126,6 +129,11 @@ interface ProperMPRViewportProps {
     annotationUID?: string;
   }) => void;
   onWorkflowStepSelect?: (stepId: string) => void;
+  // S-curve 3D camera rotation
+  sCurveAngles?: { laoRao: number; cranCaud: number };
+  onSCurveAngleChange?: (laoRao: number, cranCaud: number) => void;
+  // Annulus points for S-curve generation
+  annulusPoints?: any[];
 }
 
 const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
@@ -149,7 +157,10 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   windowLevelPreset = 'cardiac',
   initializeCropBox = false,
   onAddScreenshotToReport,
-  onWorkflowStepSelect
+  onWorkflowStepSelect,
+  sCurveAngles,
+  onSCurveAngleChange,
+  annulusPoints
 }) => {
   const elementRefs = {
     axial: useRef(null),
@@ -157,7 +168,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     coronal: useRef(null),
     volume3D: useRef(null), // 4th viewport for ROOT_DEFINITION stage
     measurement1: useRef(null), // 3D viewport for MEASUREMENTS stage (top row)
-    measurement2: useRef(null), // Reserved spot for MEASUREMENTS stage (top row)
   };
   const orientationMarkerRef = useRef<HTMLDivElement>(null); // Container for human orientation marker
 
@@ -220,8 +230,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         return elementRefs.coronal.current?.parentElement || null;
       case 'measurement1':
         return elementRefs.measurement1.current?.parentElement || null;
-      case 'measurement2':
-        return elementRefs.measurement2.current?.parentElement || null;
       default:
         return null;
     }
@@ -762,6 +770,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const [isPreloading, setIsPreloading] = useState(false); // Track if we're in preloading mode
   const [cprActorsReady, setCprActorsReady] = useState(false); // Track when CPR actors are set up
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(false); // Toggle for auto-scroll in measurements
+  const [sCurveAnnulusPoints, setSCurveAnnulusPoints] = useState<any>(null); // Store annulus points to keep S-curve stable
+  const [sCurveStableAngles, setSCurveStableAngles] = useState<{ laoRao: number; cranCaud: number } | null>(null); // Store angles to prevent unmounting
+  const [rootDefinition3DAngles, setRootDefinition3DAngles] = useState<{ laoRao: number; cranCaud: number }>({ laoRao: 0, cranCaud: 0 }); // Track 3D view angles for ROOT_DEFINITION stage
   const running = useRef(false);
   const cineIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const preloadedVolumesRef = useRef<{ [phaseIndex: number]: string }>({}); // Store preloaded volume IDs
@@ -809,6 +820,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const axialReferenceFrameRef = useRef<{ viewUp: Types.Point3; viewRight: Types.Point3; viewPlaneNormal: Types.Point3 } | null>(null); // Store axial camera reference frame for rotation
   const overlayUpdateIntervalRef = useRef<number | null>(null); // Store overlay update interval ID
   const overlayCleanupRef = useRef<(() => void) | null>(null); // Cleanup listeners when reinitializing/cleanup
+  const sCurveCameraControllerRef = useRef<SCurveCameraController | null>(null); // S-curve camera controller for 3D rotation
 
   // Keep workflow refs up to date to avoid closure issues in event handlers
   useEffect(() => {
@@ -831,6 +843,79 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     setContextMenu(null);
     setViewportContextMenu(null);
   }, [currentStage]);
+
+  // Initialize S-curve camera controller when viewport is ready
+  useEffect(() => {
+    if (!renderingEngineRef.current || !sCurveAngles) {
+      return;
+    }
+
+    const renderingEngine = renderingEngineRef.current;
+    const viewport = renderingEngine.getViewport('measurement1'); // 3D viewport in measurements stage
+
+    if (viewport && !sCurveCameraControllerRef.current) {
+      console.log('🎬 Initializing S-curve camera controller for 3D viewport (measurement1)');
+      const controller = new SCurveCameraController(viewport);
+
+      // Set focal point to annular plane center if available
+      if (annularPlane) {
+        controller.setFocalPoint(annularPlane.center);
+      }
+
+      // Note: Bidirectional sync disabled to prevent infinite loop
+      // The S-curve can control the camera, but manual camera rotation won't update S-curve
+      // TODO: Add debouncing or flag to prevent loop if bidirectional sync is needed
+
+      sCurveCameraControllerRef.current = controller;
+    }
+  }, [renderingEngineRef.current, sCurveAngles, annularPlane]);
+
+  // Track previous angles to prevent unnecessary rotations
+  const previousAnglesRef = useRef<{ laoRao: number; cranCaud: number } | null>(null);
+
+  // Handle S-curve angle changes from the overlay
+  useEffect(() => {
+    if (!sCurveCameraControllerRef.current || !sCurveStableAngles) {
+      return;
+    }
+
+    const controller = sCurveCameraControllerRef.current;
+
+    // Update focal point if annular plane changes
+    if (annularPlane) {
+      controller.setFocalPoint(annularPlane.center);
+    }
+
+    // Use stable angles (updated immediately when dragging)
+    const laoRao = sCurveStableAngles.laoRao ?? 0;
+    const cranCaud = sCurveStableAngles.cranCaud ?? 0;
+
+    // Only rotate if angles actually changed
+    const prev = previousAnglesRef.current;
+    if (!prev || prev.laoRao !== laoRao || prev.cranCaud !== cranCaud) {
+      console.log(`📐 Rotating 3D view to LAO/RAO=${laoRao.toFixed(1)}°, CRAN/CAUD=${cranCaud.toFixed(1)}°`);
+      controller.rotateTo(laoRao, cranCaud);
+      previousAnglesRef.current = { laoRao, cranCaud };
+    }
+
+  }, [sCurveStableAngles, annularPlane]);
+
+  // Stabilize S-curve annulus points to prevent disappearing during re-renders
+  useEffect(() => {
+    // Once we have valid annulus points, store them and keep them stable
+    if (annulusPoints && annulusPoints.length === 3) {
+      setSCurveAnnulusPoints(annulusPoints);
+    }
+  }, [annulusPoints]);
+
+  // Stabilize S-curve angles to prevent unmounting during resizes
+  useEffect(() => {
+    // Only set stable angles when we have valid prop angles (not default 0,0 from parent initial state)
+    // This prevents the initial rotation to 0,0 that causes flickering
+    if (sCurveAngles && sCurveAngles.laoRao !== undefined && sCurveAngles.cranCaud !== undefined) {
+      setSCurveStableAngles(sCurveAngles);
+    }
+  }, [sCurveAngles]);
 
   // Use centerline from props when available (during measurements stage)
   useEffect(() => {
@@ -2601,6 +2686,13 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     const lineColor = viewportId === 'coronal' ? 'rgba(255, 50, 50, 0.7)' : 'rgba(50, 255, 50, 0.7)'; // Red for coronal, green for sagittal
 
     ctx.save();
+
+    // Add shadow for lines and markers
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
+    ctx.shadowBlur = 2;
+    ctx.shadowOffsetX = 1;
+    ctx.shadowOffsetY = 1;
+
     ctx.strokeStyle = lineColor;
     ctx.lineWidth = 2;
     ctx.setLineDash([]);
@@ -2643,6 +2735,13 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     // Draw fixed annulus reference line (if annulus position is provided)
     if (annulusYPixel !== null) {
       ctx.save();
+
+      // Add shadow for annulus reference line
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.6)';
+      ctx.shadowBlur = 2;
+      ctx.shadowOffsetX = 1;
+      ctx.shadowOffsetY = 1;
+
       ctx.strokeStyle = 'rgba(255, 255, 0, 0.8)'; // Yellow line for annulus
       ctx.lineWidth = 2;
       ctx.setLineDash([5, 5]); // Dashed line
@@ -5100,18 +5199,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         toolGroup3D.addTool(TrackballRotateTool.toolName);
         toolGroup3D.addTool(ZoomTool.toolName);
         toolGroup3D.addTool(PanTool.toolName);
-        toolGroup3D.addTool(OrientationMarkerTool.toolName);
-
-        // Configure OrientationMarkerTool with Human.vtp
-        toolGroup3D.setToolConfiguration(OrientationMarkerTool.toolName, {
-          overlayMarkerType: 3, // CUSTOM type for VTP file
-          overlayConfiguration: {
-            3: {
-              polyDataURL: HumanVTP,
-            },
-          },
-        });
-        console.log('🧑 Configured OrientationMarkerTool with Human.vtp:', HumanVTP);
 
         // Activate tools
         toolGroup3D.setToolActive(TrackballRotateTool.toolName, {
@@ -5155,18 +5242,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         toolGroup3D.addTool(TrackballRotateTool.toolName);
         toolGroup3D.addTool(ZoomTool.toolName);
         toolGroup3D.addTool(PanTool.toolName);
-        toolGroup3D.addTool(OrientationMarkerTool.toolName);
-
-        // Configure OrientationMarkerTool with Human.vtp
-        toolGroup3D.setToolConfiguration(OrientationMarkerTool.toolName, {
-          overlayMarkerType: 3, // CUSTOM type for VTP file
-          overlayConfiguration: {
-            3: {
-              polyDataURL: HumanVTP,
-            },
-          },
-        });
-        console.log('🧑 Configured OrientationMarkerTool with Human.vtp:', HumanVTP);
 
         // Activate tools
         toolGroup3D.setToolActive(TrackballRotateTool.toolName, {
@@ -5318,6 +5393,11 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       // 5. CurvedLeafletTool - For workflow leaflet measurements (Sagittal/Coronal only)
       toolGroup.addTool(CurvedLeafletTool.toolName, {
+        configuration: {
+          closeContour: false,   // Open spline (not closed ROI)
+          showTextBox: false,    // Don't show area/stats text box
+          calculateStats: false  // Don't calculate ROI statistics
+        },
         getViewportsForAnnotation: (annotation: any, viewportIds: string[]) => {
           return viewportIds.filter(id => id === 'sagittal' || id === 'coronal');
         }
@@ -8615,10 +8695,27 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
     const handleCameraModified = () => {
       updateCameraOrientation();
+
+      // Also calculate and update LAO/RAO and CRAN/CAUD angles for FluoroAngleIndicator
+      if (renderingEngineRef.current) {
+        const viewport = renderingEngineRef.current.getViewport('volume3D') as Types.IVolumeViewport;
+        if (viewport) {
+          const camera = viewport.getCamera();
+          const angles = SCurveGenerator.cameraToFluoroAngles(
+            camera.position as [number, number, number],
+            camera.focalPoint as [number, number, number]
+          );
+          setRootDefinition3DAngles(angles);
+          console.log('📐 3D View angles updated:', angles);
+        }
+      }
     };
 
     // Add event listener for camera modifications
     element.addEventListener(Enums.Events.CAMERA_MODIFIED, handleCameraModified);
+
+    // Call once immediately to get initial angles
+    setTimeout(() => handleCameraModified(), 100);
 
     console.log('📹 Camera orientation tracking enabled for 3D viewport');
 
@@ -8718,87 +8815,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     setCameraOrientation(orientation);
   };
 
-  // Initialize VTK Orientation Marker Widget with Human model
-  const initializeOrientationWidget = async () => {
-    if (!renderingEngineRef.current) return;
-    if (orientationWidgetRef.current) return; // Already initialized
-
-    const viewport = renderingEngineRef.current.getViewport('volume3D') as Types.IVolumeViewport;
-    if (!viewport) return;
-
-    try {
-      console.log('🧑 Initializing human orientation marker from VTP file...');
-
-      // Fetch and parse the Human.vtp file
-      const response = await fetch(HumanVTP);
-      const arrayBuffer = await response.arrayBuffer();
-
-      const reader = vtkXMLPolyDataReader.newInstance();
-      reader.parseAsArrayBuffer(arrayBuffer);
-
-      // Create actor for the human model
-      const mapper = vtkMapper.newInstance();
-      mapper.setInputConnection(reader.getOutputPort());
-
-      const actor = vtkActor.newInstance();
-      actor.setMapper(mapper);
-
-      // Rotate the human model 180° around Z-axis to face forward
-      actor.rotateZ(180);
-
-      // Get the render window using Cornerstone3D's internal structure
-      const renderingEngine = viewport.getRenderingEngine() as any;
-
-      // Debug: log available properties
-      console.log('🔍 Rendering engine properties:', Object.keys(renderingEngine));
-
-      // Get the viewport-specific render window for volume3D only
-      let renderWindow;
-      if (renderingEngine.getOffscreenMultiRenderWindow) {
-        console.log('✅ Using getOffscreenMultiRenderWindow method for volume3D');
-        const multiRenderWindow = renderingEngine.getOffscreenMultiRenderWindow('volume3D');
-        renderWindow = multiRenderWindow.getRenderWindow();
-      } else if (renderingEngine.offscreenMultiRenderWindow) {
-        console.log('✅ Using offscreenMultiRenderWindow property');
-        renderWindow = renderingEngine.offscreenMultiRenderWindow.getRenderWindow();
-      } else {
-        console.error('❌ Cannot find render window accessor method');
-        console.log('Available methods:', Object.keys(renderingEngine).filter(k => k.includes('render') || k.includes('window') || k.includes('vtk')));
-        return;
-      }
-
-      if (!renderWindow) {
-        console.error('❌ Failed to get render window for volume3D');
-        return;
-      }
-
-      // Get the renderer for the volume3D viewport specifically
-      const renderer = (viewport as any).getRenderer();
-      console.log('🎨 Got renderer for volume3D viewport only');
-
-      // Create orientation marker widget bound ONLY to volume3D viewport
-      // Using parentRenderer ensures it renders only in that specific viewport's renderer
-      const orientationWidget = vtkOrientationMarkerWidget.newInstance({
-        actor: actor,
-        interactor: renderWindow.getInteractor(),
-        parentRenderer: renderer, // CRITICAL: This binds it to volume3D renderer only
-      });
-
-      orientationWidget.setEnabled(true);
-      orientationWidget.setViewportCorner(
-        vtkOrientationMarkerWidget.Corners.BOTTOM_LEFT
-      );
-      orientationWidget.setViewportSize(0.15); // 15% of viewport
-      orientationWidget.setMinPixelSize(100);
-      orientationWidget.setMaxPixelSize(300);
-
-      orientationWidgetRef.current = orientationWidget;
-
-      console.log('✅ Human orientation marker initialized successfully');
-    } catch (error) {
-      console.error('❌ Failed to initialize orientation marker:', error);
-    }
-  };
+  // Initialize VTK Orientation Marker Widget with Human model - REMOVED
+  // Human.vtp model removed per user request
 
   // State to track if cropped volume is shown
   const [showCroppedVolume, setShowCroppedVolume] = useState(false);
@@ -9276,8 +9294,43 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     console.log(`📐 Applied ${angle > 0 ? 'LAO' : angle < 0 ? 'RAO' : 'AP'} ${Math.abs(angle)}° projection`);
   };
 
+  // Helper function to get shortened measurement name
+  const getMeasurementLabel = (name: string): string => {
+    return name
+      .replace('Annular Measurement', 'Annulus')
+      .replace('LVOT Measurement', 'LVOT')
+      .replace('SOV Left', 'SOV-L')
+      .replace('SOV Right', 'SOV-R')
+      .replace('SOV Non', 'SOV-N')
+      .replace('STJ Anterior', 'STJ-A')
+      .replace('STJ Junction', 'STJ-J')
+      .replace('LCA Height', 'LCA-H')
+      .replace('RCA Height', 'RCA-H');
+  };
+
+  // Helper function to determine if measurement label should show in this viewport
+  const shouldShowMeasurementLabel = (viewportId: string): boolean => {
+    if (!workflowControlled || !currentWorkflowStep) return false;
+
+    const section = currentWorkflowStep.section;
+    const type = currentWorkflowStep.type;
+
+    // Axial measurements
+    if (section === MeasurementSection.AXIAL && viewportId === 'axial') {
+      return true;
+    }
+
+    // Long axis measurements (sagittal/coronal)
+    if (section === MeasurementSection.LONGAXIS && (viewportId === 'sagittal' || viewportId === 'coronal')) {
+      return true;
+    }
+
+    return false;
+  };
+
   return (
     <div className="w-full h-full relative">
+
       {isLoading && (
           <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 z-10">
             <div className="flex items-center gap-3 text-white">
@@ -9339,17 +9392,46 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                       className="w-full h-full"
                       onDoubleClick={() => handleViewportDoubleClick('measurement1')}
                     />
+                    {/* Fluoro angle indicators */}
+                    {sCurveStableAngles && (
+                      <FluoroAngleIndicator
+                        laoRao={sCurveStableAngles.laoRao}
+                        cranCaud={sCurveStableAngles.cranCaud}
+                      />
+                    )}
                   </div>
                   <div className="relative bg-slate-800 border border-slate-700 w-1/2 overflow-hidden">
                     <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
-                      Reserved
+                      S-Curve
                     </div>
-                    <div
-                      ref={elementRefs.measurement2}
-                      className="w-full h-full flex items-center justify-center text-slate-500"
-                    >
-                      <span className="text-sm">Reserved for future use</span>
-                    </div>
+                    {sCurveAnnulusPoints ? (
+                      <div className="w-full h-full flex items-center justify-center p-2">
+                        <SCurveOverlay
+                          key="s-curve-overlay"
+                          annulusPoints={sCurveAnnulusPoints}
+                          currentLaoRao={sCurveStableAngles?.laoRao ?? 0}
+                          currentCranCaud={sCurveStableAngles?.cranCaud ?? 0}
+                          onAngleChange={(laoRao, cranCaud) => {
+                            // Update stable angles immediately
+                            setSCurveStableAngles({ laoRao, cranCaud });
+                            // Call parent callback if available
+                            if (onSCurveAngleChange) {
+                              onSCurveAngleChange(laoRao, cranCaud);
+                            }
+                          }}
+                          width={400}
+                          height={400}
+                        />
+                      </div>
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <span className="text-slate-500 text-sm">
+                          {annulusPoints && annulusPoints.length < 3
+                            ? 'Complete annulus definition to view S-curve'
+                            : 'Reserved'}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -9388,6 +9470,13 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                   </>
                 )}
               </div>
+              {/* Measurement label */}
+              {shouldShowMeasurementLabel('axial') && currentWorkflowStep && (
+                <div className="absolute top-2 right-2 z-10 text-white text-[10px] font-medium pointer-events-none"
+                     style={{ textShadow: '1px 1px 2px rgba(0,0,0,0.8), -1px -1px 2px rgba(0,0,0,0.8)' }}>
+                  {getMeasurementLabel(currentWorkflowStep.name)}
+                </div>
+              )}
               <div
                 ref={elementRefs.axial}
                 className="w-full h-full"
@@ -9411,6 +9500,13 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                     </select>
                   )}
                 </div>
+                {/* Measurement label */}
+                {shouldShowMeasurementLabel('sagittal') && currentWorkflowStep && (
+                  <div className="absolute top-2 right-2 z-10 text-white text-[10px] font-medium pointer-events-none"
+                       style={{ textShadow: '1px 1px 2px rgba(0,0,0,0.8), -1px -1px 2px rgba(0,0,0,0.8)' }}>
+                    {getMeasurementLabel(currentWorkflowStep.name)}
+                  </div>
+                )}
                 <div
                   ref={elementRefs.sagittal}
                   className="w-full h-full"
@@ -9424,6 +9520,13 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
                   Coronal
                 </div>
+                {/* Measurement label */}
+                {shouldShowMeasurementLabel('coronal') && currentWorkflowStep && (
+                  <div className="absolute top-2 right-2 z-10 text-white text-[10px] font-medium pointer-events-none"
+                       style={{ textShadow: '1px 1px 2px rgba(0,0,0,0.8), -1px -1px 2px rgba(0,0,0,0.8)' }}>
+                    {getMeasurementLabel(currentWorkflowStep.name)}
+                  </div>
+                )}
                 <div
                   ref={elementRefs.coronal}
                   className="w-full h-full"
@@ -9442,6 +9545,11 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                     ref={elementRefs.volume3D}
                     className="w-full h-full"
                     onDoubleClick={() => handleViewportDoubleClick('volume3D')}
+                  />
+                  {/* Fluoro angle indicators for ROOT_DEFINITION */}
+                  <FluoroAngleIndicator
+                    laoRao={rootDefinition3DAngles.laoRao}
+                    cranCaud={rootDefinition3DAngles.cranCaud}
                   />
                 </div>
               )}

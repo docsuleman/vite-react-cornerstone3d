@@ -1,6 +1,6 @@
 /**
  * CurvedLeafletTool - Open spline curve tool for measuring leaflet lengths
- * Based on SplineROITool but can be configured for open curves
+ * Based on SplineROITool but configured for open curves
  * Supports labeling and deletion via context menu
  */
 
@@ -12,7 +12,24 @@ class CurvedLeafletTool extends SplineROITool {
   static toolName = 'CurvedLeafletTool';
 
   constructor(toolProps = {}, defaultToolProps = {}) {
-    super(toolProps, defaultToolProps);
+    // Configure as open spline (not closed ROI)
+    super(toolProps, {
+      ...defaultToolProps,
+      configuration: {
+        ...defaultToolProps.configuration,
+        closeContour: false, // Keep spline open (don't close the shape)
+        showTextBox: false,   // Don't show text box for area/stats
+        calculateStats: false, // Don't calculate ROI statistics
+        spline: {
+          type: SplineROITool.SplineTypes.CatmullRom,
+          configuration: {
+            [SplineROITool.SplineTypes.CatmullRom]: {
+              // CatmullRom spline configuration (empty for default settings)
+            }
+          }
+        }
+      }
+    });
   }
 
   /**
