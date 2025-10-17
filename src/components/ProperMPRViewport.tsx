@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import createImageIdsAndCacheMetaData from '../lib/createImageIdsAndCacheMetaData';
+import valveSTLPath from '../assets/Hybrid-Auxetic-v4_open.STL?url';
 import {
   RenderingEngine,
   Enums,
@@ -46,16 +47,21 @@ import vtkCellArray from '@kitware/vtk.js/Common/Core/CellArray';
 import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray';
 import vtkPlane from '@kitware/vtk.js/Common/DataModel/Plane';
 import vtkXMLPolyDataReader from '@kitware/vtk.js/IO/XML/XMLPolyDataReader';
+import vtkSTLReader from '@kitware/vtk.js/IO/Geometry/STLReader';
 import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
 import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
+import vtkArrowSource from '@kitware/vtk.js/Filters/Sources/ArrowSource';
+import vtkCylinderSource from '@kitware/vtk.js/Filters/Sources/CylinderSource';
+import vtkVolume from '@kitware/vtk.js/Rendering/Core/Volume';
+import vtkVolumeMapper from '@kitware/vtk.js/Rendering/Core/VolumeMapper';
+import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction';
+import vtkPiecewiseFunction from '@kitware/vtk.js/Common/DataModel/PiecewiseFunction';
 import vtkOrientationMarkerWidget from '@kitware/vtk.js/Interaction/Widgets/OrientationMarkerWidget';
 import vtkOpenGLRenderWindow from '@kitware/vtk.js/Rendering/OpenGL/RenderWindow';
 import vtkRenderWindow from '@kitware/vtk.js/Rendering/Core/RenderWindow';
 import vtkRenderer from '@kitware/vtk.js/Rendering/Core/Renderer';
 import vtkRenderWindowInteractor from '@kitware/vtk.js/Rendering/Core/RenderWindowInteractor';
-import vtkPiecewiseFunction from '@kitware/vtk.js/Common/DataModel/PiecewiseFunction';
 import html2canvas from 'html2canvas';
-import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction';
 import { mat3, vec3 } from 'gl-matrix';
 
 const {
@@ -98,8 +104,8 @@ interface ProperMPRViewportProps {
   onCuspDotsUpdate?: (dots: { id: string; pos: [number, number, number]; color: string; cuspType: string }[]) => void;
   currentStage?: WorkflowStage;
   existingSpheres?: { id: string; pos: [number, number, number]; color: string }[];
-  renderMode?: 'mpr' | 'cpr'; // Toggle between standard MPR and straightened CPR
-  onRenderModeChange?: (mode: 'mpr' | 'cpr') => void; // Callback when user changes render mode
+  renderMode?: 'mpr' | 'cpr' | 'vr'; // Toggle between standard MPR, straightened CPR, and Volume Rendering
+  onRenderModeChange?: (mode: 'mpr' | 'cpr' | 'vr') => void; // Callback when user changes render mode
   // Workflow-related props
   currentWorkflowStep?: MeasurementStep | null;
   workflowControlled?: boolean;
@@ -772,6 +778,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const [isPreloading, setIsPreloading] = useState(false); // Track if we're in preloading mode
   const [cprActorsReady, setCprActorsReady] = useState(false); // Track when CPR actors are set up
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(false); // Toggle for auto-scroll in measurements
+  const [valveVisible, setValveVisible] = useState(false); // Toggle for virtual valve visibility
+  const [selectedValve, setSelectedValve] = useState('Hybrid-Auxetic-v4_open'); // Selected valve model name
+  const [valveRotation, setValveRotation] = useState({ x: 0, y: 0, z: 0 }); // Valve rotation angles in degrees
   const [sCurveAnnulusPoints, setSCurveAnnulusPoints] = useState<any>(null); // Store annulus points to keep S-curve stable
   const [sCurveStableAngles, setSCurveStableAngles] = useState<{ laoRao: number; cranCaud: number } | null>(null); // Store angles to prevent unmounting
   const [rootDefinition3DAngles, setRootDefinition3DAngles] = useState<{ laoRao: number; cranCaud: number }>({ laoRao: 0, cranCaud: 0 }); // Track 3D view angles for ROOT_DEFINITION stage
@@ -812,6 +821,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const cprPositionRatioRef = useRef<number>(0); // Store current position ratio for redrawing after render
   const cprAnnulusRatioRef = useRef<number | undefined>(undefined); // Store annulus position ratio for reference line
   const cprActorsRef = useRef<{ actor: any; mapper: any; viewportId: string; config: any }[]>([]); // Store CPR actors and mappers when in CPR mode
+  const valveActorsRef = useRef<{ actor: any; mapper: any; viewportId: string; clipPlane: any }[]>([]); // Store valve actors and clipping planes
   const initialViewUpRef = useRef<Types.Point3 | null>(null); // Store initial viewUp from first centerline alignment (ANNULUS_DEFINITION)
   const firstAdjustmentDoneRef = useRef<boolean>(false); // Track whether first adjustment has been completed (prevent re-running on tool change)
   const lockedAxialCameraRef = useRef<{ position: Types.Point3; viewUp: Types.Point3; parallelScale: number } | null>(null); // Store locked camera orientation for annular plane
@@ -936,12 +946,229 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     }
   }, [sCurveAngles]);
 
-  // Use centerline from props when available (during measurements stage)
+  // Use modified perpendicular centerline from props when available (ANNULUS or MEASUREMENTS stage)
+  // Track previous centerline to detect actual changes (not just stage transitions)
+  const prevCenterlineRef = React.useRef<typeof centerlineDataProp>(null);
+
   useEffect(() => {
-    if (centerlineDataProp && currentStage === WorkflowStage.MEASUREMENTS) {
+    console.log('🔍 [CENTERLINE PROP EFFECT] Running with:', {
+      hasCenterlineData: !!centerlineDataProp,
+      currentStage,
+      isAnnulusOrMeasurements: currentStage === WorkflowStage.ANNULUS_DEFINITION || currentStage === WorkflowStage.MEASUREMENTS,
+      numPoints: centerlineDataProp?.position?.length / 3 || 0,
+      centerlineChanged: centerlineDataProp !== prevCenterlineRef.current
+    });
+
+    // CRITICAL: Accept modified perpendicular centerline from TAVIApp in BOTH annulus and measurements stages
+    // TAVIApp modifies the centerline when cusp dots are placed (in ANNULUS_DEFINITION)
+    // We need to capture it immediately, not wait until MEASUREMENTS stage
+    // BUT: Only process if centerline actually changed, not just stage transition
+    const centerlineChanged = centerlineDataProp !== prevCenterlineRef.current;
+
+    if (centerlineDataProp && (currentStage === WorkflowStage.ANNULUS_DEFINITION || currentStage === WorkflowStage.MEASUREMENTS) && centerlineChanged) {
+      prevCenterlineRef.current = centerlineDataProp;
+      const numPoints = centerlineDataProp.position?.length / 3 || 0;
+      console.log(`🔄 [${currentStage.toUpperCase()}] Updating centerlineDataRef with modified perpendicular centerline`);
+      console.log(`  📊 Received centerline with ${numPoints} points from TAVIApp (modified by CenterlineModifier)`);
+
+      // Log sample points to verify this is the modified centerline
+      if (numPoints >= 3) {
+        const pStart = [
+          centerlineDataProp.position[0],
+          centerlineDataProp.position[1],
+          centerlineDataProp.position[2]
+        ];
+        const pEnd = [
+          centerlineDataProp.position[(numPoints-1) * 3],
+          centerlineDataProp.position[(numPoints-1) * 3 + 1],
+          centerlineDataProp.position[(numPoints-1) * 3 + 2]
+        ];
+        console.log('  📍 Modified centerline points:', {
+          start: pStart.map(v => v.toFixed(1)),
+          end: pEnd.map(v => v.toFixed(1))
+        });
+      }
+
       centerlineDataRef.current = centerlineDataProp;
+
+      // CRITICAL: In ANNULUS_DEFINITION stage, find the annulus plane point from modified centerline
+      // and update currentCenterlineIndexRef to ensure camera positions at the exact annulus plane
+      if (currentStage === WorkflowStage.ANNULUS_DEFINITION &&
+          centerlineDataProp.modifiedCenterline &&
+          Array.isArray(centerlineDataProp.modifiedCenterline)) {
+
+        const annulusPlaneIndex = centerlineDataProp.modifiedCenterline.findIndex(
+          (p: any) => p.isAnnulusPlane === true
+        );
+
+        if (annulusPlaneIndex >= 0) {
+          console.log(`📍 [ANNULUS_DEFINITION] Found annulus plane at index ${annulusPlaneIndex} of ${centerlineDataProp.modifiedCenterline.length} points`);
+          currentCenterlineIndexRef.current = annulusPlaneIndex;
+
+          // Update locked focal point to the exact annulus plane position
+          const annulusPoint = centerlineDataProp.modifiedCenterline[annulusPlaneIndex];
+          lockedFocalPointRef.current = [annulusPoint.x, annulusPoint.y, annulusPoint.z] as Types.Point3;
+          console.log(`🔒 Updated focal point to annulus plane position:`, lockedFocalPointRef.current.map(v => v.toFixed(1)));
+        } else {
+          console.warn('⚠️ No annulus plane marker found in modified centerline');
+        }
+      }
+
+      // CRITICAL: Force view updates when centerline changes in MEASUREMENTS stage
+      // This ensures both CPR and MPR modes use the modified perpendicular centerline
+
+      if (renderingEngineRef.current) {
+        if (renderMode === 'cpr' && currentVolumeRef.current) {
+          // CPR mode: Re-setup actors with new perpendicular centerline
+          console.log(`🔄 [${currentStage.toUpperCase()}] CPR mode - forcing re-setup with perpendicular centerline`);
+
+          setCprActorsReady(false);
+
+          setTimeout(async () => {
+            // Capture current rotation angle
+            const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+            if (toolGroup) {
+              const fixedCrosshairTool = toolGroup.getToolInstance(FixedCrosshairTool.toolName) as any;
+              if (fixedCrosshairTool && typeof fixedCrosshairTool.getRotationAngle === 'function') {
+                const currentRotation = fixedCrosshairTool.getRotationAngle();
+                console.log(`  📐 Captured crosshair rotation: ${(currentRotation * 180 / Math.PI).toFixed(1)}°`);
+                cprRotationAngleRef.current = currentRotation;
+              } else {
+                cprRotationAngleRef.current = 0;
+              }
+            } else {
+              cprRotationAngleRef.current = 0;
+            }
+
+            await setupCPRActors();
+            console.log(`✅ [${currentStage.toUpperCase()}] CPR re-setup complete`);
+
+            setCprActorsReady(true);
+
+            requestAnimationFrame(() => {
+              updateCPRPositionLines(currentCenterlineIndexRef.current);
+            });
+          }, 500);
+
+        } else if (renderMode === 'mpr') {
+          // MPR mode: Force camera update at current centerline position with new perpendicular tangent
+          console.log(`🔄 [${currentStage.toUpperCase()}] MPR mode - forcing camera update with perpendicular centerline`);
+
+          // Use requestAnimationFrame for immediate update in ANNULUS_DEFINITION
+          // This eliminates the visible offset when modified centerline arrives
+          const updateFn = () => {
+            const renderingEngine = renderingEngineRef.current;
+            if (!renderingEngine || !centerlineDataRef.current) return;
+
+            // Use the annulus plane index if we just set it, otherwise use current index
+            const currentIndex = currentCenterlineIndexRef.current;
+            const newPosition = getCenterlinePositionAtIndex(currentIndex);
+            const tangent = getCenterlineTangentAtIndex(currentIndex);
+
+            if (!newPosition || !tangent) {
+              console.warn('⚠️ Could not get centerline position/tangent for camera update');
+              return;
+            }
+
+            console.log(`  📍 Updating camera at centerline index ${currentIndex.toFixed(2)}`);
+            console.log(`  📐 New tangent (perpendicular to annular plane):`, tangent.map(v => v.toFixed(3)));
+
+            // Update axial viewport camera
+            const axialVp = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
+            if (axialVp) {
+              const camera = axialVp.getCamera();
+              const cameraDistance = 200;
+
+              const newCameraPos = [
+                newPosition[0] + tangent[0] * cameraDistance,
+                newPosition[1] + tangent[1] * cameraDistance,
+                newPosition[2] + tangent[2] * cameraDistance
+              ] as Types.Point3;
+
+              let viewUp: Types.Point3;
+              const reference = Math.abs(tangent[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+              const cross = [
+                tangent[1] * reference[2] - tangent[2] * reference[1],
+                tangent[2] * reference[0] - tangent[0] * reference[2],
+                tangent[0] * reference[1] - tangent[1] * reference[0]
+              ];
+
+              const crossLen = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
+              if (crossLen > 0) {
+                viewUp = [cross[0] / crossLen, cross[1] / crossLen, cross[2] / crossLen] as Types.Point3;
+              } else {
+                viewUp = [0, 0, 1] as Types.Point3;
+              }
+
+              axialVp.setCamera({
+                position: newCameraPos,
+                focalPoint: newPosition,
+                viewUp: viewUp,
+                parallelScale: camera.parallelScale,
+              });
+
+              axialVp.render();
+              console.log(`✅ [${currentStage.toUpperCase()}] Axial camera updated with perpendicular orientation`);
+            }
+
+            // Update crosshair
+            const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+            const fixedCrosshairTool = toolGroup?.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
+            if (fixedCrosshairTool) {
+              fixedCrosshairTool.setFixedPosition(newPosition, renderingEngineId);
+            }
+
+            renderingEngine.renderViewports(['sagittal', 'coronal']);
+            console.log(`✅ [${currentStage.toUpperCase()}] All viewports updated with perpendicular centerline`);
+          };
+
+          // Immediate update for ANNULUS_DEFINITION to avoid visible offset
+          // Small delay for other stages to ensure rendering is ready
+          if (currentStage === WorkflowStage.ANNULUS_DEFINITION) {
+            requestAnimationFrame(updateFn);
+          } else {
+            setTimeout(updateFn, 100);
+          }
+        }
+      }
     }
   }, [centerlineDataProp, currentStage]);
+
+  // Update locked focal point when red sphere position changes (e.g., during ANNULUS_DEFINITION)
+  useEffect(() => {
+    // CRITICAL: Only update during ANNULUS_DEFINITION stage
+    // In MEASUREMENTS stage, the camera position is controlled by workflow auto-scroll,
+    // NOT by the red sphere position (which stays at annulus center)
+    if (currentStage !== WorkflowStage.ANNULUS_DEFINITION ||
+        !existingSpheres || existingSpheres.length < 3) {
+      return;
+    }
+
+    const redSphere = existingSpheres.find(s => s.color === 'red');
+    if (redSphere && lockedFocalPointRef.current) {
+      const oldPos = lockedFocalPointRef.current;
+      const newPos = redSphere.pos as Types.Point3;
+
+      // Check if position actually changed (more than 0.1mm)
+      const distance = Math.sqrt(
+        Math.pow(newPos[0] - oldPos[0], 2) +
+        Math.pow(newPos[1] - oldPos[1], 2) +
+        Math.pow(newPos[2] - oldPos[2], 2)
+      );
+
+      if (distance > 0.1) {
+        console.log(`🔒 [ANNULUS_DEFINITION] Updated locked focal point from [${oldPos.map(v => v.toFixed(1)).join(', ')}] to [${newPos.map(v => v.toFixed(1)).join(', ')}] (moved ${distance.toFixed(1)}mm)`);
+        lockedFocalPointRef.current = newPos;
+
+        // Also update currentCenterlineIndexRef if centerline exists
+        if (centerlineDataRef.current) {
+          const nearestIndex = findNearestCenterlineIndex(newPos);
+          currentCenterlineIndexRef.current = nearestIndex;
+          console.log(`📍 [ANNULUS_DEFINITION] Updated centerline index to ${nearestIndex} based on new red sphere position`);
+        }
+      }
+    }
+  }, [existingSpheres, currentStage]);
 
   // Preload all phases sequentially when play is first hit
   useEffect(() => {
@@ -1718,16 +1945,63 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         console.log('✅ CPR line redraw listeners added for zoom/pan');
       }, 500);
     } else if (renderMode === 'mpr') {
-      console.log('🔄 Render mode changed to MPR, removing CPR actors...');
+      console.log('🔄 Render mode changed to MPR, restoring original settings...');
       setCprActorsReady(false); // Mark actors as not ready
-      // Remove CPR actors when switching back to MPR
-      cprActorsRef.current.forEach(({ actor, viewportId }) => {
+
+      // Check if we're coming from VR mode (which doesn't change camera)
+      const comingFromVR = cprActorsRef.current.some(({ config }) => config.mode === 'vr');
+
+      // Restore VR viewports OR remove CPR actors
+      cprActorsRef.current.forEach(({ actor, viewportId, config }) => {
         const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
         if (viewport) {
           try {
-            viewport.removeActors([`cprActor_${viewportId}`]);
+            if (config.mode === 'vr') {
+              // VR mode: Remove volume actor and restore original slice actors
+              console.log(`🔄 Restoring VR viewport ${viewportId} to MPR...`);
+
+              // Clean up event listener if present
+              if (config.cleanupListener) {
+                config.cleanupListener();
+                console.log(`  🧹 Cleaned up camera listener for ${viewportId}`);
+              }
+
+              // Remove the VR volume actor
+              if (config.usedVtkRenderer) {
+                // Remove from VTK renderer
+                const scene = (viewport as any).getScene?.();
+                const vtkRenderer = scene?.getRenderer?.();
+                if (vtkRenderer && actor) {
+                  vtkRenderer.removeVolume(actor);
+                  console.log(`  🗑️ Removed volume from VTK renderer for ${viewportId}`);
+                }
+              } else {
+                // Remove through Cornerstone
+                const actorUID = `vrActor_${viewportId}`;
+                viewport.removeActors([actorUID]);
+                console.log(`  🗑️ Removed ${actorUID}`);
+              }
+
+              // Restore visibility of original slice actors
+              if (config.originalActorsHidden) {
+                const actors = viewport.getActors();
+                actors.forEach((actorEntry: any) => {
+                  if (actorEntry.actor && typeof actorEntry.actor.setVisibility === 'function') {
+                    actorEntry.actor.setVisibility(true);
+                    console.log(`  👁️ Restored slice actor visibility in ${viewportId}`);
+                  }
+                });
+              }
+
+              viewport.render();
+            } else {
+              // CPR mode: Remove CPR actors
+              const actorPrefix = 'cprActor_';
+              viewport.removeActors([`${actorPrefix}${viewportId}`]);
+              console.log(`  🗑️ Removed ${actorPrefix}${viewportId}`);
+            }
           } catch (e) {
-            console.warn('Failed to remove CPR actor:', e);
+            console.warn('Failed to restore viewport:', e);
           }
         }
       });
@@ -1737,31 +2011,31 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       cprPositionLineActorsRef.current = null;
       console.log('🧹 Cleared CPR position indicator lines');
 
-      // Show volume actors again and restore camera states
+      // For CPR mode, we need to restore camera states and volume visibility
+      // For VR mode, camera states are already preserved (we didn't change them)
       const viewportIds = ['axial', 'sagittal', 'coronal'];
+
       viewportIds.forEach(id => {
         const viewport = renderingEngine.getViewport(id) as Types.IVolumeViewport;
         if (viewport) {
-          // Re-enable volume actors
-          const allActors = viewport.getActors();
-          allActors.forEach((actorEntry: any) => {
-            if (actorEntry.actor && typeof actorEntry.actor.setVisibility === 'function') {
-              actorEntry.actor.setVisibility(true);
-              console.log(`  👁️ Restored volume actor visibility in ${id}`);
-            }
-          });
-
-          // Restore original camera state if available, otherwise reset camera
-          const savedCamera = originalCameraStatesRef.current[id];
-          if (savedCamera) {
-            console.log(`📷 Restoring original camera for ${id}:`, savedCamera);
-            viewport.setCamera(savedCamera);
-          } else {
-            console.log(`🔄 Resetting camera for ${id} (no saved state)`);
-            viewport.resetCamera();
+          // If coming from CPR mode, restore volume actor visibility
+          if (!comingFromVR) {
+            const allActors = viewport.getActors();
+            allActors.forEach((actorEntry: any) => {
+              if (actorEntry.actor && typeof actorEntry.actor.setVisibility === 'function') {
+                actorEntry.actor.setVisibility(true);
+                console.log(`  👁️ Restored volume actor visibility in ${id}`);
+              }
+            });
           }
 
-          viewport.render();
+          // Only restore camera if we have a saved state (from CPR mode)
+          const savedCamera = originalCameraStatesRef.current[id];
+          if (savedCamera && !comingFromVR) {
+            console.log(`📷 Restoring camera for ${id} (from CPR mode)`);
+            viewport.setCamera(savedCamera);
+            viewport.render();
+          }
         }
       });
 
@@ -1770,7 +2044,10 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       // CRITICAL: Jump to valve/annulus point to trigger scroll synchronization
       // This ensures all viewports are correctly aligned when switching back to MPR
-      if (centerlineDataRef.current) {
+      // SKIP this if coming from VR mode, since VR doesn't change camera orientation
+      if (comingFromVR) {
+        console.log('✅ Skipping camera reset - preserving orientation from VR mode');
+      } else if (centerlineDataRef.current) {
         const numCenterlinePoints = centerlineDataRef.current.position.length / 3;
 
         // Find the centerline point closest to the red sphere (aortic valve, index 1)
@@ -1990,6 +2267,19 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       originalCameraStatesRef.current = {};
 
       console.log('✅ MPR mode restored with camera states and annulus plane navigation');
+    } else if (renderMode === 'vr') {
+      console.log('🔄 Render mode changed to VR, setting up volume rendering with clipping...');
+
+      // VR mode: Show volume rendering in long axis views with clipping plane
+      // The axial slice position acts as the clipping plane
+      // Only volume BEHIND the slice (away from camera) is visible
+
+      if (currentVolumeRef.current) {
+        setTimeout(async () => {
+          await setupVRMode();
+          console.log('✅ VR mode setup complete');
+        }, 100);
+      }
     }
   }, [renderMode]);
 
@@ -2434,6 +2724,36 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         return;
       }
 
+      // Log centerline info for debugging perpendicular orientation
+      if (centerlineDataRef.current) {
+        const numPoints = centerlineDataRef.current.position.length / 3;
+        console.log('📊 CPR using centerline with', numPoints, 'points');
+
+        // Log first few points to verify it's the modified centerline
+        if (numPoints >= 3) {
+          const p0 = [
+            centerlineDataRef.current.position[0],
+            centerlineDataRef.current.position[1],
+            centerlineDataRef.current.position[2]
+          ];
+          const pMid = [
+            centerlineDataRef.current.position[Math.floor(numPoints/2) * 3],
+            centerlineDataRef.current.position[Math.floor(numPoints/2) * 3 + 1],
+            centerlineDataRef.current.position[Math.floor(numPoints/2) * 3 + 2]
+          ];
+          const pEnd = [
+            centerlineDataRef.current.position[(numPoints-1) * 3],
+            centerlineDataRef.current.position[(numPoints-1) * 3 + 1],
+            centerlineDataRef.current.position[(numPoints-1) * 3 + 2]
+          ];
+          console.log('  📍 Centerline points:', {
+            first: p0.map(v => v.toFixed(1)),
+            middle: pMid.map(v => v.toFixed(1)),
+            last: pEnd.map(v => v.toFixed(1))
+          });
+        }
+      }
+
       const renderingEngine = renderingEngineRef.current;
       if (!renderingEngine) {
         console.warn('⚠️ Rendering engine not available');
@@ -2620,6 +2940,809 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       console.error('❌ Failed to setup CPR actors:', error);
     } finally {
       isSettingUpCPRRef.current = false;
+    }
+  };
+
+  // Helper function to setup VR mode with 3D volume rendering and clipping planes
+  const setupVRMode = async () => {
+    console.log('🔄 Setting up VR mode with 3D volume rendering and clipping planes...');
+
+    if (!currentVolumeRef.current) {
+      console.warn('⚠️ Volume not available for VR setup');
+      return;
+    }
+
+    const renderingEngine = renderingEngineRef.current;
+    if (!renderingEngine) {
+      console.warn('⚠️ Rendering engine not available');
+      return;
+    }
+
+    try {
+      // VR mode: Use 3D volume rendering with clipping planes at sagittal and coronal slice positions
+      // This is like the VTK.js example: https://kitware.github.io/vtk-js/examples/VolumeRenderingWithPolyData.html
+
+      const volume = currentVolumeRef.current;
+      const scalarData = volume.voxelManager.getCompleteScalarDataArray();
+      const { dimensions, spacing, origin, direction } = volume;
+
+      // Convert Cornerstone volume to VTK ImageData
+      const imageData = vtkImageData.newInstance();
+      imageData.setDimensions(dimensions);
+      imageData.setSpacing(spacing);
+      imageData.setOrigin(origin);
+      imageData.setDirection(direction);
+
+      const dataArray = vtkDataArray.newInstance({
+        name: 'Pixels',
+        numberOfComponents: 1,
+        values: scalarData,
+      });
+      imageData.getPointData().setScalars(dataArray);
+
+      // Setup VR for sagittal and coronal viewports
+      const vrViewports = ['sagittal', 'coronal'];
+
+      for (const viewportId of vrViewports) {
+        const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
+        if (!viewport) {
+          console.warn(`⚠️ Viewport ${viewportId} not found`);
+          continue;
+        }
+
+        // Get current camera to preserve orientation
+        const camera = viewport.getCamera();
+        console.log(`📷 ${viewportId} camera:`, camera.focalPoint);
+
+        // Hide the original slice actor
+        const actors = viewport.getActors();
+        actors.forEach((actorEntry: any) => {
+          if (actorEntry.actor) {
+            actorEntry.actor.setVisibility(false);
+          }
+        });
+
+        // Create VTK volume mapper with clipping
+        const mapper = vtkVolumeMapper.newInstance();
+        mapper.setInputData(imageData);
+        mapper.setSampleDistance(1.1);
+
+        // Create color and opacity transfer functions
+        const ctfun = vtkColorTransferFunction.newInstance();
+        ctfun.addRGBPoint(-1000, 0.0, 0.0, 0.0);
+        ctfun.addRGBPoint(-500, 0.5, 0.1, 0.1);
+        ctfun.addRGBPoint(0, 1.0, 0.4, 0.3);
+        ctfun.addRGBPoint(150, 1.0, 0.7, 0.6);
+        ctfun.addRGBPoint(300, 1.0, 0.9, 0.8);
+        ctfun.addRGBPoint(1000, 1.0, 1.0, 1.0);
+
+        const ofun = vtkPiecewiseFunction.newInstance();
+        ofun.addPoint(-1000, 0.0);
+        ofun.addPoint(-500, 0.0);
+        ofun.addPoint(0, 0.3);
+        ofun.addPoint(150, 0.6);
+        ofun.addPoint(300, 0.9);
+        ofun.addPoint(1000, 1.0);
+
+        // Create volume actor
+        const volumeActor = vtkVolume.newInstance();
+        volumeActor.setMapper(mapper);
+
+        const property = volumeActor.getProperty();
+        property.setRGBTransferFunction(0, ctfun);
+        property.setScalarOpacity(0, ofun);
+        property.setInterpolationTypeToLinear();
+        property.setShade(false);
+
+        // Create clipping plane at the current slice position
+        const clipPlane = vtkPlane.newInstance();
+
+        // Get the view plane normal (perpendicular to the slice)
+        const viewPlaneNormal = camera.viewPlaneNormal || [0, 0, 1];
+
+        // IMPORTANT: Invert the normal direction to clip the correct side
+        // We want to show volume BEHIND the slice (away from camera), so invert the normal
+        const invertedNormal = [
+          -viewPlaneNormal[0],
+          -viewPlaneNormal[1],
+          -viewPlaneNormal[2]
+        ];
+
+        // Set plane normal (clip everything on one side)
+        clipPlane.setNormal(invertedNormal[0], invertedNormal[1], invertedNormal[2]);
+
+        // Set plane origin at the focal point (current slice position)
+        clipPlane.setOrigin(camera.focalPoint[0], camera.focalPoint[1], camera.focalPoint[2]);
+
+        // Add clipping plane to mapper
+        mapper.addClippingPlane(clipPlane);
+
+        console.log(`✅ Added clipping plane for ${viewportId}:`, {
+          normal: invertedNormal,
+          origin: camera.focalPoint
+        });
+
+        // IMPORTANT: We need to add the volume actor in a way that it doesn't inherit camera transformations
+        // The volume should stay fixed in world space, and only the clipping plane should move
+
+        // Try to get the VTK renderer from the viewport
+        const scene = (viewport as any).getScene?.();
+        const vtkRenderer = scene?.getRenderer?.();
+
+        if (vtkRenderer) {
+          // Add volume actor directly to VTK renderer (bypassing Cornerstone actor management)
+          vtkRenderer.addVolume(volumeActor);
+          console.log(`  📦 Added volume directly to VTK renderer for ${viewportId}`);
+        } else {
+          // Fallback: Add through Cornerstone (but this will inherit camera transformations)
+          const actorUID = `vrActor_${viewportId}`;
+          viewport.addActor({ uid: actorUID, actor: volumeActor });
+          console.warn(`  ⚠️ Could not access VTK renderer, using Cornerstone addActor for ${viewportId}`);
+        }
+
+        // Store reference for cleanup
+        cprActorsRef.current.push({
+          actor: volumeActor,
+          mapper: mapper,
+          viewportId,
+          config: {
+            mode: 'vr',
+            clipPlane: clipPlane,
+            originalActorsHidden: true,
+            usedVtkRenderer: !!vtkRenderer // Track which method we used
+          }
+        });
+
+        viewport.render();
+      }
+
+      // Render viewports
+      renderingEngine.renderViewports(vrViewports);
+
+      // Add event listeners to update clipping planes when camera changes (rotation, pan, etc.)
+      vrViewports.forEach(viewportId => {
+        const viewport = renderingEngine.getViewport(viewportId);
+        if (viewport) {
+          const element = viewport.element;
+
+          const updateClippingPlane = () => {
+            // Find the VR actor for this viewport
+            const vrActorData = cprActorsRef.current.find(a => a.viewportId === viewportId && a.config.mode === 'vr');
+            if (vrActorData && vrActorData.config.clipPlane) {
+              const camera = viewport.getCamera();
+              const viewPlaneNormal = camera.viewPlaneNormal || [0, 0, 1];
+              const focalPoint = camera.focalPoint;
+
+              // Invert the normal to clip the correct side (show volume behind slice)
+              const invertedNormal = [
+                -viewPlaneNormal[0],
+                -viewPlaneNormal[1],
+                -viewPlaneNormal[2]
+              ];
+
+              // Update clipping plane to match current camera orientation
+              vrActorData.config.clipPlane.setNormal(invertedNormal[0], invertedNormal[1], invertedNormal[2]);
+              vrActorData.config.clipPlane.setOrigin(focalPoint[0], focalPoint[1], focalPoint[2]);
+
+              // Trigger re-render
+              viewport.render();
+            }
+          };
+
+          // Listen for camera modified events
+          element.addEventListener('cornerstonecameramodified', updateClippingPlane);
+
+          // Store cleanup function
+          if (!vrActorData) {
+            cprActorsRef.current.forEach(actorData => {
+              if (actorData.viewportId === viewportId && actorData.config.mode === 'vr') {
+                actorData.config.cleanupListener = () => {
+                  element.removeEventListener('cornerstonecameramodified', updateClippingPlane);
+                };
+              }
+            });
+          }
+        }
+      });
+
+      console.log('✅ VR mode setup complete with clipping planes and camera listeners');
+    } catch (error) {
+      console.error('❌ Failed to setup VR mode:', error);
+    }
+  };
+
+  // Effect to handle valve visibility toggle
+  useEffect(() => {
+    if (valveVisible && cuspDotsRef.current && cuspDotsRef.current.length === 3) {
+      loadAndDisplayValve();
+    } else if (!valveVisible && valveActorsRef.current.length > 0) {
+      removeValve();
+    }
+  }, [valveVisible]);
+
+  // Effect to update valve when manual rotation changes
+  useEffect(() => {
+    if (valveVisible && cuspDotsRef.current && cuspDotsRef.current.length === 3) {
+      loadAndDisplayValve();
+    }
+  }, [valveRotation]);
+
+  // Effect to update valve clipping when camera changes
+  useEffect(() => {
+    const renderingEngine = renderingEngineRef.current;
+    if (!renderingEngine || !valveVisible) return;
+
+    const handleCameraModified = () => {
+      updateValveClipping();
+    };
+
+    const viewportIds = ['axial', 'sagittal', 'coronal'];
+    const elements: HTMLDivElement[] = [];
+
+    viewportIds.forEach(id => {
+      const viewport = renderingEngine.getViewport(id);
+      if (viewport) {
+        const element = viewport.element;
+        element.addEventListener(Enums.Events.CAMERA_MODIFIED, handleCameraModified);
+        elements.push(element);
+      }
+    });
+
+    return () => {
+      elements.forEach(element => {
+        element.removeEventListener(Enums.Events.CAMERA_MODIFIED, handleCameraModified);
+      });
+    };
+  }, [valveVisible, renderMode]);
+
+  // Helper function to update valve clipping planes based on current camera position
+  const updateValveClipping = () => {
+    const renderingEngine = renderingEngineRef.current;
+    if (!renderingEngine || valveActorsRef.current.length === 0) return;
+
+    valveActorsRef.current.forEach(({ mapper, viewportId }) => {
+      const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
+      if (!viewport) return;
+
+      const camera = viewport.getCamera();
+      const viewPlaneNormal = camera.viewPlaneNormal || [0, 0, 1];
+      const focalPoint = camera.focalPoint;
+
+      // Clear existing clipping planes
+      mapper.removeAllClippingPlanes();
+
+      // Add updated clipping plane at current slice position
+      if (renderMode === 'mpr' || renderMode === 'cpr') {
+        const clipPlane = vtkPlane.newInstance();
+        // Normal pointing towards camera - clips what's in front, shows what's behind
+        clipPlane.setNormal(viewPlaneNormal[0], viewPlaneNormal[1], viewPlaneNormal[2]);
+        clipPlane.setOrigin(focalPoint[0], focalPoint[1], focalPoint[2]);
+        mapper.addClippingPlane(clipPlane);
+      }
+    });
+
+    renderingEngine.renderViewports(['axial', 'sagittal', 'coronal']);
+  };
+
+  // Helper function to remove the valve
+  const removeValve = () => {
+    console.log('🗑️ Removing virtual valve...');
+
+    const renderingEngine = renderingEngineRef.current;
+    if (!renderingEngine) return;
+
+    valveActorsRef.current.forEach(({ viewportId }) => {
+      const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
+      if (viewport) {
+        const actorUID = `valveActor_${viewportId}`;
+        const arrowUID = `centerlineArrow_${viewportId}`;
+        viewport.removeActors([actorUID, arrowUID]);
+      }
+    });
+
+    valveActorsRef.current = [];
+    renderingEngine.renderViewports(['axial', 'sagittal', 'coronal']);
+    console.log('✅ Valve and centerline arrow removed');
+  };
+
+  // Helper function to load and display the virtual valve STL model
+  const loadAndDisplayValve = async () => {
+    console.log('🔄 Loading virtual valve STL model...');
+
+    if (!cuspDotsRef.current || cuspDotsRef.current.length < 3) {
+      console.warn('⚠️ Need 3 cusp points to position valve');
+      return;
+    }
+
+    const renderingEngine = renderingEngineRef.current;
+    if (!renderingEngine) {
+      console.warn('⚠️ Rendering engine not available');
+      return;
+    }
+
+    // Remove existing valve actors first if any
+    if (valveActorsRef.current.length > 0) {
+      console.log('🔄 Removing existing valve before loading new one...');
+      removeValve();
+    }
+
+    try {
+      // Load STL file
+      const reader = vtkSTLReader.newInstance();
+      const response = await fetch(valveSTLPath);
+      const arrayBuffer = await response.arrayBuffer();
+      reader.parseAsArrayBuffer(arrayBuffer);
+
+      // Get the polydata and check bounds
+      let polyData = reader.getOutputData();
+      const originalBounds = polyData.getBounds();
+      const valveHeight = originalBounds[5] - originalBounds[4]; // Z extent
+      console.log('📏 Original valve STL bounds:', {
+        x: [originalBounds[0], originalBounds[1]],
+        y: [originalBounds[2], originalBounds[3]],
+        z: [originalBounds[4], originalBounds[5]],
+        size: {
+          x: originalBounds[1] - originalBounds[0],
+          y: originalBounds[3] - originalBounds[2],
+          z: valveHeight
+        }
+      });
+
+      // Get annulus center from annular plane (calculated from cusp dots)
+      let annulusCenter: Types.Point3;
+
+      if (annularPlane?.center) {
+        // Use pre-calculated annular plane center
+        annulusCenter = annularPlane.center;
+      } else {
+        // Fallback: calculate from cusp dots directly
+        const cuspDots = cuspDotsRef.current;
+        if (cuspDots && cuspDots.length === 3) {
+          // Check if dots have world property (from annotation)
+          if (cuspDots[0].world) {
+            annulusCenter = [
+              (cuspDots[0].world[0] + cuspDots[1].world[0] + cuspDots[2].world[0]) / 3,
+              (cuspDots[0].world[1] + cuspDots[1].world[1] + cuspDots[2].world[1]) / 3,
+              (cuspDots[0].world[2] + cuspDots[1].world[2] + cuspDots[2].world[2]) / 3,
+            ] as Types.Point3;
+          } else {
+            console.warn('⚠️ Cannot determine annulus center - no annularPlane or valid cusp dots');
+            return;
+          }
+        } else {
+          console.warn('⚠️ Cannot determine annulus center');
+          return;
+        }
+      }
+
+      console.log(`✅ Valve positioned at annulus center:`, annulusCenter);
+
+      // Calculate transformation matrix to position and orient valve
+      // CRITICAL: The valve's bottom (Z=0) should sit on the annular plane
+      // The valve's longitudinal axis should extend along the centerline (annular plane normal)
+      let userMatrix: number[] | null = null;
+      let arrowActor: any = null; // For visualizing centerline direction
+      let xAxisArrow: any = null; // Red arrow for valve X-axis
+      let yAxisArrow: any = null; // Yellow arrow for valve Y-axis
+      let zAxisArrow: any = null; // Blue arrow for valve Z-axis
+
+      // Calculate TRUE perpendicular from 3 cusp dots, not from workflow state
+      const cuspDots = cuspDotsRef.current;
+      console.log(`🔍 Checking cusp dots:`, cuspDots);
+
+      if (cuspDots && cuspDots.length === 3) {
+        // Get the three cusp points - they might be direct coordinates or have .world property
+        let p1, p2, p3;
+
+        if (cuspDots[0].pos) {
+          // Format: { id, pos: [x, y, z], color, cuspType }
+          p1 = cuspDots[0].pos;
+          p2 = cuspDots[1].pos;
+          p3 = cuspDots[2].pos;
+          console.log(`✅ Found cusp dots in 'pos' property format`);
+        } else if (cuspDots[0].world) {
+          // Format: { world: [x, y, z] }
+          p1 = cuspDots[0].world;
+          p2 = cuspDots[1].world;
+          p3 = cuspDots[2].world;
+          console.log(`✅ Found cusp dots in 'world' property format`);
+        } else if (Array.isArray(cuspDots[0])) {
+          // Format: [[x, y, z], [x, y, z], [x, y, z]]
+          p1 = cuspDots[0];
+          p2 = cuspDots[1];
+          p3 = cuspDots[2];
+          console.log(`✅ Found cusp dots in array format`);
+        } else if (cuspDots[0].x !== undefined) {
+          // Format: { x, y, z }
+          p1 = [cuspDots[0].x, cuspDots[0].y, cuspDots[0].z];
+          p2 = [cuspDots[1].x, cuspDots[1].y, cuspDots[1].z];
+          p3 = [cuspDots[2].x, cuspDots[2].y, cuspDots[2].z];
+          console.log(`✅ Found cusp dots in {x,y,z} format`);
+        } else {
+          console.warn('⚠️ Unknown cusp dot format:', cuspDots[0]);
+          p1 = p2 = p3 = null;
+        }
+
+        if (p1 && p2 && p3) {
+
+        // Calculate two vectors in the annular plane
+        const v1 = [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]];
+        const v2 = [p3[0] - p1[0], p3[1] - p1[1], p3[2] - p1[2]];
+
+        // Cross product gives perpendicular to annular plane
+        let normal = [
+          v1[1] * v2[2] - v1[2] * v2[1],
+          v1[2] * v2[0] - v1[0] * v2[2],
+          v1[0] * v2[1] - v1[1] * v2[0]
+        ];
+
+        console.log(`📐 Cusp dots:`, [p1, p2, p3]);
+        console.log(`📐 Vectors in plane: v1=`, v1, ` v2=`, v2);
+        console.log(`📐 Raw cross product normal:`, normal);
+
+        // Normalize the perpendicular direction
+        const length = Math.sqrt(normal[0]**2 + normal[1]**2 + normal[2]**2);
+        let normalizedNormal = [normal[0]/length, normal[1]/length, normal[2]/length];
+
+        // Ensure the normal points "upward" (positive superior direction)
+        // Check the Z component - if it's negative, flip the normal
+        // In patient coords, superior (head) is usually positive Z
+        if (normalizedNormal[2] < 0) {
+          console.log(`⚠️ Normal pointing downward (Z=${normalizedNormal[2].toFixed(3)}), flipping...`);
+          normalizedNormal = [-normalizedNormal[0], -normalizedNormal[1], -normalizedNormal[2]];
+        }
+
+        console.log(`📐 Final normalized normal (should point upward into aorta):`, normalizedNormal);
+
+        // Create an orthonormal basis aligned with the target direction
+        // Map valve STL's Z-axis (BLUE arrow) to centerline direction
+        const targetZ = normalizedNormal;
+
+        // Find perpendicular vectors
+        let tempVec = [0, 1, 0];
+        if (Math.abs(targetZ[1]) > 0.9) {
+          tempVec = [0, 0, 1];
+        }
+
+        // X-axis: cross product
+        let targetX_temp = [
+          targetZ[1] * tempVec[2] - targetZ[2] * tempVec[1],
+          targetZ[2] * tempVec[0] - targetZ[0] * tempVec[2],
+          targetZ[0] * tempVec[1] - targetZ[1] * tempVec[0]
+        ];
+        const xLength = Math.sqrt(targetX_temp[0]**2 + targetX_temp[1]**2 + targetX_temp[2]**2);
+        targetX_temp = [targetX_temp[0]/xLength, targetX_temp[1]/xLength, targetX_temp[2]/xLength];
+
+        // Y-axis: cross product
+        const targetY = [
+          targetZ[1] * targetX_temp[2] - targetZ[2] * targetX_temp[1],
+          targetZ[2] * targetX_temp[0] - targetZ[0] * targetX_temp[2],
+          targetZ[0] * targetX_temp[1] - targetZ[1] * targetX_temp[0]
+        ];
+
+        const targetX = targetX_temp;
+
+        // Build 4x4 transformation matrix with BOTH rotation AND translation
+        // IMPORTANT: Map valve's Z-axis (longitudinal) to centerline
+        // Z bounds: originalBounds[4] to originalBounds[5]
+
+        // Place the BASE center at annulus center
+        // Base is at minimum Z (bottom of valve in STL coordinates)
+        const valveBaseZ = originalBounds[4]; // MINIMUM Z (base)
+        const valveCenterX = (originalBounds[0] + originalBounds[1]) / 2;
+        const valveCenterY = (originalBounds[2] + originalBounds[3]) / 2;
+        const valveCenterZ = (originalBounds[4] + originalBounds[5]) / 2;
+
+        // Apply manual rotation (no automatic flip needed with Z-axis mapping)
+        let finalX = [...targetX];
+        let finalY = [...targetY];
+        let finalZ = [...targetZ];
+
+        // Only manual rotation, no automatic flip
+        const totalRotationX = valveRotation.x;
+        const totalRotationY = valveRotation.y;
+        const totalRotationZ = valveRotation.z;
+
+        if (totalRotationX !== 0 || totalRotationY !== 0 || totalRotationZ !== 0) {
+          // Convert degrees to radians
+          const rx = totalRotationX * Math.PI / 180;
+          const ry = totalRotationY * Math.PI / 180;
+          const rz = totalRotationZ * Math.PI / 180;
+
+          // Create rotation matrices
+          const cosX = Math.cos(rx), sinX = Math.sin(rx);
+          const cosY = Math.cos(ry), sinY = Math.sin(ry);
+          const cosZ = Math.cos(rz), sinZ = Math.sin(rz);
+
+          // Rotation around X-axis (red slider)
+          const Rx = [
+            [1, 0, 0],
+            [0, cosX, -sinX],
+            [0, sinX, cosX]
+          ];
+
+          // Rotation around Y-axis (green slider)
+          const Ry = [
+            [cosY, 0, sinY],
+            [0, 1, 0],
+            [-sinY, 0, cosY]
+          ];
+
+          // Rotation around Z-axis (blue slider)
+          const Rz = [
+            [cosZ, -sinZ, 0],
+            [sinZ, cosZ, 0],
+            [0, 0, 1]
+          ];
+
+          // Compose rotations: R = Rz * Ry * Rx (apply X, then Y, then Z)
+          const multiplyMatrices = (A: number[][], B: number[][]) => {
+            const result = [[0,0,0], [0,0,0], [0,0,0]];
+            for (let i = 0; i < 3; i++) {
+              for (let j = 0; j < 3; j++) {
+                result[i][j] = A[i][0] * B[0][j] + A[i][1] * B[1][j] + A[i][2] * B[2][j];
+              }
+            }
+            return result;
+          };
+
+          const R = multiplyMatrices(Rz, multiplyMatrices(Ry, Rx));
+
+          // Apply manual rotation to the basis vectors
+          const rotateVector = (v: number[]) => [
+            R[0][0] * v[0] + R[0][1] * v[1] + R[0][2] * v[2],
+            R[1][0] * v[0] + R[1][1] * v[1] + R[1][2] * v[2],
+            R[2][0] * v[0] + R[2][1] * v[1] + R[2][2] * v[2]
+          ];
+
+          finalX = rotateVector(targetX);
+          finalY = rotateVector(targetY);
+          finalZ = rotateVector(targetZ);
+        }
+
+        // Place the BASE center at annulus center
+        // The base is at valveBaseZ (max Z after flip), centered in X-Y
+        const baseCenterInSTL = [valveCenterX, valveCenterY, valveBaseZ];
+
+        // After rotation, where does the base center end up?
+        const rotatedBaseCenter = [
+          finalX[0] * baseCenterInSTL[0] + finalY[0] * baseCenterInSTL[1] + finalZ[0] * baseCenterInSTL[2],
+          finalX[1] * baseCenterInSTL[0] + finalY[1] * baseCenterInSTL[1] + finalZ[1] * baseCenterInSTL[2],
+          finalX[2] * baseCenterInSTL[0] + finalY[2] * baseCenterInSTL[1] + finalZ[2] * baseCenterInSTL[2]
+        ];
+
+        // The base center should be at annulus center
+        // Translation = desired position - rotated position
+        const translation = [
+          annulusCenter[0] - rotatedBaseCenter[0],
+          annulusCenter[1] - rotatedBaseCenter[1],
+          annulusCenter[2] - rotatedBaseCenter[2]
+        ];
+
+        // VTK uses COLUMN-MAJOR format (transposed from typical row-major)
+        // Column 0: X-axis, Column 1: Y-axis, Column 2: Z-axis, Column 3: Translation
+        userMatrix = [
+          finalX[0], finalY[0], finalZ[0], 0,
+          finalX[1], finalY[1], finalZ[1], 0,
+          finalX[2], finalY[2], finalZ[2], 0,
+          translation[0], translation[1], translation[2], 1
+        ];
+
+        console.log(`📐 Transform: valve BASE CENTER at annulus center, Z-axis aligned with centerline`);
+        console.log(`   Manual rotation: X=${valveRotation.x}° Y=${valveRotation.y}° Z=${valveRotation.z}°`);
+        console.log(`   Valve dimensions: X=${(originalBounds[1]-originalBounds[0]).toFixed(1)} Y=${(originalBounds[3]-originalBounds[2]).toFixed(1)} Z=${(originalBounds[5]-originalBounds[4]).toFixed(1)}mm`);
+        console.log(`   Base center in STL: [${valveCenterX.toFixed(2)}, ${valveCenterY.toFixed(2)}, ${valveBaseZ.toFixed(2)}]`);
+        console.log(`   Rotated base center in world: [${rotatedBaseCenter[0].toFixed(2)}, ${rotatedBaseCenter[1].toFixed(2)}, ${rotatedBaseCenter[2].toFixed(2)}]`);
+        console.log(`   Target X-axis (RED): [${targetX.map(v => v.toFixed(3)).join(', ')}]`);
+        console.log(`   Target Y-axis (YELLOW): [${targetY.map(v => v.toFixed(3)).join(', ')}]`);
+        console.log(`   Target Z-axis (BLUE): [${targetZ.map(v => v.toFixed(3)).join(', ')}] -> centerline (INVERTED)`);
+        console.log(`   Translation: [${translation[0].toFixed(2)}, ${translation[1].toFixed(2)}, ${translation[2].toFixed(2)}]`);
+        console.log(`   Annulus center: [${annulusCenter[0].toFixed(2)}, ${annulusCenter[1].toFixed(2)}, ${annulusCenter[2].toFixed(2)}]`);
+
+        // Create GREEN arrow showing the centerline direction (annular plane normal)
+        const centerlineArrowLength = 80; // 80mm long
+        const centerlineArrowSource = vtkArrowSource.newInstance({
+          tipResolution: 20,
+          shaftResolution: 20,
+          tipRadius: 0.1,
+          tipLength: 0.2,
+          shaftRadius: 0.05
+        });
+
+        const centerlineArrowMapper = vtkMapper.newInstance();
+        centerlineArrowMapper.setInputConnection(centerlineArrowSource.getOutputPort());
+
+        arrowActor = vtkActor.newInstance();
+        arrowActor.setMapper(centerlineArrowMapper);
+        arrowActor.getProperty().setColor(0.0, 1.0, 0.0); // BRIGHT GREEN
+        arrowActor.getProperty().setOpacity(1.0);
+        arrowActor.getProperty().setLighting(false);
+
+        // Position arrow at annulus center, pointing along centerline
+        arrowActor.setPosition(annulusCenter[0], annulusCenter[1], annulusCenter[2]);
+        arrowActor.setScale(centerlineArrowLength, centerlineArrowLength, centerlineArrowLength);
+
+        // Orient arrow along centerline direction
+        const arrowDirection = [1, 0, 0];
+        const rotationAxis = [
+          arrowDirection[1] * normalizedNormal[2] - arrowDirection[2] * normalizedNormal[1],
+          arrowDirection[2] * normalizedNormal[0] - arrowDirection[0] * normalizedNormal[2],
+          arrowDirection[0] * normalizedNormal[1] - arrowDirection[1] * normalizedNormal[0]
+        ];
+        const axisLength = Math.sqrt(rotationAxis[0]**2 + rotationAxis[1]**2 + rotationAxis[2]**2);
+
+        if (axisLength > 0.001) {
+          const dotProduct = arrowDirection[0] * normalizedNormal[0] + arrowDirection[1] * normalizedNormal[1] + arrowDirection[2] * normalizedNormal[2];
+          const angle = Math.acos(Math.max(-1, Math.min(1, dotProduct))) * (180 / Math.PI);
+          const normalizedAxis = [rotationAxis[0]/axisLength, rotationAxis[1]/axisLength, rotationAxis[2]/axisLength];
+          arrowActor.rotateWXYZ(angle, normalizedAxis[0], normalizedAxis[1], normalizedAxis[2]);
+        }
+
+        console.log(`🎯 Added GREEN arrow showing centerline direction`);
+
+        // NOW add THREE RGB arrows showing valve's local X, Y, Z axes
+        const axisArrowLength = 50; // 50mm long (shorter than centerline)
+
+        // Helper function to create an arrow
+        const createAxisArrow = (direction: number[], color: [number, number, number]) => {
+          const source = vtkArrowSource.newInstance({
+            tipResolution: 20,
+            shaftResolution: 20,
+            tipRadius: 0.08,
+            tipLength: 0.25,
+            shaftRadius: 0.03
+          });
+
+          const mapper = vtkMapper.newInstance();
+          mapper.setInputConnection(source.getOutputPort());
+
+          const actor = vtkActor.newInstance();
+          actor.setMapper(mapper);
+          actor.getProperty().setColor(color[0], color[1], color[2]);
+          actor.getProperty().setOpacity(0.9);
+          actor.getProperty().setLighting(false);
+
+          actor.setPosition(annulusCenter[0], annulusCenter[1], annulusCenter[2]);
+          actor.setScale(axisArrowLength, axisArrowLength, axisArrowLength);
+
+          // Orient arrow
+          const defaultDir = [1, 0, 0];
+          const rotAxis = [
+            defaultDir[1] * direction[2] - defaultDir[2] * direction[1],
+            defaultDir[2] * direction[0] - defaultDir[0] * direction[2],
+            defaultDir[0] * direction[1] - defaultDir[1] * direction[0]
+          ];
+          const axLen = Math.sqrt(rotAxis[0]**2 + rotAxis[1]**2 + rotAxis[2]**2);
+
+          if (axLen > 0.001) {
+            const dot = defaultDir[0] * direction[0] + defaultDir[1] * direction[1] + defaultDir[2] * direction[2];
+            const ang = Math.acos(Math.max(-1, Math.min(1, dot))) * (180 / Math.PI);
+            const normAxis = [rotAxis[0]/axLen, rotAxis[1]/axLen, rotAxis[2]/axLen];
+            actor.rotateWXYZ(ang, normAxis[0], normAxis[1], normAxis[2]);
+          }
+
+          return actor;
+        };
+
+        // Create three valve axis arrows (assign to outer scope variables)
+        xAxisArrow = createAxisArrow(finalX, [1.0, 0.0, 0.0]); // RED for X
+        yAxisArrow = createAxisArrow(finalY, [1.0, 1.0, 0.0]); // YELLOW for Y (not green - that's centerline)
+        zAxisArrow = createAxisArrow(finalZ, [0.0, 0.0, 1.0]); // BLUE for Z
+
+        console.log(`🎯 Added RGB valve axes: RED=X, YELLOW=Y, BLUE=Z`);
+        console.log(`   Valve X-axis (RED): [${finalX.map(v => v.toFixed(3)).join(', ')}]`);
+        console.log(`   Valve Y-axis (YELLOW): [${finalY.map(v => v.toFixed(3)).join(', ')}]`);
+        console.log(`   Valve Z-axis (BLUE): [${finalZ.map(v => v.toFixed(3)).join(', ')}]`);
+        } else {
+          console.warn('⚠️ Could not extract cusp dot coordinates');
+        }
+      } else {
+        console.warn('⚠️ No cusp dots available (need 3 cusp dots for valve orientation)');
+      }
+
+      // Add valve to all viewports with appropriate clipping
+      const viewportIds = ['axial', 'sagittal', 'coronal'];
+
+      for (const viewportId of viewportIds) {
+        const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
+        if (!viewport) continue;
+
+        // Create a separate mapper for each viewport (needed for independent clipping planes)
+        const viewportMapper = vtkMapper.newInstance();
+        viewportMapper.setInputConnection(reader.getOutputPort());
+
+        // Create actor for this viewport
+        const viewportActor = vtkActor.newInstance();
+        viewportActor.setMapper(viewportMapper);
+        viewportActor.getProperty().setColor(1.0, 0.0, 0.0); // BRIGHT RED
+        viewportActor.getProperty().setOpacity(1.0); // Fully opaque
+        viewportActor.getProperty().setAmbient(0.6);
+        viewportActor.getProperty().setDiffuse(0.8);
+        viewportActor.getProperty().setSpecular(0.3);
+
+        // Apply transformation matrix (rotation + translation combined)
+        // This positions valve base at annulus and aligns it with centerline
+        if (userMatrix) {
+          viewportActor.setUserMatrix(userMatrix);
+          console.log(`  🔄 ${viewportId}: Applied transform - base at annulus, aligned with centerline`);
+        } else {
+          // Fallback: just position at annulus center without rotation
+          viewportActor.setPosition(annulusCenter[0], annulusCenter[1], annulusCenter[2]);
+          console.log(`  🔄 ${viewportId}: Default position (no annular plane available)`);
+        }
+
+        // Add clipping planes for MPR/VR modes
+        const camera = viewport.getCamera();
+        const viewPlaneNormal = camera.viewPlaneNormal || [0, 0, 1];
+        const focalPoint = camera.focalPoint;
+
+        // Calculate distance from focal point to valve center
+        const distanceToValve = Math.sqrt(
+          Math.pow(focalPoint[0] - annulusCenter[0], 2) +
+          Math.pow(focalPoint[1] - annulusCenter[1], 2) +
+          Math.pow(focalPoint[2] - annulusCenter[2], 2)
+        );
+        console.log(`  📍 ${viewportId} focal point distance to valve: ${distanceToValve.toFixed(2)}mm`);
+
+        // TEMPORARILY DISABLED: Add clipping plane to show only the cross-section at the current slice
+        // This is disabled for debugging - enable once positioning is correct
+        /*
+        if (renderMode === 'mpr' || renderMode === 'cpr') {
+          // MPR/CPR mode: Clip what's in front, show what's behind
+          const clipPlane = vtkPlane.newInstance();
+          // Normal pointing towards camera - clips in front, shows behind
+          clipPlane.setNormal(viewPlaneNormal[0], viewPlaneNormal[1], viewPlaneNormal[2]);
+          // Plane positioned at current slice (focal point)
+          clipPlane.setOrigin(focalPoint[0], focalPoint[1], focalPoint[2]);
+          viewportMapper.addClippingPlane(clipPlane);
+          console.log(`  ✂️ Added clipping: showing valve behind slice`);
+        } else if (renderMode === 'vr') {
+          // VR mode: Same clipping approach
+          const clipPlane = vtkPlane.newInstance();
+          clipPlane.setNormal(viewPlaneNormal[0], viewPlaneNormal[1], viewPlaneNormal[2]);
+          clipPlane.setOrigin(focalPoint[0], focalPoint[1], focalPoint[2]);
+          viewportMapper.addClippingPlane(clipPlane);
+          console.log(`  ✂️ Added half-volume clipping for ${viewportId} (VR mode)`);
+        }
+        */
+        console.log(`  ℹ️ Clipping disabled for debugging - full valve visible`);
+
+        // Add valve actor to viewport
+        const actorUID = `valveActor_${viewportId}`;
+        viewport.addActor({ uid: actorUID, actor: viewportActor });
+
+        // Add centerline direction arrow to viewport (GREEN - shows annular plane normal)
+        if (arrowActor) {
+          const arrowUID = `centerlineArrow_${viewportId}`;
+          viewport.addActor({ uid: arrowUID, actor: arrowActor });
+        }
+
+        // Add valve axis arrows to viewport (RED, YELLOW, BLUE - show valve's X, Y, Z)
+        if (xAxisArrow) {
+          viewport.addActor({ uid: `valveXAxis_${viewportId}`, actor: xAxisArrow });
+        }
+        if (yAxisArrow) {
+          viewport.addActor({ uid: `valveYAxis_${viewportId}`, actor: yAxisArrow });
+        }
+        if (zAxisArrow) {
+          viewport.addActor({ uid: `valveZAxis_${viewportId}`, actor: zAxisArrow });
+        }
+
+        // Store reference for cleanup and updates
+        valveActorsRef.current.push({
+          actor: viewportActor,
+          mapper: viewportMapper,
+          viewportId: viewportId,
+          clipPlane: null // Clipping planes are managed by mapper now
+        });
+      }
+
+      // Render all viewports
+      renderingEngine.renderViewports(viewportIds);
+
+      console.log('✅ Virtual valve loaded with clipping + arrows (GREEN=centerline, RED/YELLOW/BLUE=valve XYZ)');
+    } catch (error) {
+      console.error('❌ Failed to load valve model:', error);
     }
   };
 
@@ -4345,8 +5468,14 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
     console.log('✅ Centerline regenerated with projected valve');
 
-    // IMPORTANT: Project annulus center onto centerline to get accurate focal point
-    // This ensures proper alignment and avoids camera orientation issues
+    // CRITICAL: Use annulus center (centroid) DIRECTLY as focal point
+    // Do NOT project onto the OLD centerline - the modified perpendicular centerline
+    // will arrive soon and correct the exact position via the useEffect
+    // Using centroid directly ensures all 3 cusp dots are visible initially
+    const newFocalPoint: Types.Point3 = annulusCenter;
+
+    // BUT: We still need to find the closest centerline index to update currentCenterlineIndexRef
+    // Otherwise scrolling won't work correctly
     const centerlineData = centerlineDataRef.current;
     if (!centerlineData) {
       console.error('❌ No centerline data available');
@@ -4371,27 +5500,15 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       }
     }
 
-    // Get the closest centerline point as the focal point
-    const newFocalPoint: Types.Point3 = [
-      centerlineData.position[closestIndex * 3],
-      centerlineData.position[closestIndex * 3 + 1],
-      centerlineData.position[closestIndex * 3 + 2]
-    ];
+    console.log('📍 Using annulus center (centroid) directly as initial focal point:', newFocalPoint);
+    console.log('📍 Closest OLD centerline index (will be corrected by modified centerline):', closestIndex);
+    console.log('📏 Distance from centroid to OLD centerline:', minDist.toFixed(2), 'mm');
+    console.log('   (Modified perpendicular centerline will correct this position shortly)');
+    console.log('📐 Plane normal for camera orientation:', planeNormal);
 
-    console.log('📍 Annulus center (centroid):', annulusCenter);
-    console.log('📍 Closest centerline point (focal point):', newFocalPoint);
-    console.log('📍 Closest centerline index:', closestIndex);
-    console.log('📏 Distance from centroid to centerline:', minDist.toFixed(2), 'mm');
-
-    // Get the centerline tangent at this point (CRITICAL: use tangent, not plane normal!)
-    const tangent = getCenterlineTangentAtIndex(closestIndex);
-    if (!tangent) {
-      console.error('❌ Failed to get centerline tangent at index', closestIndex);
-      return;
-    }
-
-    console.log('📐 Centerline tangent at annulus:', tangent);
-    console.log('📐 Plane normal:', planeNormal);
+    // Update the centerline index ref to approximately the annulus position
+    currentCenterlineIndexRef.current = closestIndex;
+    lockedFocalPointRef.current = newFocalPoint;
 
     // Position axial camera perpendicular to the annular plane
     const axialVp = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
@@ -7163,15 +8280,96 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     autoScrollRenderCompleteRef.current = false;
     console.log(`   🚧 Auto-scroll renders starting - tool activation will wait`);
 
-    // The annular plane normal points from LV towards ascending aorta
-    // Positive offset = move UP (towards ascending aorta) = opposite to normal
-    // Negative offset = move DOWN (towards LV outflow) = along the normal
-    // So we NEGATE the offset to get correct direction
-    const targetPosition: [number, number, number] = [
-      annularPlane.center[0] - (annularPlane.normal[0] * offsetMm),
-      annularPlane.center[1] - (annularPlane.normal[1] * offsetMm),
-      annularPlane.center[2] - (annularPlane.normal[2] * offsetMm)
-    ];
+    // CRITICAL: Find annulus plane index from modified centerline
+    // Then calculate target index based on arc length along the centerline
+    let annulusPlaneIndex = 0;
+    if (centerlineDataRef.current?.modifiedCenterline && Array.isArray(centerlineDataRef.current.modifiedCenterline)) {
+      const foundIndex = centerlineDataRef.current.modifiedCenterline.findIndex((p: any) => p.isAnnulusPlane === true);
+      if (foundIndex >= 0) {
+        annulusPlaneIndex = foundIndex;
+        console.log(`   📍 Found annulus plane at centerline index ${annulusPlaneIndex}`);
+      } else {
+        // Fallback: find nearest to annular plane center
+        annulusPlaneIndex = findNearestCenterlineIndex(annularPlane.center as Types.Point3);
+        console.log(`   ⚠️ No annulus plane marker, using nearest index ${annulusPlaneIndex}`);
+      }
+    } else {
+      // Fallback: find nearest to annular plane center
+      annulusPlaneIndex = findNearestCenterlineIndex(annularPlane.center as Types.Point3);
+      console.log(`   ⚠️ No modified centerline, using nearest index ${annulusPlaneIndex}`);
+    }
+
+    // Calculate target index by walking along centerline from annulus
+    // Positive offset = move UP (towards ascending aorta, higher indices)
+    // Negative offset = move DOWN (towards LV, lower indices)
+    const numCenterlinePoints = centerlineDataRef.current!.position.length / 3;
+    let targetIndex = annulusPlaneIndex;
+    let accumulatedDistance = 0;
+
+    if (offsetMm > 0) {
+      // Move towards ascending aorta (higher indices)
+      for (let i = annulusPlaneIndex; i < numCenterlinePoints - 1; i++) {
+        const p1 = getCenterlinePositionAtIndex(i);
+        const p2 = getCenterlinePositionAtIndex(i + 1);
+        if (!p1 || !p2) break;
+
+        const segmentLength = Math.sqrt(
+          (p2[0] - p1[0]) ** 2 +
+          (p2[1] - p1[1]) ** 2 +
+          (p2[2] - p1[2]) ** 2
+        );
+
+        if (accumulatedDistance + segmentLength >= Math.abs(offsetMm)) {
+          // Found target - interpolate between i and i+1
+          const remainingDist = Math.abs(offsetMm) - accumulatedDistance;
+          const fraction = remainingDist / segmentLength;
+          targetIndex = i + fraction;
+          break;
+        }
+
+        accumulatedDistance += segmentLength;
+      }
+      if (targetIndex === annulusPlaneIndex && offsetMm > 0) {
+        targetIndex = numCenterlinePoints - 1; // Reached end
+      }
+    } else if (offsetMm < 0) {
+      // Move towards LV (lower indices)
+      for (let i = annulusPlaneIndex; i > 0; i--) {
+        const p1 = getCenterlinePositionAtIndex(i);
+        const p2 = getCenterlinePositionAtIndex(i - 1);
+        if (!p1 || !p2) break;
+
+        const segmentLength = Math.sqrt(
+          (p2[0] - p1[0]) ** 2 +
+          (p2[1] - p1[1]) ** 2 +
+          (p2[2] - p1[2]) ** 2
+        );
+
+        if (accumulatedDistance + segmentLength >= Math.abs(offsetMm)) {
+          // Found target - interpolate between i and i-1
+          const remainingDist = Math.abs(offsetMm) - accumulatedDistance;
+          const fraction = remainingDist / segmentLength;
+          targetIndex = i - fraction;
+          break;
+        }
+
+        accumulatedDistance += segmentLength;
+      }
+      if (targetIndex === annulusPlaneIndex && offsetMm < 0) {
+        targetIndex = 0; // Reached start
+      }
+    }
+
+    targetIndex = Math.max(0, Math.min(numCenterlinePoints - 1, targetIndex));
+    console.log(`   📊 Target centerline index: ${targetIndex.toFixed(2)} (annulus: ${annulusPlaneIndex}, offset: ${offsetMm}mm)`);
+
+    // Get the target position on the centerline
+    const targetPosition = getCenterlinePositionAtIndex(targetIndex);
+    if (!targetPosition) {
+      console.error('❌ Failed to get target position at index', targetIndex);
+      autoScrollRenderCompleteRef.current = true;
+      return;
+    }
 
     console.log(`   Target position:`, targetPosition);
 
@@ -7197,12 +8395,14 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           }
         });
 
-        // CRITICAL: Update currentCenterlineIndexRef to the new position
-        // This ensures manual scrolling starts from the auto-scrolled position, not annulus
-        if (centerlineDataRef.current) {
-          const nearestIndex = findNearestCenterlineIndex(targetPosition);
-          currentCenterlineIndexRef.current = nearestIndex;
-        }
+        // CRITICAL: Update currentCenterlineIndexRef to the target index
+        // This ensures manual scrolling starts from the auto-scrolled position
+        currentCenterlineIndexRef.current = targetIndex;
+
+        // CRITICAL: Also update lockedFocalPointRef to the new target position
+        // This prevents scrolling from jumping back to the annulus center
+        lockedFocalPointRef.current = targetPosition;
+        console.log(`   🔒 Updated locked focal point to auto-scroll target:`, targetPosition);
 
         // Mark this step as auto-scrolled
         lastAutoScrolledStepRef.current = currentWorkflowStep.id;
@@ -9492,6 +10692,87 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 </div>
               )}
 
+              {/* Virtual Valve Controls - Only show in MEASUREMENTS stage with 3 cusp dots */}
+              {currentStage === WorkflowStage.MEASUREMENTS && cuspDotsRef.current && cuspDotsRef.current.length === 3 && (
+                <div className="absolute top-2 left-2 z-20 bg-slate-800/90 backdrop-blur-sm border border-slate-600 rounded-lg p-2 shadow-lg">
+                  <div className="text-white text-xs font-semibold mb-2">Virtual Valve</div>
+                  <label className="flex items-center gap-2 text-white text-xs cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={valveVisible}
+                      onChange={(e) => setValveVisible(e.target.checked)}
+                      className="w-4 h-4 cursor-pointer"
+                    />
+                    <span>Show Valve</span>
+                  </label>
+                  {valveVisible && (
+                    <div className="mt-2 pt-2 border-t border-slate-600 space-y-2">
+                      <div className="text-[10px] text-slate-400">
+                        Model: {selectedValve}
+                      </div>
+
+                      {/* Rotation Controls */}
+                      <div className="space-y-1">
+                        <div className="text-[10px] text-slate-300 font-semibold">Manual Rotation (deg)</div>
+
+                        {/* X-axis rotation */}
+                        <div className="flex items-center gap-2">
+                          <span className="text-[9px] text-red-400 w-6">X:</span>
+                          <input
+                            type="range"
+                            min="-180"
+                            max="180"
+                            step="5"
+                            value={valveRotation.x}
+                            onChange={(e) => setValveRotation({ ...valveRotation, x: parseInt(e.target.value) })}
+                            className="flex-1 h-1 bg-slate-600 rounded-lg appearance-none cursor-pointer slider-thumb"
+                          />
+                          <span className="text-[9px] text-slate-400 w-8 text-right">{valveRotation.x}°</span>
+                        </div>
+
+                        {/* Y-axis rotation */}
+                        <div className="flex items-center gap-2">
+                          <span className="text-[9px] text-green-400 w-6">Y:</span>
+                          <input
+                            type="range"
+                            min="-180"
+                            max="180"
+                            step="5"
+                            value={valveRotation.y}
+                            onChange={(e) => setValveRotation({ ...valveRotation, y: parseInt(e.target.value) })}
+                            className="flex-1 h-1 bg-slate-600 rounded-lg appearance-none cursor-pointer slider-thumb"
+                          />
+                          <span className="text-[9px] text-slate-400 w-8 text-right">{valveRotation.y}°</span>
+                        </div>
+
+                        {/* Z-axis rotation */}
+                        <div className="flex items-center gap-2">
+                          <span className="text-[9px] text-blue-400 w-6">Z:</span>
+                          <input
+                            type="range"
+                            min="-180"
+                            max="180"
+                            step="5"
+                            value={valveRotation.z}
+                            onChange={(e) => setValveRotation({ ...valveRotation, z: parseInt(e.target.value) })}
+                            className="flex-1 h-1 bg-slate-600 rounded-lg appearance-none cursor-pointer slider-thumb"
+                          />
+                          <span className="text-[9px] text-slate-400 w-8 text-right">{valveRotation.z}°</span>
+                        </div>
+
+                        {/* Reset button */}
+                        <button
+                          onClick={() => setValveRotation({ x: 0, y: 0, z: 0 })}
+                          className="w-full mt-1 px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white text-[9px] rounded"
+                        >
+                          Reset Rotation
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Main viewport grid - shared by all stages */}
               <div
                 className={`grid gap-1 ${
@@ -9508,11 +10789,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                   <>
                     <select
                       value={renderMode}
-                      onChange={(e) => onRenderModeChange(e.target.value as 'mpr' | 'cpr')}
+                      onChange={(e) => onRenderModeChange(e.target.value as 'mpr' | 'cpr' | 'vr')}
                       className="text-[10px] bg-slate-800 text-white border border-slate-600 rounded px-1.5 py-0.5 cursor-pointer hover:bg-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     >
                       <option value="mpr">Curved</option>
                       <option value="cpr">Straight</option>
+                      <option value="vr">VR</option>
                     </select>
                     <label className="flex items-center gap-1 text-[10px] cursor-pointer hover:text-blue-400">
                       <input
@@ -9548,11 +10830,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                   {currentStage === WorkflowStage.MEASUREMENTS && onRenderModeChange && (
                     <select
                       value={renderMode}
-                      onChange={(e) => onRenderModeChange(e.target.value as 'mpr' | 'cpr')}
+                      onChange={(e) => onRenderModeChange(e.target.value as 'mpr' | 'cpr' | 'vr')}
                       className="text-[10px] bg-slate-800 text-white border border-slate-600 rounded px-1.5 py-0.5 cursor-pointer hover:bg-slate-700 focus:outline-none focus:ring-1 focus:ring-blue-500"
                     >
                       <option value="mpr">Curved</option>
                       <option value="cpr">Straight</option>
+                      <option value="vr">VR</option>
                     </select>
                   )}
                 </div>

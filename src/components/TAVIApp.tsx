@@ -777,6 +777,12 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             state.currentStage === WorkflowStage.ANNULUS_DEFINITION ||
             state.currentStage === WorkflowStage.MEASUREMENTS) && state.patientInfo ? (
         <div className="relative w-full h-full">
+          {/* Debug log for centerline prop */}
+          {console.log('🔍 [TAVIApp RENDER] Passing centerlineData to ProperMPRViewport:', {
+            hasCenterline: !!state.centerline,
+            numPoints: state.centerline?.length || 0,
+            currentStage: state.currentStage
+          })}
           <ProperMPRViewport
             renderMode={viewType}
             onRenderModeChange={setViewType}
@@ -839,50 +845,80 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
               console.log('DICOM images loaded for stage:', state.currentStage);
             }}
             onSpherePositionsUpdate={(spheres) => {
-              if (spheres.length >= 3) {
-                // Clear existing root points first
-                actions.clearRootPoints();
+              // Handle sphere updates differently based on workflow stage
 
-                // CRITICAL: Assign proper anatomical types
-                // When exactly 3 spheres: LV_OUTFLOW, AORTIC_VALVE, ASCENDING_AORTA
-                // When more than 3: First and last keep their types, middle is valve, rest are EXTENDED
-                spheres.forEach((sphere, index) => {
-                  let type: string;
+              // ANNULUS_DEFINITION: Only update red sphere (AV valve point) to match annulus center
+              // Do NOT clear centerline - it has been modified to be perpendicular to annular plane
+              if (state.currentStage === WorkflowStage.ANNULUS_DEFINITION) {
+                if (spheres.length >= 3) {
+                  console.log('🔄 [ANNULUS_DEFINITION] Updating AV valve point (red sphere) to annulus center');
 
-                  if (spheres.length === 3) {
-                    // First 3 spheres: assign specific anatomical types
-                    if (index === 0) {
-                      type = RootPointType.LV_OUTFLOW;
-                    } else if (index === 1) {
-                      type = RootPointType.AORTIC_VALVE;
-                    } else {
-                      type = RootPointType.ASCENDING_AORTA;
-                    }
-                  } else {
-                    // More than 3 spheres: first, middle, last are anatomical, rest are extended
-                    const middleIndex = Math.floor(spheres.length / 2);
-                    if (index === 0) {
-                      type = RootPointType.LV_OUTFLOW;
-                    } else if (index === middleIndex) {
-                      type = RootPointType.AORTIC_VALVE;
-                    } else if (index === spheres.length - 1) {
-                      type = RootPointType.ASCENDING_AORTA;
-                    } else {
-                      type = RootPointType.EXTENDED;
-                    }
-                  }
+                  // Find the red sphere (middle one - AORTIC_VALVE)
+                  const redSphere = spheres[1]; // Middle sphere is always AV valve
 
-                  const rootPoint = {
-                    id: sphere.id,
-                    position: sphere.pos,
-                    type: type,
+                  // Update only the AORTIC_VALVE root point, preserve others
+                  const avRootPoint = {
+                    id: redSphere.id,
+                    position: redSphere.pos,
+                    type: RootPointType.AORTIC_VALVE,
                     timestamp: Date.now()
                   };
-                  actions.addRootPoint(rootPoint);
-                });
 
-                // Mark ROOT_DEFINITION stage as complete when we have 3+ points
-                actions.markStageComplete(WorkflowStage.ROOT_DEFINITION);
+                  // This will update the existing AV point without clearing centerline
+                  actions.addRootPoint(avRootPoint);
+
+                  console.log('✅ Red sphere updated to annulus center:', redSphere.pos);
+                }
+                return; // Exit early - don't process full sphere list
+              }
+
+              // ROOT_DEFINITION: Process all spheres normally (full update with clear)
+              if (state.currentStage === WorkflowStage.ROOT_DEFINITION) {
+                if (spheres.length >= 3) {
+                  // Clear existing root points first
+                  actions.clearRootPoints();
+
+                  // CRITICAL: Assign proper anatomical types
+                  // When exactly 3 spheres: LV_OUTFLOW, AORTIC_VALVE, ASCENDING_AORTA
+                  // When more than 3: First and last keep their types, middle is valve, rest are EXTENDED
+                  spheres.forEach((sphere, index) => {
+                    let type: string;
+
+                    if (spheres.length === 3) {
+                      // First 3 spheres: assign specific anatomical types
+                      if (index === 0) {
+                        type = RootPointType.LV_OUTFLOW;
+                      } else if (index === 1) {
+                        type = RootPointType.AORTIC_VALVE;
+                      } else {
+                        type = RootPointType.ASCENDING_AORTA;
+                      }
+                    } else {
+                      // More than 3 spheres: first, middle, last are anatomical, rest are extended
+                      const middleIndex = Math.floor(spheres.length / 2);
+                      if (index === 0) {
+                        type = RootPointType.LV_OUTFLOW;
+                      } else if (index === middleIndex) {
+                        type = RootPointType.AORTIC_VALVE;
+                      } else if (index === spheres.length - 1) {
+                        type = RootPointType.ASCENDING_AORTA;
+                      } else {
+                        type = RootPointType.EXTENDED;
+                      }
+                    }
+
+                    const rootPoint = {
+                      id: sphere.id,
+                      position: sphere.pos,
+                      type: type,
+                      timestamp: Date.now()
+                    };
+                    actions.addRootPoint(rootPoint);
+                  });
+
+                  // Mark ROOT_DEFINITION stage as complete when we have 3+ points
+                  actions.markStageComplete(WorkflowStage.ROOT_DEFINITION);
+                }
               }
             }}
             onCuspDotsUpdate={async (dots) => {
@@ -942,21 +978,30 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
                   );
 
                   // Update centerline data in workflow state
+                  // CRITICAL: Also store the modifiedCenterline array with isAnnulusPlane markers
+                  // This allows ProperMPRViewport to find the annulus plane position for default camera positioning
                   const centerlineData = {
                     position: new Float32Array(modifiedCenterline.flatMap(p => [p.x, p.y, p.z])),
                     orientation: new Float32Array(modifiedCenterline.length * 3), // Will be calculated as needed
                     length: modifiedCenterline.length,
-                    generatedFrom: state.rootPoints
+                    generatedFrom: state.rootPoints,
+                    modifiedCenterline: modifiedCenterline // Preserve annulus plane markers
                   };
 
                   actions.setCenterline(centerlineData);
+                  console.log('🔄 [TAVIApp] setCenterline called with', centerlineData.length, 'points');
+
+                  // Find and log the annulus plane index for verification
+                  const annulusPlaneIndex = modifiedCenterline.findIndex(p => p.isAnnulusPlane === true);
+                  console.log(`📍 Annulus plane marked at centerline index ${annulusPlaneIndex} of ${modifiedCenterline.length} points`);
 
                   console.log('📐 Annular plane calculated from MPR:', annularPlane);
                   console.log('📏 Annulus measurements calculated:', annulusMeasurements);
                   console.log('🔄 Centerline modified to be perpendicular to annular plane (MPR):', {
                     originalPoints: modifiedCenterline.length,
                     storedLength: centerlineData.length,
-                    positionArrayLength: centerlineData.position.length
+                    positionArrayLength: centerlineData.position.length,
+                    annulusPlaneIndex
                   });
                   console.log('✅ Annulus definition complete with 3 cusp nadir points');
                 } catch (error) {

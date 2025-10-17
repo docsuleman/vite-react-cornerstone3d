@@ -105,20 +105,20 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
   // Transfer function controls for real-time tweaking
   const [showControls, setShowControls] = useState(true);
 
-  // Opacity thresholds (based on Slicer CT-X-Ray preset)
-  const [opacityLow, setOpacityLow] = useState(-200); // HU where opacity starts
-  const [opacityHigh, setOpacityHigh] = useState(1500); // HU where opacity is maximum
-  const [maxOpacity, setMaxOpacity] = useState(0.05); // Maximum opacity (5% like Slicer)
+  // Opacity thresholds (based on Slicer FluoroRenderingPreset_01)
+  const [opacityLow, setOpacityLow] = useState(112.5); // HU where opacity starts (Slicer: 112.576)
+  const [opacityHigh, setOpacityHigh] = useState(1500); // HU where opacity ramps up (Slicer: 1500 @ 0.03)
+  const [maxOpacity, setMaxOpacity] = useState(0.1); // Maximum opacity (10% like Slicer at 3071 HU)
 
   // Color inversion control
   const [invertColors, setInvertColors] = useState(true); // true = angiography (high HU = black)
 
   // Blend mode selection
-  const [blendMode, setBlendMode] = useState(3); // Default: AVERAGE_INTENSITY_BLEND
+  const [blendMode, setBlendMode] = useState(0); // Default: COMPOSITE (like Slicer)
 
   // Available blend modes
   const blendModes = [
-    { value: 0, label: 'Composite (3D Volume)', description: 'Standard 3D volume rendering with depth' },
+    { value: 0, label: 'Composite (Slicer DRR)', description: 'Front-to-back accumulation - Slicer default' },
     { value: 1, label: 'MIP (Maximum Intensity)', description: 'Shows brightest voxel - very clear' },
     { value: 2, label: 'MinIP (Minimum Intensity)', description: 'Shows darkest voxel - rarely used' },
     { value: 3, label: 'Average Intensity (X-ray)', description: 'Averages values - X-ray-like' },
@@ -534,13 +534,16 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
             {blendMode === 0 && (
               <>
                 <p className="text-green-400 mt-2">
-                  ✓ Standard 3D volume rendering
+                  ✓ Matches 3D Slicer DRR exactly
                 </p>
                 <p className="text-green-400">
-                  ✓ Shows depth and spatial relationships
+                  ✓ Front-to-back opacity accumulation
+                </p>
+                <p className="text-green-400">
+                  ✓ Low opacity (3-10%) for X-ray penetration
                 </p>
                 <p className="text-blue-400 mt-2">
-                  Best for: 3D anatomy visualization
+                  Best for: Clinical DRR/fluoroscopy simulation
                 </p>
               </>
             )}
@@ -591,13 +594,14 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
           {/* Reset button */}
           <button
             onClick={() => {
-              setOpacityLow(-200);
+              setOpacityLow(112.5);
               setOpacityHigh(1500);
-              setMaxOpacity(0.05);
+              setMaxOpacity(0.1);
+              setBlendMode(0);
             }}
             className="w-full mt-4 bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded text-xs"
           >
-            Reset to Defaults (Slicer + Radon)
+            Reset to Slicer Defaults (FluoroPreset_01)
           </button>
         </div>
       )}
@@ -768,19 +772,20 @@ function updateCamera(
 }
 
 /**
- * Apply 3D Slicer CT-X-Ray style transfer functions
+ * Apply 3D Slicer FluoroRenderingPreset style transfer functions
  *
- * Key principles (from Slicer presets.xml CT-X-Ray preset):
- * 1. ADDITIVE blend mode accumulates opacity-weighted HU values
- * 2. ALL WHITE colors (no color gradient)
- * 3. Very LOW opacity (5% maximum) to allow ray penetration
- * 4. Shading DISABLED
+ * Key principles (from Slicer FluoroRenderingPreset_01.vp):
+ * 1. COMPOSITE blend mode (VTK default) - front-to-back accumulation
+ * 2. Very LOW opacity (3-10% maximum) to allow X-ray-like penetration
+ * 3. Opacity starts at ~112 HU (soft tissue threshold)
+ * 4. Shading DISABLED (no lighting)
+ * 5. Color mapping: user-controllable inversion
  *
- * In ADDITIVE mode with white colors:
- * - Low HU (air, soft tissue) → low opacity → accumulates little → stays WHITE/LIGHT
- * - High HU (contrast, bone) → high opacity → accumulates more → appears DARK/BLACK
- *
- * This inverts the typical visualization: high HU = dark (like real X-ray attenuation!)
+ * Slicer opacity curve (from line 7 of .vp file):
+ * -1024 HU → 0% (air: transparent)
+ * 112.5 HU → 0% (soft tissue threshold)
+ * 1500 HU → 3% (contrast/calcification)
+ * 3071 HU → 10% (maximum density)
  */
 function applySlicerXRayTransferFunctions(
   actor: any,
@@ -791,20 +796,19 @@ function applySlicerXRayTransferFunctions(
 ): void {
   const property = actor.getProperty();
 
-  // OPACITY FUNCTION: For AVERAGE mode, use a gradual ramp
-  // This creates X-ray-like attenuation - higher HU contributes more to the average
+  // OPACITY FUNCTION: Match Slicer FluoroRenderingPreset_01 exactly
+  // Line 7: 10 -1024 0 -1024 0 112.576698303223 0 1500 0.03 3071 0.1
   const opacityFunction = vtkPiecewiseFunction.newInstance();
-  opacityFunction.addPoint(-3024, 0.0); // Air: transparent
-  opacityFunction.addPoint(opacityLow, 0.0); // Below threshold: transparent
-  opacityFunction.addPoint(opacityLow + 100, maxOpacity * 0.3); // Soft tissue: low contribution
-  opacityFunction.addPoint(opacityHigh, maxOpacity); // High HU: full contribution
-  opacityFunction.addPoint(3071, maxOpacity); // Maximum: full contribution
+  opacityFunction.addPoint(-1024, 0.0); // Air: transparent
+  opacityFunction.addPoint(opacityLow, 0.0); // Soft tissue threshold: transparent
+  opacityFunction.addPoint(opacityHigh, maxOpacity * 0.3); // Contrast start: 3% (0.3 of max 10%)
+  opacityFunction.addPoint(3071, maxOpacity); // Maximum density: 10%
   property.setScalarOpacity(0, opacityFunction);
 
-  console.log('📊 Opacity function for X-ray averaging:', {
+  console.log('📊 Slicer-matched opacity function (COMPOSITE mode):', {
     transparent: `${opacityLow} HU and below`,
-    lowContribution: `${opacityLow + 100} HU at ${(maxOpacity * 0.3 * 100).toFixed(1)}%`,
-    fullContribution: `${opacityHigh} HU at ${(maxOpacity * 100).toFixed(1)}%`,
+    contrastStart: `${opacityHigh} HU at ${(maxOpacity * 0.3 * 100).toFixed(1)}%`,
+    maximum: `3071 HU at ${(maxOpacity * 100).toFixed(1)}%`,
   });
 
   // COLOR FUNCTION: User-controllable color inversion
@@ -837,10 +841,10 @@ function applySlicerXRayTransferFunctions(
   // Enable interpolation for smoother rendering
   property.setInterpolationTypeToLinear();
 
-  console.log('🎨 Applied X-ray transfer functions:', {
+  console.log('🎨 Applied Slicer-style transfer functions:', {
     opacityRange: `${opacityLow} to ${opacityHigh} HU`,
     maxOpacity: `${(maxOpacity * 100).toFixed(1)}%`,
-    blendMode: 'AVERAGE_INTENSITY (X-ray)',
+    mode: 'COMPOSITE (Slicer FluoroRenderingPreset_01)',
     colorInversion: invertColors ? 'INVERTED (angiography)' : 'NORMAL (CT-like)',
     colors: invertColors
       ? 'Low HU=WHITE (light), High HU=BLACK (dark)'
