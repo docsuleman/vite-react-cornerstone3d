@@ -60,7 +60,6 @@ class CPRAwareSphereMarkerTool extends BaseTool {
    */
   setCoordinateConverter(converter: CPRCoordinateConverter): void {
     this.coordinateConverter = converter;
-    console.log('🔄 CPR-Aware SphereMarkerTool: Coordinate converter set');
   }
 
   /**
@@ -75,7 +74,6 @@ class CPRAwareSphereMarkerTool extends BaseTool {
    */
   setDraggable(draggable: boolean): void {
     this.isDraggable = draggable;
-    console.log(`🔒 CPR-Aware SphereMarkerTool draggable state: ${draggable}`);
   }
 
   /**
@@ -88,18 +86,12 @@ class CPRAwareSphereMarkerTool extends BaseTool {
     }
 
     if (this.spheres.length >= 3) {
-      console.warn('Maximum of 3 spheres already placed.');
       return;
     }
 
     const { element, currentPoints } = evt.detail;
     const { world: worldPos, canvas: canvasPos } = currentPoints;
 
-    console.log('🎯 CPR-Aware click:', {
-      worldPos,
-      canvasPos,
-      hasConverter: !!this.coordinateConverter
-    });
 
     // Get the original DICOM coordinates
     let originalWorldPos: Point3D;
@@ -117,7 +109,6 @@ class CPRAwareSphereMarkerTool extends BaseTool {
         const firstImageId = imageIds[0] || '';
         
         if (VTKToCornerstone3DConverter.isSyntheticImageId(firstImageId)) {
-          console.log('🔄 Converting CPR coordinates to original DICOM coordinates...');
           
           // Get transform data from the image
           const transformData = VTKToCornerstone3DConverter.getTransformDataForImageId(firstImageId);
@@ -136,13 +127,7 @@ class CPRAwareSphereMarkerTool extends BaseTool {
               bounds
             );
             
-            console.log('✅ Coordinate conversion:', {
-              canvasPos,
-              cprWorldPos: worldPos,
-              originalWorldPos
-            });
           } else {
-            console.warn('⚠️ No transform data found, using world coordinates as-is');
             originalWorldPos = { x: worldPos[0], y: worldPos[1], z: worldPos[2] };
           }
         } else {
@@ -181,13 +166,6 @@ class CPRAwareSphereMarkerTool extends BaseTool {
     // Notify callback with original coordinates
     this._notifyPositionUpdate();
 
-    console.log(`✅ CPR-Aware sphere ${this.spheres.length}/3 placed:`, {
-      id: sphereId,
-      originalPos: originalWorldPos,
-      cprPos: sphere.cprPos,
-      color,
-      cuspType
-    });
   };
 
   /**
@@ -232,11 +210,6 @@ class CPRAwareSphereMarkerTool extends BaseTool {
     // Notify position update
     this._notifyPositionUpdate();
 
-    console.log('🎯 CPR-Aware sphere dragged:', {
-      id: sphere.id,
-      newOriginalPos,
-      newCprPos: sphere.cprPos
-    });
   };
 
   /**
@@ -290,11 +263,9 @@ class CPRAwareSphereMarkerTool extends BaseTool {
   private _placeSphere(sphere: CPRAwareSphere): void {
     const enabledElements = getEnabledElements();
     if (enabledElements.length === 0) {
-      console.error('No enabled viewports found.');
       return;
     }
 
-    console.log(`🔵 Creating CPR-aware ${sphere.color} sphere:`, sphere);
 
     const sphereSource = vtkSphereSource.newInstance();
     
@@ -322,7 +293,6 @@ class CPRAwareSphereMarkerTool extends BaseTool {
 
     enabledElements.forEach(({ viewport }) => {
       if (!viewport.addActor) {
-        console.warn('Viewport does not support adding actors.');
         return;
       }
       viewport.addActor({ uid: sphere.id, actor });
@@ -371,7 +341,6 @@ class CPRAwareSphereMarkerTool extends BaseTool {
     enabledElements.forEach(({ viewport }) => viewport.render());
 
     this._notifyPositionUpdate();
-    console.log('🧹 Cleared all CPR-aware spheres');
   }
 
   /**
@@ -406,7 +375,6 @@ class CPRAwareSphereMarkerTool extends BaseTool {
     const enabledElements = getEnabledElements();
     enabledElements.forEach(({ viewport }) => viewport.render());
 
-    console.log('🔄 Updated sphere positions for coordinate system change');
   }
 }
 

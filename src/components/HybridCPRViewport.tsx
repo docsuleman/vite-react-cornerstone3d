@@ -104,7 +104,6 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
   useEffect(() => {
     if (!patientInfo?.seriesInstanceUID || rootPoints.length < 3) return;
 
-    console.log('🔄 Initializing Hybrid CPR Viewport...');
     initializeHybridCPRViewport();
 
     return () => {
@@ -114,7 +113,6 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
 
   const cleanup = () => {
     try {
-      console.log('🧹 Cleaning up Hybrid CPR Viewport...');
       
       // Clean up VTK objects
       if (vtkCPRGenerator.current) {
@@ -129,15 +127,12 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
           ToolGroupManager.destroyToolGroup(toolGroupId);
         }
       } catch (error) {
-        console.warn('Failed to destroy tool group:', error);
       }
 
       // Clean up synthetic images
       VTKToCornerstone3DConverter.cleanup('hybrid_cpr');
 
-      console.log('✅ Hybrid CPR Viewport cleanup complete');
     } catch (error) {
-      console.warn('Cleanup error:', error);
     }
   };
 
@@ -146,12 +141,10 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
       setIsLoading(true);
       setError(null);
 
-      console.log('🔄 Initializing Cornerstone3D...');
       await csRenderInit();
       await csToolsInit();
       dicomImageLoaderInit({ maxWebWorkers: 1 });
 
-      console.log('🔍 Loading DICOM data...');
       
       // Load original DICOM images
       const imageIds = await createImageIdsAndCacheMetaData({
@@ -164,7 +157,6 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
         throw new Error('No DICOM images found for this series');
       }
 
-      console.log(`📋 Found ${imageIds.length} DICOM images`);
 
       // Create volume from DICOM data
       const volumeId = `streamingImageVolume_${Date.now()}`;
@@ -172,38 +164,22 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
       volume.load();
 
       // Wait for volume to load (increased time for hybrid approach)
-      console.log('⏳ Waiting for volume data to be fully available...');
       await new Promise(resolve => setTimeout(resolve, 5000)); // Increased to 5 seconds
       
       // Additional debugging for volume state
-      console.log('📊 Volume state after wait:', {
-        hasGetScalarData: typeof volume.getScalarData === 'function',
-        hasVoxelManager: !!volume.voxelManager,
-        hasImageData: !!volume.imageData,
-        dimensionsAvailable: !!volume.dimensions,
-        spacingAvailable: !!volume.spacing,
-        originAvailable: !!volume.origin
-      });
 
-      console.log('🔄 Generating CPR data with VTK...');
       
       // Initialize VTK CPR Generator
-      console.log('🔧 Initializing VTK CPR Generator...');
       vtkCPRGenerator.current = new VTKCPRGenerator();
       
       // Generate centerline from root points
-      console.log('📏 Generating centerline from root points...');
       const centerlinePoints = modifiedCenterline || generateCenterlineFromRootPoints(rootPoints);
-      console.log(`📏 Generated ${centerlinePoints.length} centerline points`);
       
       // Create VTK ImageData from Cornerstone volume
-      console.log('🔄 Converting volume to VTK ImageData...');
       const vtkImageData = await createVTKImageDataFromVolume(volume);
-      console.log('✅ VTK ImageData conversion complete');
       
       // Add timeout wrapper for CPR generation
       const generateCPRWithTimeout = async (imageData: any, centerline: any, width: number, label: string) => {
-        console.log(`🔄 Starting ${label} CPR generation...`);
         return Promise.race([
           vtkCPRGenerator.current!.generateCPR(imageData, centerline, width),
           new Promise((_, reject) => 
@@ -213,26 +189,16 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
       };
       
       // Generate CPR views with timeout protection
-      console.log('🔄 Generating CPR1...');
       const cpr1Result = await generateCPRWithTimeout(vtkImageData, centerlinePoints, 400, 'CPR1');
-      console.log('✅ CPR1 generation complete');
       
-      console.log('🔄 Setting rotation for CPR2...');
       vtkCPRGenerator.current.setCPRRotation(90); // Rotate for second view
-      console.log('🔄 Generating CPR2...');
       const cpr2Result = await generateCPRWithTimeout(vtkImageData, centerlinePoints, 400, 'CPR2');
-      console.log('✅ CPR2 generation complete');
 
-      console.log('🔄 Resetting rotation for cross-section...');
       vtkCPRGenerator.current.setCPRRotation(0); // Reset rotation
-      console.log('🔄 Generating cross-section...');
       const crossSectionResult = await generateCPRWithTimeout(vtkImageData, centerlinePoints, 200, 'CrossSection');
-      console.log('✅ Cross-section generation complete');
 
-      console.log('✅ ALL VTK CPR generation complete');
 
       // Convert VTK results to Cornerstone3D format
-      console.log('🔄 Converting to Cornerstone3D format...');
       
       const cpr1ImageIds = await VTKToCornerstone3DConverter.convertVTKImageToCornerstoneImageIds(
         cpr1Result, 
@@ -249,7 +215,6 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
         'hybrid_cpr_cross'
       );
 
-      console.log('✅ Cornerstone3D conversion complete');
 
       // Set up coordinate converter
       coordinateConverter.current = new CPRCoordinateConverter(cpr1Result.transformData);
@@ -267,10 +232,8 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
       setIsInitialized(true);
       setIsLoading(false);
 
-      console.log('✅ Hybrid CPR Viewport initialized successfully!');
 
     } catch (err) {
-      console.error('❌ Failed to initialize Hybrid CPR Viewport:', err);
       setError(`Failed to initialize: ${err}`);
       setIsLoading(false);
     }
@@ -301,13 +264,11 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
   };
 
   const createVTKImageDataFromVolume = async (volume: any): Promise<any> => {
-    console.log('🔄 Converting Cornerstone volume to VTK ImageData with enhanced data access...');
     
     const dimensions = volume.dimensions;
     const spacing = volume.spacing;
     const origin = volume.origin;
     
-    console.log('📊 Volume characteristics:', { dimensions, spacing, origin });
     
     // Enhanced scalar data extraction using same patterns as TriViewCPRViewport
     let scalarData = null;
@@ -316,13 +277,11 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
     // Method 1: Try volume.imageData with detailed inspection
     if (volume.imageData) {
       try {
-        console.log('🔄 Attempt 1: Using volume.imageData...');
         if (volume.imageData.getPointData && volume.imageData.getPointData().getScalars) {
           const scalars = volume.imageData.getPointData().getScalars();
           if (scalars) {
             scalarData = scalars.getData();
             attempts.push('volume.imageData.getPointData().getScalars().getData() - SUCCESS');
-            console.log('✅ Got real scalar data via volume.imageData!');
           } else {
             attempts.push('volume.imageData.getPointData().getScalars() - NULL SCALARS');
           }
@@ -331,7 +290,6 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
         }
       } catch (e) {
         attempts.push(`volume.imageData access - ERROR: ${e.message}`);
-        console.warn('⚠️ volume.imageData access failed:', e);
       }
     } else {
       attempts.push('volume.imageData - NOT AVAILABLE');
@@ -339,29 +297,24 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
     
     // Method 2: Try getScalarData() with polling
     if (!scalarData) {
-      console.log('🔄 Attempting enhanced scalar data access with polling...');
       
       let waitTime = 0;
       const maxWaitTime = 10000; // 10 seconds
       const pollInterval = 500; // Check every 500ms
       
       while (waitTime < maxWaitTime && !scalarData) {
-        console.log(`🔄 Polling for scalar data (${waitTime}ms)...`);
         
         // Try official VoxelManager method first
         try {
           if (volume.voxelManager?.getCompleteScalarDataArray) {
-            console.log(`🔄 Polling: Trying getCompleteScalarDataArray() at ${waitTime}ms...`);
             scalarData = volume.voxelManager.getCompleteScalarDataArray();
             if (scalarData && scalarData.length > 0) {
-              console.log('✅ SUCCESS: Got scalar data via getCompleteScalarDataArray() after waiting');
               attempts.push(`polling getCompleteScalarDataArray() at ${waitTime}ms - SUCCESS (${scalarData.length} voxels)`);
               break;
             }
           }
         } catch (e) {
           if (waitTime % 2000 === 0) { // Log errors every 2 seconds to avoid spam
-            console.warn(`⚠️ getCompleteScalarDataArray() still failing at ${waitTime}ms:`, e.message);
           }
         }
         
@@ -370,7 +323,6 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
           if (volume.getScalarData) {
             scalarData = volume.getScalarData();
             if (scalarData && scalarData.length > 0) {
-              console.log('✅ Got scalar data via getScalarData() after waiting');
               attempts.push(`polling getScalarData() at ${waitTime}ms - SUCCESS`);
               break;
             }
@@ -386,14 +338,12 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
     
     // Method 3: Frame reconstruction as last resort
     if (!scalarData) {
-      console.log('🔄 Attempting frame reconstruction as fallback...');
       
       try {
         // Check if we have a streaming volume with cached frames
         const streamingVolume = volume;
         
         if (streamingVolume.cachedFrames && Object.keys(streamingVolume.cachedFrames).length > 0) {
-          console.log('📊 Found cached frames, reconstructing volume data...');
           
           const totalVoxels = dimensions[0] * dimensions[1] * dimensions[2];
           scalarData = new Float32Array(totalVoxels);
@@ -429,13 +379,11 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
                 }
                 
                 framesProcessed++;
-                console.log(`✅ Processed frame ${i}: added ${pixelsToAdd} pixels (total: ${voxelIndex})`);
               }
             }
           }
           
           if (voxelIndex > 0) {
-            console.log(`✅ Frame reconstruction SUCCESS: ${voxelIndex} voxels from ${framesProcessed} frames`);
             attempts.push(`frame reconstruction - SUCCESS (${voxelIndex} voxels from ${framesProcessed} frames)`);
           } else {
             scalarData = null;
@@ -445,22 +393,15 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
           attempts.push('frame reconstruction - NO CACHED FRAMES');
         }
       } catch (frameError) {
-        console.warn('⚠️ Failed to reconstruct from frames:', frameError);
         scalarData = null;
         attempts.push(`frame reconstruction - ERROR: ${frameError.message}`);
       }
     }
     
     if (!scalarData) {
-      console.error('❌ All scalar data access methods failed:', attempts);
       throw new Error(`No scalar data available in volume. Attempted: ${attempts.join(', ')}`);
     }
     
-    console.log('✅ Scalar data obtained:', {
-      dataLength: scalarData.length,
-      dataType: scalarData.constructor?.name,
-      successfulMethod: attempts[attempts.length - 1]
-    });
     
     // Create VTK ImageData (simplified - would need proper VTK integration)
     const vtkImageData = {
@@ -474,7 +415,6 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
       })
     };
     
-    console.log('✅ VTK ImageData created from Cornerstone volume with enhanced data access');
     return vtkImageData;
   };
 
@@ -483,7 +423,6 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
     cpr2ImageIds: string[];
     crossSectionImageIds: string[];
   }) => {
-    console.log('🔧 Setting up Cornerstone3D rendering...');
 
     // Create rendering engine
     renderingEngine.current = new RenderingEngine(renderingEngineId);
@@ -512,11 +451,9 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
       viewport.render();
     });
 
-    console.log('✅ Cornerstone3D rendering setup complete');
   };
 
   const setupTools = async () => {
-    console.log('🔧 Setting up tools...');
 
     // Add tools
     cornerstoneTools.addTool(CrosshairsTool);
@@ -581,11 +518,9 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
       toolGroup.current!.addViewport(id, renderingEngineId);
     });
 
-    console.log('✅ Tools setup complete');
   };
 
   const handleZoom = (factor: number) => {
-    console.log('🔍 Zooming all views by factor:', factor);
     setZoom(zoom * factor);
     
     // Zoom all viewports
@@ -600,13 +535,11 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
           viewport.render();
         }
       } catch (error) {
-        console.warn(`Failed to zoom viewport ${id}:`, error);
       }
     });
   };
 
   const handleSliceNavigation = (position: number) => {
-    console.log('🔄 Slice navigation to position:', position);
     setCrosshairPosition(position);
     
     if (vtkCPRGenerator.current && coordinateConverter.current) {
@@ -623,7 +556,6 @@ const HybridCPRViewport: React.FC<HybridCPRViewportProps> = ({
   };
 
   const handleRotation = (angle: number) => {
-    console.log('🔄 Rotation to angle:', angle);
     setRotationAngle(angle);
     
     if (vtkCPRGenerator.current) {

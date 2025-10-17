@@ -13,17 +13,14 @@ export const initializeCornerstone = async (): Promise<void> => {
   try {
     // Initialize Cornerstone3D Core
     await csRenderInit();
-    console.log('✅ Cornerstone3D Core initialized');
 
     // Initialize Cornerstone3D Tools
     await csToolsInit();
-    console.log('✅ Cornerstone3D Tools initialized');
 
     // Initialize DICOM Image Loader with configuration for Orthanc
     dicomImageLoaderInit({
       maxWebWorkers: navigator.hardwareConcurrency || 1,
     });
-    console.log('✅ DICOM Image Loader initialized');
 
     // Configure DICOM Image Loader for better metadata handling
     try {
@@ -37,19 +34,15 @@ export const initializeCornerstone = async (): Promise<void> => {
           },
           maxWebWorkers: navigator.hardwareConcurrency || 1,
         });
-        console.log('✅ DICOM Image Loader configured for Orthanc');
       }
     } catch (error) {
-      console.warn('DICOM Image Loader configuration not available:', error);
     }
 
     // Register WADO-RS image loader for Orthanc
     imageLoader.registerImageLoader('wadors', dicomImageLoader.wadors.loadImage as any);
-    console.log('✅ WADO-RS image loader registered');
 
     // Register WADO-URI image loader for Orthanc
     imageLoader.registerImageLoader('wadouri', dicomImageLoader.wadouri.loadImage as any);
-    console.log('✅ WADO-URI image loader registered');
 
     // Register web image loader for test images
     imageLoader.registerImageLoader('web', ((imageId: string) => {
@@ -92,13 +85,10 @@ export const initializeCornerstone = async (): Promise<void> => {
       
       return { promise };
     }) as any);
-    console.log('✅ Web image loader registered');
 
     isInitialized = true;
-    console.log('🎉 Cornerstone3D fully initialized');
 
   } catch (error) {
-    console.error('❌ Failed to initialize Cornerstone3D:', error);
     throw new Error(`Cornerstone3D initialization failed: ${error}`);
   }
 };

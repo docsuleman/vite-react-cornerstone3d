@@ -24,14 +24,6 @@ export class CenterlineModifier {
     annularPlane: AnnularPlane
   ): ModifiedCenterlinePoint[] {
     
-    console.log('🔄 Modifying centerline with annular plane:', {
-      originalPoints: originalRootPoints.length,
-      annularPlane: {
-        center: annularPlane.center,
-        normal: annularPlane.normal,
-        confidence: annularPlane.confidence
-      }
-    });
 
     // Find the original points by type
     const lvOutflowPoint = originalRootPoints.find(p => p.type.includes('lv_outflow') || p.type.includes('LVOT'));
@@ -39,7 +31,6 @@ export class CenterlineModifier {
     const ascendingAortaPoint = originalRootPoints.find(p => p.type.includes('ascending_aorta') || p.type.includes('Aorta'));
 
     if (!lvOutflowPoint || !aorticValvePoint || !ascendingAortaPoint) {
-      console.warn('Could not find all required root points, using original centerline');
       return originalRootPoints.map((p, i) => ({ ...p, distanceFromStart: i }));
     }
 
@@ -50,7 +41,6 @@ export class CenterlineModifier {
       z: annularPlane.center[2]
     };
 
-    console.log('📍 New AV point (annulus center):', newAVPoint);
 
     // Calculate unit normal for perpendicular direction
     const normal = annularPlane.normal;
@@ -73,16 +63,10 @@ export class CenterlineModifier {
       originalDirection.z * originalDirection.z
     );
 
-    console.log('📐 Direction analysis:', {
-      originalDirection,
-      unitNormal,
-      originalDistance
-    });
 
     // ============================================================
     // CREATE 6MM PERFECTLY STRAIGHT SEGMENT AT ANNULUS PLANE
     // ============================================================
-    console.log('\n🎯 Creating 6mm perfectly straight perpendicular segment:');
 
     // Point at annulus - 3mm (along negative normal direction)
     const pointMinus3mm = {
@@ -90,7 +74,6 @@ export class CenterlineModifier {
       y: newAVPoint.y - 3 * unitNormal[1],
       z: newAVPoint.z - 3 * unitNormal[2]
     };
-    console.log(`   Point at -3mm: [${pointMinus3mm.x.toFixed(6)}, ${pointMinus3mm.y.toFixed(6)}, ${pointMinus3mm.z.toFixed(6)}]`);
 
     // Point at annulus + 3mm (along positive normal direction)
     const pointPlus3mm = {
@@ -98,8 +81,6 @@ export class CenterlineModifier {
       y: newAVPoint.y + 3 * unitNormal[1],
       z: newAVPoint.z + 3 * unitNormal[2]
     };
-    console.log(`   Point at +3mm: [${pointPlus3mm.x.toFixed(6)}, ${pointPlus3mm.y.toFixed(6)}, ${pointPlus3mm.z.toFixed(6)}]`);
-    console.log(`   Annulus center: [${newAVPoint.x.toFixed(6)}, ${newAVPoint.y.toFixed(6)}, ${newAVPoint.z.toFixed(6)}]`);
 
     // Create modified centerline with 3 segments
     let modifiedCenterline: ModifiedCenterlinePoint[] = [];
@@ -107,24 +88,47 @@ export class CenterlineModifier {
 
     // ============================================================
     // SEGMENT 1: LV Outflow → (Annulus - 3mm)
+    // Use Catmull-Rom spline for SMOOTH curve, not linear interpolation
     // ============================================================
-    const segment1Length = this.calculateDistance(lvOutflowPoint, pointMinus3mm);
     const segment1Points = 40; // Number of points in first segment
 
-    console.log(`\n📍 Segment 1: LV Outflow → (Annulus - 3mm) - ${segment1Length.toFixed(2)}mm, ${segment1Points + 1} points`);
+    // Create control points for Catmull-Rom: p0, p1 (start), p2 (end), p3
+    // p0: virtual point before LV outflow (extrapolated)
+    const lvToMinus3mmDir = {
+      x: pointMinus3mm.x - lvOutflowPoint.x,
+      y: pointMinus3mm.y - lvOutflowPoint.y,
+      z: pointMinus3mm.z - lvOutflowPoint.z
+    };
+    const lvToMinus3mmLen = Math.sqrt(lvToMinus3mmDir.x ** 2 + lvToMinus3mmDir.y ** 2 + lvToMinus3mmDir.z ** 2);
+    const segment1_p0 = {
+      x: lvOutflowPoint.x - lvToMinus3mmDir.x * 0.3,
+      y: lvOutflowPoint.y - lvToMinus3mmDir.y * 0.3,
+      z: lvOutflowPoint.z - lvToMinus3mmDir.z * 0.3
+    };
+    const segment1_p1 = lvOutflowPoint;
+    const segment1_p2 = pointMinus3mm;
+    // p3: point slightly beyond -3mm (towards annulus center)
+    const segment1_p3 = {
+      x: pointMinus3mm.x + unitNormal[0] * 1.0, // 1mm towards annulus
+      y: pointMinus3mm.y + unitNormal[1] * 1.0,
+      z: pointMinus3mm.z + unitNormal[2] * 1.0
+    };
 
     for (let i = 0; i <= segment1Points; i++) {
       const t = i / segment1Points;
-      const point: ModifiedCenterlinePoint = {
-        x: lvOutflowPoint.x + t * (pointMinus3mm.x - lvOutflowPoint.x),
-        y: lvOutflowPoint.y + t * (pointMinus3mm.y - lvOutflowPoint.y),
-        z: lvOutflowPoint.z + t * (pointMinus3mm.z - lvOutflowPoint.z),
-        distanceFromStart: cumulativeDistance + t * segment1Length,
-        isAnnulusPlane: false
-      };
+      const point = this.catmullRomInterpolate(segment1_p0, segment1_p1, segment1_p2, segment1_p3, t);
+
+      // Calculate distance from previous point
+      if (modifiedCenterline.length > 0) {
+        const prev = modifiedCenterline[modifiedCenterline.length - 1];
+        const dist = this.calculateDistance(prev, point);
+        cumulativeDistance += dist;
+      }
+
+      point.distanceFromStart = cumulativeDistance;
+      point.isAnnulusPlane = false;
       modifiedCenterline.push(point);
     }
-    cumulativeDistance += segment1Length;
 
     const junctionPoint1Index = modifiedCenterline.length - 1; // Index of -3mm point (junction 1)
 
@@ -135,8 +139,6 @@ export class CenterlineModifier {
     const segment2Length = 6.0; // Exactly 6mm
     const segment2Points = 10; // Add points for smooth scrolling
 
-    console.log(`\n📍 Segment 2: STRAIGHT 6mm perpendicular segment - ${segment2Points + 1} points`);
-    console.log(`   ⚠️ This segment is PERFECTLY STRAIGHT (zero curvature)`);
 
     // Add intermediate points (excluding first point which is already added)
     for (let i = 1; i <= segment2Points; i++) {
@@ -155,47 +157,55 @@ export class CenterlineModifier {
     const annulusPlaneIndex = modifiedCenterline.findIndex(p => p.isAnnulusPlane);
     const junctionPoint2Index = modifiedCenterline.length - 1; // Index of +3mm point (junction 2)
 
-    console.log(`   Annulus plane at index: ${annulusPlaneIndex}`);
-    console.log(`   Junction 1 at index: ${junctionPoint1Index} (at -3mm point)`);
-    console.log(`   Junction 2 at index: ${junctionPoint2Index} (at +3mm point)`);
 
     // ============================================================
     // SEGMENT 3: (Annulus + 3mm) → Ascending Aorta
-    // Perpendicular direction from +3mm point
+    // Use Catmull-Rom spline for SMOOTH curve, not linear interpolation
     // ============================================================
-    const segment3Length = originalDistance - 3; // Remaining distance
     const segment3Points = 60; // Number of points in third segment
 
-    console.log(`\n📍 Segment 3: (Annulus + 3mm) → Ascending Aorta - ${segment3Length.toFixed(2)}mm, ${segment3Points} points`);
+    // Calculate end point along perpendicular direction
+    const segment3Length = originalDistance - 3; // Remaining distance
+    const segment3EndPoint = {
+      x: pointPlus3mm.x + unitNormal[0] * segment3Length,
+      y: pointPlus3mm.y + unitNormal[1] * segment3Length,
+      z: pointPlus3mm.z + unitNormal[2] * segment3Length
+    };
+
+    // Create control points for Catmull-Rom: p0, p1 (start), p2 (end), p3
+    // p0: point slightly before +3mm (from annulus center)
+    const segment3_p0 = {
+      x: pointPlus3mm.x - unitNormal[0] * 1.0, // 1mm back towards annulus
+      y: pointPlus3mm.y - unitNormal[1] * 1.0,
+      z: pointPlus3mm.z - unitNormal[2] * 1.0
+    };
+    const segment3_p1 = pointPlus3mm;
+    const segment3_p2 = segment3EndPoint;
+    // p3: virtual point beyond end (extrapolated)
+    const segment3_p3 = {
+      x: segment3EndPoint.x + unitNormal[0] * segment3Length * 0.3,
+      y: segment3EndPoint.y + unitNormal[1] * segment3Length * 0.3,
+      z: segment3EndPoint.z + unitNormal[2] * segment3Length * 0.3
+    };
 
     for (let i = 1; i <= segment3Points; i++) {
       const t = i / segment3Points;
-      const point: ModifiedCenterlinePoint = {
-        x: pointPlus3mm.x + t * unitNormal[0] * segment3Length,
-        y: pointPlus3mm.y + t * unitNormal[1] * segment3Length,
-        z: pointPlus3mm.z + t * unitNormal[2] * segment3Length,
-        distanceFromStart: cumulativeDistance + t * segment3Length,
-        isAnnulusPlane: false
-      };
+      const point = this.catmullRomInterpolate(segment3_p0, segment3_p1, segment3_p2, segment3_p3, t);
+
+      // Calculate distance from previous point
+      const prev = modifiedCenterline[modifiedCenterline.length - 1];
+      const dist = this.calculateDistance(prev, point);
+      cumulativeDistance += dist;
+
+      point.distanceFromStart = cumulativeDistance;
+      point.isAnnulusPlane = false;
       modifiedCenterline.push(point);
     }
-    cumulativeDistance += segment3Length;
 
-    console.log('\n✅ Modified centerline created:', {
-      totalPoints: modifiedCenterline.length,
-      segment1Points: segment1Points + 1,
-      segment2Points: segment2Points + 1,
-      segment3Points,
-      annulusPlaneIndex,
-      junctionPoint1Index,
-      junctionPoint2Index,
-      totalLength: cumulativeDistance.toFixed(2) + 'mm'
-    });
 
     // ============================================================
     // VALIDATION: Verify 6mm straight segment is PERFECTLY STRAIGHT
     // ============================================================
-    console.log(`\n🔬 VALIDATION: 6mm Straight Segment (BEFORE smoothing)`);
 
     // Check straightness of the 6mm segment
     if (annulusPlaneIndex >= 0) {
@@ -209,13 +219,10 @@ export class CenterlineModifier {
         Math.pow(annulusPoint.y - newAVPoint.y, 2) +
         Math.pow(annulusPoint.z - newAVPoint.z, 2)
       );
-      console.log(`   Annulus center position error: ${errorFromCenter.toFixed(9)} mm`);
 
       // Verify distances are exactly 3mm
       const distMinus3mm = this.calculateDistance(minus3mmPoint, annulusPoint);
       const distPlus3mm = this.calculateDistance(annulusPoint, plus3mmPoint);
-      console.log(`   Distance (-3mm → annulus): ${distMinus3mm.toFixed(6)} mm (should be ~3.0)`);
-      console.log(`   Distance (annulus → +3mm): ${distPlus3mm.toFixed(6)} mm (should be ~3.0)`);
 
       // Verify perfect straightness (cross product should be near zero)
       const vec1 = {
@@ -237,44 +244,38 @@ export class CenterlineModifier {
 
       // Dot product should be -1 (opposite directions for straight line)
       const dotProduct = norm1.x * norm2.x + norm1.y * norm2.y + norm1.z * norm2.z;
-      console.log(`   Straightness check (dot product): ${dotProduct.toFixed(9)} (should be -1.0 for perfect line)`);
 
       if (Math.abs(dotProduct + 1.0) < 0.000001) {
-        console.log(`   ✅ 6mm segment is PERFECTLY STRAIGHT (zero curvature)`);
       } else {
-        console.warn(`   ⚠️ Segment has slight curvature: ${Math.abs(dotProduct + 1.0).toFixed(9)}`);
       }
     }
 
     // ============================================================
-    // APPLY SMOOTHING AT BOTH JUNCTIONS
+    // APPLY MINIMAL SMOOTHING AT BOTH JUNCTIONS
+    // Since we're now using Catmull-Rom splines for segments 1 and 3,
+    // we only need very light smoothing to ensure perfect continuity
     // ============================================================
-    console.log(`\n🔄 Applying smoothing at TWO junctions:`);
 
-    // Smooth at junction 1 (at -3mm point)
-    console.log(`\n   Junction 1: Smoothing around index ${junctionPoint1Index} (at -3mm point)`);
+    // Smooth at junction 1 (at -3mm point) - REDUCED window
     modifiedCenterline = this.smoothCenterlineJunction(
       modifiedCenterline,
       junctionPoint1Index,
-      10, // Smoothing window
+      4, // Reduced smoothing window (was 10)
       [junctionPoint1Index, annulusPlaneIndex, junctionPoint2Index] // Protect these 3 points
     );
 
-    // Smooth at junction 2 (at +3mm point)
-    console.log(`\n   Junction 2: Smoothing around index ${junctionPoint2Index} (at +3mm point)`);
+    // Smooth at junction 2 (at +3mm point) - REDUCED window
     modifiedCenterline = this.smoothCenterlineJunction(
       modifiedCenterline,
       junctionPoint2Index,
-      10, // Smoothing window
+      4, // Reduced smoothing window (was 10)
       [junctionPoint1Index, annulusPlaneIndex, junctionPoint2Index] // Protect these 3 points
     );
 
-    console.log('\n✅ Applied Catmull-Rom smoothing at both junctions (3 core points NOT smoothed)');
 
     // ============================================================
     // VALIDATION: Verify positions are STILL EXACT after smoothing
     // ============================================================
-    console.log(`\n🔬 VALIDATION: After Smoothing`);
 
     if (annulusPlaneIndex >= 0) {
       const annulusPoint = modifiedCenterline[annulusPlaneIndex];
@@ -287,20 +288,14 @@ export class CenterlineModifier {
         Math.pow(annulusPoint.y - newAVPoint.y, 2) +
         Math.pow(annulusPoint.z - newAVPoint.z, 2)
       );
-      console.log(`   Annulus center position error: ${errorFromCenter.toFixed(9)} mm`);
 
       if (errorFromCenter > 0.000001) {
-        console.error(`   ❌ CRITICAL ERROR: Smoothing moved the annulus plane point!`);
       } else {
-        console.log(`   ✅ Annulus position EXACT (preserved through smoothing)`);
       }
 
       // Verify ±3mm points haven't moved
       const dist1 = this.calculateDistance(minus3mmPoint, annulusPoint);
       const dist2 = this.calculateDistance(annulusPoint, plus3mmPoint);
-      console.log(`   Distance (-3mm → annulus): ${dist1.toFixed(6)} mm`);
-      console.log(`   Distance (annulus → +3mm): ${dist2.toFixed(6)} mm`);
-      console.log(`   ✅ All 3 core points preserved\n`);
     }
 
     return modifiedCenterline;
@@ -383,8 +378,6 @@ export class CenterlineModifier {
     const startIdx = Math.max(0, junctionIndex - halfWindow);
     const endIdx = Math.min(centerline.length - 1, junctionIndex + halfWindow);
 
-    console.log(`      Smoothing window: ${startIdx} to ${endIdx}`);
-    console.log(`      Protected indices: [${protectedIndices.join(', ')}] (will NOT be smoothed)`);
 
     // Create a copy of the centerline
     const smoothed = [...centerline];
@@ -444,7 +437,6 @@ export class CenterlineModifier {
       smoothedCount++;
     }
 
-    console.log(`      ✅ Smoothed ${smoothedCount} points, protected ${skippedCount} points`);
 
     // CRITICAL: Recalculate cumulative arc length after smoothing
     // because the 3D positions have changed
@@ -454,7 +446,6 @@ export class CenterlineModifier {
       smoothed[i].distanceFromStart = smoothed[i - 1].distanceFromStart! + dist;
     }
 
-    console.log('✅ Recalculated arc lengths after smoothing');
     return smoothed;
   }
 
@@ -467,6 +458,35 @@ export class CenterlineModifier {
       Math.pow(p2.y - p1.y, 2) +
       Math.pow(p2.z - p1.z, 2)
     );
+  }
+
+  /**
+   * Catmull-Rom spline interpolation
+   * Creates smooth curves through control points
+   */
+  private static catmullRomInterpolate(
+    p0: { x: number; y: number; z: number },
+    p1: { x: number; y: number; z: number },
+    p2: { x: number; y: number; z: number },
+    p3: { x: number; y: number; z: number },
+    t: number
+  ): ModifiedCenterlinePoint {
+    const t2 = t * t;
+    const t3 = t2 * t;
+
+    // Catmull-Rom basis functions (same as CenterlineGenerator)
+    const b0 = -0.5 * t3 + t2 - 0.5 * t;
+    const b1 = 1.5 * t3 - 2.5 * t2 + 1;
+    const b2 = -1.5 * t3 + 2 * t2 + 0.5 * t;
+    const b3 = 0.5 * t3 - 0.5 * t2;
+
+    return {
+      x: p0.x * b0 + p1.x * b1 + p2.x * b2 + p3.x * b3,
+      y: p0.y * b0 + p1.y * b1 + p2.y * b2 + p3.y * b3,
+      z: p0.z * b0 + p1.z * b1 + p2.z * b2 + p3.z * b3,
+      distanceFromStart: 0, // Will be set by caller
+      isAnnulusPlane: false
+    };
   }
 
   /**

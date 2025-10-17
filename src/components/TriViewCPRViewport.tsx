@@ -160,18 +160,11 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
   const generateCenterlinePoints = (points: Point3D[]): Point3D[] => {
     // Use modified centerline if available (after annulus plane calculation)
     if (modifiedCenterline && modifiedCenterline.length > 0) {
-      console.log('🔄 Using modified centerline (perpendicular to annular plane):', {
-        points: modifiedCenterline.length,
-        firstPoint: modifiedCenterline[0],
-        lastPoint: modifiedCenterline[modifiedCenterline.length - 1],
-        annularPlanePresent: !!annularPlane
-      });
       return modifiedCenterline;
     }
 
     if (points.length < 3) return [];
 
-    console.log('📏 Using original 3-point centerline interpolation for', points.length, 'root points');
     const centerlinePoints: Point3D[] = [];
     const numInterpolatedPoints = 100;
 
@@ -217,7 +210,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
     color: string,
     sphereId: string
   ): any => {
-    console.log(`🔵 Creating simple VTK sphere:`, { worldPos, color, sphereId });
 
     // Create sphere source
     const sphereSource = vtkSphereSource.newInstance();
@@ -242,7 +234,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
     property.setDiffuse(0.0); // No diffuse
     property.setSpecular(0.0); // No specular
 
-    console.log(`🔵 Sphere created at: [${worldPos[0].toFixed(2)}, ${worldPos[1].toFixed(2)}, ${worldPos[2].toFixed(2)}] with radius 10`);
 
     sphereActorMap.current.set(sphereId, actor);
     
@@ -251,7 +242,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
 
   // Add sphere to all VTK renderers - simplified approach
   const addCuspSphereToRenderer = (sphereActor: any): void => {
-    console.log(`🎯 Adding sphere ${sphereActor.id} to all VTK renderers`);
     
     const views = ['cpr1', 'cpr2', 'crossSection'] as const;
     
@@ -268,24 +258,19 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
           // Force render
           view.renderWindow.render();
           
-          console.log(`✅ Added sphere ${sphereActor.id} to ${viewName} renderer`);
           
           // Debug info
           const actorCount = view.renderer.getActors().length;
-          console.log(`📊 ${viewName} now has ${actorCount} actors`);
           
         } catch (error) {
-          console.error(`❌ Error adding sphere to ${viewName} renderer:`, error);
         }
       } else {
-        console.warn(`⚠️ ${viewName} view not ready for sphere addition`);
       }
     });
   };
 
   // Remove sphere from all VTK renderers
   const removeCuspSphereFromRenderer = (sphereId: string): void => {
-    console.log(`🗑️ Removing sphere ${sphereId} from all renderers`);
     
     const views = ['cpr1', 'cpr2', 'crossSection'] as const;
     
@@ -296,9 +281,7 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
           // Remove all actors with matching sphere ID (we can't easily track cloned actors)
           // For now, this is a simplified approach
           view.genericRenderWindow.getRenderWindow().render();
-          console.log(`✅ Attempted to remove sphere ${sphereId} from ${viewName} renderer`);
         } catch (error) {
-          console.error(`❌ Error removing sphere from ${viewName} renderer:`, error);
         }
       }
     });
@@ -309,7 +292,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
   // Handle cusp dot placement
   const handleCuspDotPlacement = (worldPos: [number, number, number]) => {
     if (cuspDots.length >= 3) {
-      console.warn('Maximum of 3 cusp dots already placed');
       return;
     }
 
@@ -321,12 +303,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
     const color = colors[dotIndex];
     const dotId = `cusp-dot-${Date.now()}-${dotIndex}`;
 
-    console.log(`🎯 Placing cusp dot ${dotIndex + 1}/3:`, {
-      type: cuspType,
-      color,
-      worldPos,
-      id: dotId
-    });
 
     // Create VTK sphere actor
     const sphereActor = createCuspSphereActor(worldPos, color, dotId);
@@ -358,17 +334,14 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       onCuspDotsUpdate(dotsForCallback);
     }
 
-    console.log(`✅ Placed cusp dot ${dotIndex + 1}/3 - ${cuspType} cusp`);
 
     if (updatedDots.length === 3) {
-      console.log('🎯 All 3 cusp dots placed - disabling placement mode');
       setIsPlacingCuspDots(false);
     }
   };
 
   // Test function to create a simple sphere at image center
   const testSimpleSphere = () => {
-    console.log('🧪 Creating test sphere with camera debug...');
     
     Object.entries(vtkObjects.current).forEach(([viewName, view]: [string, any]) => {
       if (viewName === 'volume' || !view?.renderer || !view?.renderWindow) return;
@@ -383,10 +356,8 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
             (bounds[2] + bounds[3]) / 2,
             (bounds[4] + bounds[5]) / 2 + 50 // Move sphere 50 units forward
           ];
-          console.log(`🧪 ${viewName} image bounds:`, bounds);
         }
         
-        console.log(`🧪 Creating test sphere in ${viewName} at:`, center);
         
         // Create bright sphere at center
         const sphereSource = vtkSphereSource.newInstance();
@@ -416,9 +387,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         const focalPoint = camera.getFocalPoint();
         const clippingRange = camera.getClippingRange();
         
-        console.log(`🧪 ${viewName} camera position:`, cameraPos);
-        console.log(`🧪 ${viewName} camera focal point:`, focalPoint);
-        console.log(`🧪 ${viewName} camera clipping range:`, clippingRange);
         
         // Force camera to look at sphere
         camera.setFocalPoint(center[0], center[1], center[2]);
@@ -430,16 +398,13 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         view.renderWindow.render();
         view.renderWindow.render();
         
-        console.log(`✅ Test sphere added to ${viewName} with camera adjustment`);
         
       } catch (error) {
-        console.error(`❌ Failed to add test sphere to ${viewName}:`, error);
       }
     });
   };
 
   const handleWindowLevel = (deltaWindow: number, deltaLevel: number) => {
-    console.log('🎨 Window/Level button clicked:', { deltaWindow, deltaLevel });
     
     const views = ['cpr1', 'cpr2', 'crossSection'] as const;
     const newWindow = Math.max(1, windowLevel.window + deltaWindow);
@@ -461,13 +426,11 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
             view.genericRenderWindow.getRenderWindow().render();
           }
         } catch (error) {
-          console.error(`❌ Window/Level error in ${viewName}:`, error);
         }
       }
     });
     
     setWindowLevel({ window: newWindow, level: newLevel });
-    console.log('🎨 Window/Level applied to all views:', { newWindow, newLevel });
   };
 
   const resetView = () => {
@@ -488,14 +451,12 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       }
       
       vtkObjects.current.genericRenderWindow.getRenderWindow().render();
-      console.log('🔄 View reset');
     }
   };
 
   // Load DICOM data (restored working pattern from commit e67f226)
   const loadDicomData = async () => {
     try {
-      console.log('🔄 Loading real DICOM data using working MPR pattern...');
       
       const imageIds = await createImageIdsAndCacheMetaData({
         StudyInstanceUID: patientInfo!.studyInstanceUID!,
@@ -507,7 +468,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         throw new Error('No DICOM images found for this series');
       }
 
-      console.log(`📋 Found ${imageIds.length} DICOM images`);
 
       // Use the exact pattern from working version that works
       const volumeId = `triViewCprVolume_${Date.now()}`;
@@ -515,12 +475,10 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         imageIds,
       });
       
-      console.log('🔄 Loading volume data...');
       
       // Load the volume and wait for it to complete
       await volume.load();
       
-      console.log('✅ Volume loading completed');
       
       // Wait for scalar data to become available (exactly like working version)
       let waitTime = 0;
@@ -540,54 +498,33 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
             // getScalarData throws when not available
           }
           
-          console.log(`📊 Volume status (${waitTime}ms):`, {
-            hasScalarVolume: streamingVolume.hasScalarVolume || false,
-            hasScalarData: hasData,
-            framesLoaded: streamingVolume.framesLoaded || 0,
-            framesProcessed: streamingVolume.framesProcessed || 0,
-            cachedFrames: Object.keys(streamingVolume.cachedFrames || {}).length,
-            hasImageData: !!streamingVolume.imageData // Key addition from working version
-          });
           
           if (hasData) {
-            console.log('✅ Scalar data is now available!');
             break;
           }
           
           // Also check for imageData availability (working version approach)
           if (streamingVolume.imageData) {
-            console.log('✅ ImageData is available, will use it directly!');
             break;
           }
           
           // Break if we have loaded frames even if scalar data isn't available via getScalarData
           if (streamingVolume.framesLoaded > 0 && streamingVolume.cachedFrames && Object.keys(streamingVolume.cachedFrames).length > 0) {
-            console.log('✅ Frame data is available, will extract CPR!');
             break;
           }
           
         } catch (e) {
-          console.log(`⚠️ Error checking volume status at ${waitTime}ms:`, e.message);
         }
         
         await new Promise(resolve => setTimeout(resolve, pollInterval));
         waitTime += pollInterval;
       }
 
-      console.log('📊 Final volume info:', {
-        dimensions: volume.dimensions,
-        spacing: volume.spacing,
-        origin: volume.origin,
-        volumeId: volume.volumeId,
-        hasImageData: !!volume.imageData,
-        hasVtkOpenGLTexture: !!volume.vtkOpenGLTexture
-      });
 
       vtkObjects.current.volume = volume;
       return { volume, imageIds, volumeId };
       
     } catch (error) {
-      console.error('❌ Failed to load DICOM data:', error);
       throw error;
     }
   };
@@ -595,12 +532,8 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
   // Create VTK ImageData from Cornerstone volume (restored from working version)
   const createVTKImageDataFromVolume = async (volume: any) => {
     try {
-      console.log('🔄 Creating VTK ImageData from Cornerstone volume (working pattern)...');
-      console.log('📊 Volume structure:', Object.keys(volume));
       
       // Debug: Examine the volume object structure (like HybridCPRViewport)
-      console.log('🔍 Volume object properties:', Object.keys(volume));
-      console.log('🔍 Volume object methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(volume)).filter(name => typeof volume[name] === 'function'));
       
       let scalarData = null;
       let attempts = [];
@@ -619,16 +552,12 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
 
       if (!scalarData && volume.voxelManager) {
         try {
-          console.log('🔄 Attempt 3: Using voxelManager (HybridCPRViewport pattern)...');
-          console.log('🔍 voxelManager properties:', Object.keys(volume.voxelManager));
-          console.log('🔍 voxelManager methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(volume.voxelManager)).filter(name => typeof volume.voxelManager[name] === 'function'));
           
           // Try different voxelManager approaches
           if (volume.voxelManager.getScalarData) {
             scalarData = volume.voxelManager.getScalarData();
             if (scalarData) {
               attempts.push('volume.voxelManager.getScalarData() - SUCCESS');
-              console.log('✅ Got scalar data via voxelManager.getScalarData()');
             }
           }
           
@@ -637,7 +566,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
             scalarData = volume.voxelManager.getCompleteScalarDataArray();
             if (scalarData) {
               attempts.push('volume.voxelManager.getCompleteScalarDataArray() - SUCCESS');
-              console.log('✅ Got scalar data via voxelManager.getCompleteScalarDataArray()');
             }
           }
           
@@ -646,7 +574,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
           }
         } catch (e) {
           attempts.push(`volume.voxelManager access - ERROR: ${e.message}`);
-          console.warn('⚠️ voxelManager access failed:', e);
         }
       }
 
@@ -666,12 +593,10 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       // Method 4: Try vtkImageData if available (HybridCPRViewport pattern)
       if (!scalarData && volume.vtkImageData) {
         try {
-          console.log('🔄 Attempt 4: Using volume.vtkImageData...');
           const scalars = volume.vtkImageData.getPointData().getScalars();
           if (scalars) {
             scalarData = scalars.getData();
             attempts.push('volume.vtkImageData.getPointData().getScalars().getData() - SUCCESS');
-            console.log('✅ Got scalar data via vtkImageData');
           } else {
             attempts.push('volume.vtkImageData - NO SCALARS');
           }
@@ -680,7 +605,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         }
       }
 
-      console.log('📊 Scalar data access attempts:', attempts);
       
       if (!scalarData) {
         throw new Error('No scalar data found via any method');
@@ -690,13 +614,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       const spacing = volume.spacing || [1, 1, 1];
       const origin = volume.origin || [0, 0, 0];
 
-      console.log('📊 Volume info for VTK creation:', { 
-        dimensions, 
-        spacing, 
-        origin, 
-        dataLength: scalarData?.length,
-        dataType: scalarData?.constructor?.name 
-      });
 
       if (!scalarData || scalarData.length === 0) {
         throw new Error('Scalar data is empty or invalid');
@@ -718,16 +635,9 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       const createdDims = imageData.getDimensions();
       const createdScalars = imageData.getPointData().getScalars();
       
-      console.log('✅ VTK ImageData created successfully:', {
-        dimensions: createdDims,
-        hasScalars: !!createdScalars,
-        scalarCount: createdScalars?.getNumberOfTuples(),
-        className: imageData.getClassName()
-      });
       
       return imageData;
     } catch (error) {
-      console.error('❌ Failed to create VTK ImageData from volume:', error);
       throw error;
     }
   };
@@ -735,14 +645,12 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
   // Extract real CPR data from Cornerstone3D volume (exactly like HybridCPRViewport)
   const extractRealCPRFromVolume = async (volume: any, centerlinePoints: Point3D[]): Promise<any> => {
     try {
-      console.log('🔄 Attempting to extract real CPR data from Cornerstone3D volume...');
       
       // Get volume characteristics
       const dimensions = volume.dimensions;
       const spacing = volume.spacing;
       const origin = volume.origin;
       
-      console.log('📊 Volume characteristics:', { dimensions, spacing, origin });
       
       // Try multiple approaches to access scalar data (restored working pattern)
       let scalarData = null;
@@ -751,16 +659,12 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       // Method 1: Try volume.imageData with detailed inspection (HybridCPRViewport pattern)
       if (volume.imageData) {
         try {
-          console.log('🔄 Attempt 1: Using volume.imageData (HybridCPRViewport pattern)...');
-          console.log('🔍 imageData properties:', Object.keys(volume.imageData));
-          console.log('🔍 imageData methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(volume.imageData)).filter(name => typeof volume.imageData[name] === 'function'));
           
           if (volume.imageData.getPointData && volume.imageData.getPointData().getScalars) {
             const scalars = volume.imageData.getPointData().getScalars();
             if (scalars) {
               scalarData = scalars.getData();
               attempts.push('volume.imageData.getPointData().getScalars().getData() - SUCCESS');
-              console.log('✅ Got real scalar data via volume.imageData!');
             } else {
               attempts.push('volume.imageData.getPointData().getScalars() - NULL SCALARS');
             }
@@ -769,7 +673,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
           }
         } catch (e) {
           attempts.push(`volume.imageData access - ERROR: ${e.message}`);
-          console.warn('⚠️ volume.imageData access failed:', e);
         }
       } else {
         attempts.push('volume.imageData - NOT AVAILABLE');
@@ -778,72 +681,53 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       // Method 2: Try getScalarData() - most direct approach
       if (!scalarData) {
         try {
-          console.log('🔄 Attempt 2: Using getScalarData()...');
           
           if (typeof volume.getScalarData === 'function') {
             scalarData = volume.getScalarData();
             if (scalarData) {
               attempts.push('volume.getScalarData() - SUCCESS');
-              console.log('✅ Got scalar data via getScalarData()');
             }
           } else {
             attempts.push('volume.getScalarData() - NOT AVAILABLE');
-            console.log('⚠️ getScalarData method not available');
           }
           
         } catch (error) {
           attempts.push(`volume.getScalarData() - ERROR: ${error.message}`);
-          console.warn('⚠️ getScalarData() failed:', error);
         }
       }
       
       // Method 3: Try scalarData property
       if (!scalarData) {
         try {
-          console.log('🔄 Attempt 3: Using volume.scalarData property...');
           
           // @ts-ignore - Accessing internal properties
           if (volume.scalarData && volume.scalarData.length > 0) {
             scalarData = volume.scalarData;
             attempts.push('volume.scalarData - SUCCESS');
-            console.log('✅ Got scalar data via volume.scalarData property');
           } else {
             attempts.push('volume.scalarData - NOT AVAILABLE');
-            console.log('⚠️ volume.scalarData is empty or not available');
           }
           
         } catch (error) {
           attempts.push(`volume.scalarData - ERROR: ${error.message}`);
-          console.warn('⚠️ volume.scalarData access failed:', error);
         }
       }
       
       // Method 4: Try voxelManager approach (OFFICIAL Cornerstone3D method per documentation)
       if (!scalarData && volume.voxelManager) {
         try {
-          console.log('🔄 Attempt 4: Using VoxelManager (official Cornerstone3D method)...');
-          console.log('🔍 VoxelManager properties:', Object.keys(volume.voxelManager));
-          console.log('🔍 VoxelManager methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(volume.voxelManager)).filter(name => typeof volume.voxelManager[name] === 'function'));
           
           // Method 4a: getCompleteScalarDataArray() - OFFICIAL method per documentation
           if (volume.voxelManager.getCompleteScalarDataArray) {
             try {
-              console.log('🔄 Trying getCompleteScalarDataArray() (documented method)...');
               scalarData = volume.voxelManager.getCompleteScalarDataArray();
               if (scalarData && scalarData.length > 0) {
                 attempts.push('volume.voxelManager.getCompleteScalarDataArray() - SUCCESS');
-                console.log('✅ Got scalar data via getCompleteScalarDataArray() (official method):', {
-                  dataLength: scalarData.length,
-                  dataType: scalarData.constructor?.name,
-                  expectedLength: volume.dimensions[0] * volume.dimensions[1] * volume.dimensions[2]
-                });
               } else {
                 attempts.push('volume.voxelManager.getCompleteScalarDataArray() - NO DATA');
-                console.warn('⚠️ getCompleteScalarDataArray() returned no data');
               }
             } catch (e) {
               attempts.push(`volume.voxelManager.getCompleteScalarDataArray() - ERROR: ${e.message}`);
-              console.warn('⚠️ getCompleteScalarDataArray() failed:', e);
             }
           } else {
             attempts.push('volume.voxelManager.getCompleteScalarDataArray() - METHOD NOT AVAILABLE');
@@ -852,23 +736,19 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
           // Method 4b: getScalarData() fallback
           if (!scalarData && volume.voxelManager.getScalarData) {
             try {
-              console.log('🔄 Trying getScalarData() fallback...');
               scalarData = volume.voxelManager.getScalarData();
               if (scalarData && scalarData.length > 0) {
                 attempts.push('volume.voxelManager.getScalarData() - SUCCESS');
-                console.log('✅ Got scalar data via getScalarData() fallback');
               } else {
                 attempts.push('volume.voxelManager.getScalarData() - NO DATA');
               }
             } catch (e) {
               attempts.push(`volume.voxelManager.getScalarData() - ERROR: ${e.message}`);
-              console.warn('⚠️ getScalarData() failed:', e);
             }
           }
           
           // Method 4c: Check for alternative voxel data properties
           if (!scalarData) {
-            console.log('🔍 Checking alternative VoxelManager data properties...');
             
             const alternatives = ['voxelData', 'scalarArray', 'data', 'pixelData', 'volumeData'];
             for (const prop of alternatives) {
@@ -881,11 +761,9 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
                   if (data && data.length > 0) {
                     scalarData = data;
                     attempts.push(`volume.voxelManager.${prop} - SUCCESS`);
-                    console.log(`✅ Got scalar data via voxelManager.${prop}`);
                     break;
                   }
                 } catch (e) {
-                  console.warn(`⚠️ Failed to access voxelManager.${prop}:`, e);
                 }
               }
             }
@@ -897,22 +775,18 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
           
         } catch (e) {
           attempts.push(`volume.voxelManager access - CRITICAL ERROR: ${e.message}`);
-          console.error('❌ Critical VoxelManager access failed:', e);
         }
       } else if (!volume.voxelManager) {
         attempts.push('volume.voxelManager - NOT AVAILABLE');
-        console.warn('⚠️ No VoxelManager found on volume');
       }
       
       // Method 6: Try vtkImageData if available (complete HybridCPRViewport pattern)
       if (!scalarData && volume.vtkImageData) {
         try {
-          console.log('🔄 Attempt 6: Using vtkImageData...');
           const scalars = volume.vtkImageData.getPointData().getScalars();
           if (scalars) {
             scalarData = scalars.getData();
             attempts.push('volume.vtkImageData.getPointData().getScalars().getData() - SUCCESS');
-            console.log('✅ Got scalar data via vtkImageData');
           } else {
             attempts.push('volume.vtkImageData - NO SCALARS');
           }
@@ -923,75 +797,40 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         attempts.push('volume.vtkImageData - NOT AVAILABLE');
       }
       
-      console.log('📊 Scalar data access attempts:', `(${attempts.length})`, attempts);
       
       // Method 7: Try frames data directly (comprehensive streaming volume investigation)
       // @ts-ignore - Accessing streaming volume properties
       const streamingVolume = volume as any;
       if (!scalarData && streamingVolume.framesLoaded > 0) {
-        console.log('🔄 Attempt 7: Investigating streaming volume structure...');
         
         // First, let's understand the actual streaming volume structure
-        console.log('🔍 StreamingVolume structure investigation:', {
-          framesLoaded: streamingVolume.framesLoaded,
-          framesProcessed: streamingVolume.framesProcessed || 'unknown',
-          cachedFrames: Object.keys(streamingVolume.cachedFrames || {}).length,
-          streamingVolumeKeys: Object.keys(streamingVolume).slice(0, 20), // First 20 properties
-          hasImageIds: !!streamingVolume._imageIds,
-          imageIdsLength: streamingVolume._imageIds?.length || 0,
-          hasVoxelManager: !!streamingVolume.voxelManager,
-          voxelManagerKeys: streamingVolume.voxelManager ? Object.keys(streamingVolume.voxelManager).slice(0, 10) : [],
-        });
         
         // Check if there's a frame cache or image cache elsewhere
-        console.log('🔍 Looking for alternative frame storage locations...');
         
         // Method 7a: Check if frames are stored differently
         if (streamingVolume.cachedFrames && Object.keys(streamingVolume.cachedFrames).length > 0) {
           const frameKeys = Object.keys(streamingVolume.cachedFrames);
-          console.log('🔍 CachedFrames analysis:', {
-            totalFrameKeys: frameKeys.length,
-            firstFewKeys: frameKeys.slice(0, 5),
-            frameTypes: frameKeys.slice(0, 3).map(key => ({
-              key,
-              type: typeof streamingVolume.cachedFrames[key],
-              constructorName: streamingVolume.cachedFrames[key]?.constructor?.name,
-              isNumber: typeof streamingVolume.cachedFrames[key] === 'number',
-              value: streamingVolume.cachedFrames[key]
-            }))
-          });
         }
         
         // Method 7b: Check the image cache directly (common alternative)
         if (streamingVolume.imageCache || streamingVolume._imageCache) {
           const imageCache = streamingVolume.imageCache || streamingVolume._imageCache;
-          console.log('🔍 Found imageCache:', {
-            imageCacheKeys: Object.keys(imageCache).slice(0, 5),
-            imageCacheLength: Object.keys(imageCache).length
-          });
         }
         
         // Method 7c: Check if frames are stored in cornerstone cache
         try {
           const cornerstoneCache = cache;
           if (cornerstoneCache && cornerstoneCache.getImageLoadObject) {
-            console.log('🔍 Checking Cornerstone cache for frames...');
             
             // Try to get frame data from the main cache
             const imageIds = streamingVolume._imageIds || [];
             if (imageIds.length > 0) {
-              console.log('🔍 Attempting to access frame data via Cornerstone cache:', {
-                totalImageIds: imageIds.length,
-                firstImageId: imageIds[0],
-                lastImageId: imageIds[imageIds.length - 1]
-              });
               
               // Try to reconstruct from individual images in the cache (SYNCHRONOUS approach)
               scalarData = new Float32Array(volume.dimensions[0] * volume.dimensions[1] * volume.dimensions[2]);
               let voxelIndex = 0;
               let framesProcessed = 0;
               
-              console.log('🔄 Starting synchronous frame reconstruction from Cornerstone cache...');
               
               for (let i = 0; i < Math.min(imageIds.length, volume.dimensions[2]); i++) {
                 const imageId = imageIds[i];
@@ -1022,11 +861,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
                       try {
                         const pixelData = image.getPixelData();
                         if (pixelData && pixelData.length > 0) {
-                          console.log(`✅ Extracted pixel data from frame ${i}:`, {
-                            pixelDataLength: pixelData.length,
-                            pixelDataType: pixelData.constructor?.name,
-                            expectedFrameSize: volume.dimensions[0] * volume.dimensions[1]
-                          });
                           
                           // Copy pixel data to the scalar array
                           const frameSize = volume.dimensions[0] * volume.dimensions[1];
@@ -1039,18 +873,11 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
                           framesProcessed++;
                           
                           if (i % 10 === 0) { // Log every 10th frame
-                            console.log(`📊 Processed frame ${i}: ${pixelsToAdd} pixels (total: ${voxelIndex})`);
                           }
                         }
                       } catch (e) {
-                        console.warn(`⚠️ Failed to get pixel data from frame ${i}:`, e);
                       }
                     } else if (image) {
-                      console.log(`🔍 Frame ${i} image structure:`, {
-                        hasGetPixelData: !!image.getPixelData,
-                        imageKeys: Object.keys(image).slice(0, 15),
-                        imageType: image.constructor?.name
-                      });
                       
                       // Try alternative pixel data access methods
                       let alternativePixelData = null;
@@ -1066,10 +893,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
                       }
                       
                       if (alternativePixelData && alternativePixelData.length > 0) {
-                        console.log(`✅ Found alternative pixel data for frame ${i}:`, {
-                          dataLength: alternativePixelData.length,
-                          dataType: alternativePixelData.constructor?.name
-                        });
                         
                         const frameSize = volume.dimensions[0] * volume.dimensions[1];
                         const pixelsToAdd = Math.min(frameSize, alternativePixelData.length, scalarData.length - voxelIndex);
@@ -1083,30 +906,20 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
                     }
                   }
                 } catch (e) {
-                  console.warn(`⚠️ Failed to get imageLoadObject for frame ${i}:`, e);
                 }
               }
               
-              console.log(`📊 Cache reconstruction summary:`, {
-                totalFramesProcessed: framesProcessed,
-                totalVoxelsExtracted: voxelIndex,
-                expectedTotalVoxels: volume.dimensions[0] * volume.dimensions[1] * volume.dimensions[2],
-                completionPercentage: ((voxelIndex / (volume.dimensions[0] * volume.dimensions[1] * volume.dimensions[2])) * 100).toFixed(1)
-              });
               
               // Success if we got significant amount of data
               if (voxelIndex > 0 && framesProcessed > 0) {
-                console.log(`✅ Successfully reconstructed scalar data from Cornerstone cache: ${voxelIndex} voxels from ${framesProcessed} frames`);
                 attempts.push(`cornerstone cache reconstruction - SUCCESS (${voxelIndex} voxels from ${framesProcessed} frames)`);
               } else {
                 scalarData = null;
-                console.warn('⚠️ Could not reconstruct from Cornerstone cache - no data extracted');
                 attempts.push('cornerstone cache reconstruction - NO DATA EXTRACTED');
               }
             }
           }
         } catch (e) {
-          console.warn('⚠️ Error accessing Cornerstone cache:', e);
         }
         
         // Legacy approach - try to access cached frame data even if structure is unexpected
@@ -1118,11 +931,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
             const totalVoxels = volume.dimensions[0] * volume.dimensions[1] * volume.dimensions[2];
             scalarData = new Float32Array(totalVoxels);
             
-            console.log('🔄 Starting frame reconstruction:', {
-              totalVoxels,
-              expectedFrames: volume.dimensions[2],
-              availableFrameKeys: frameKeys.length
-            });
             
             let voxelIndex = 0;
             let framesProcessed = 0;
@@ -1136,7 +944,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
               frameKey = i.toString();
               if (streamingVolume.cachedFrames[frameKey]) {
                 frame = streamingVolume.cachedFrames[frameKey];
-                console.log(`📋 Found frame via numeric key: ${frameKey}`);
               }
               
               // Method 2: Try imageId-based keys if numeric fails
@@ -1144,7 +951,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
                 frameKey = streamingVolume._imageIds[i];
                 frame = streamingVolume.cachedFrames[frameKey];
                 if (frame) {
-                  console.log(`📋 Found frame via imageId key: ${frameKey}`);
                 }
               }
               
@@ -1153,18 +959,10 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
                 frameKey = frameKeys[i];
                 frame = streamingVolume.cachedFrames[frameKey];
                 if (frame) {
-                  console.log(`📋 Found frame via frameKeys array: ${frameKey}`);
                 }
               }
               
               if (frame) {
-                console.log(`🔍 Frame ${i} structure:`, {
-                  hasPixelData: !!frame.pixelData,
-                  pixelDataLength: frame.pixelData?.length,
-                  pixelDataType: frame.pixelData?.constructor?.name,
-                  allFrameKeys: Object.keys(frame), // Show ALL keys to see what's actually there
-                  frameType: frame.constructor?.name
-                });
                 
                 // Try multiple property names for pixel data
                 let frameData = null;
@@ -1184,7 +982,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
                       pixelDataSource = 'getPixelData()';
                     }
                   } catch (e) {
-                    console.warn(`⚠️ getPixelData() failed for frame ${i}:`, e);
                   }
                 }
                 
@@ -1220,18 +1017,12 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
                       pixelDataSource = 'arrayBuffer->Uint16Array';
                     }
                   } catch (e) {
-                    console.warn(`⚠️ arrayBuffer conversion failed for frame ${i}:`, e);
                   }
                 }
                 
                 if (frameData && frameData.length > 0) {
                   const frameSize = volume.dimensions[0] * volume.dimensions[1];
                   
-                  console.log(`✅ Found pixel data via ${pixelDataSource}:`, {
-                    frameDataLength: frameData.length,
-                    expectedFrameSize: frameSize,
-                    frameDataType: frameData.constructor?.name
-                  });
                   
                   // Copy frame data to volume array
                   const pixelsToAdd = Math.min(frameSize, frameData.length, totalVoxels - voxelIndex);
@@ -1240,27 +1031,20 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
                   }
                   
                   framesProcessed++;
-                  console.log(`✅ Processed frame ${i}: added ${pixelsToAdd} pixels (total: ${voxelIndex})`);
                 } else {
-                  console.warn(`⚠️ Frame ${i} has no accessible pixel data despite ${Object.keys(frame).length} properties`);
-                  console.warn(`⚠️ Frame ${i} properties:`, Object.keys(frame));
                 }
               } else {
-                console.warn(`⚠️ Could not find frame ${i} with any key method`);
               }
             }
             
             if (voxelIndex > 0) {
-              console.log(`✅ Frame reconstruction SUCCESS: ${voxelIndex} voxels from ${framesProcessed} frames`);
               attempts.push(`frame reconstruction - SUCCESS (${voxelIndex} voxels from ${framesProcessed} frames)`);
             } else {
               scalarData = null; // Reset if reconstruction failed
-              console.warn('⚠️ Frame reconstruction produced no data');
               attempts.push('frame reconstruction - NO DATA');
             }
             
           } catch (frameError) {
-            console.warn('⚠️ Failed to reconstruct from frames:', frameError);
             scalarData = null;
             attempts.push(`frame reconstruction - ERROR: ${frameError.message}`);
           }
@@ -1272,7 +1056,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       }
       
       if (!scalarData) {
-        console.warn('⚠️ Could not access real scalar data via direct methods, waiting longer and trying additional approaches...');
         
         // Wait a bit longer for data to become available (like HybridCPRViewport)
         let waitTime = 0;
@@ -1280,22 +1063,18 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         const pollInterval = 500; // Check every 500ms
         
         while (waitTime < maxWaitTime && !scalarData) {
-          console.log(`🔄 Waiting for scalar data (${waitTime}ms)...`);
           
           // Try official VoxelManager method first during polling (documented approach)
           try {
             if (volume.voxelManager?.getCompleteScalarDataArray) {
-              console.log(`🔄 Polling: Trying getCompleteScalarDataArray() at ${waitTime}ms...`);
               scalarData = volume.voxelManager.getCompleteScalarDataArray();
               if (scalarData && scalarData.length > 0) {
-                console.log('✅ SUCCESS: Got scalar data via getCompleteScalarDataArray() after waiting');
                 attempts.push(`polling getCompleteScalarDataArray() at ${waitTime}ms - SUCCESS (${scalarData.length} voxels)`);
                 break;
               }
             }
           } catch (e) {
             if (waitTime % 2000 === 0) { // Log errors every 2 seconds to avoid spam
-              console.warn(`⚠️ getCompleteScalarDataArray() still failing at ${waitTime}ms:`, e.message);
             }
           }
           
@@ -1304,7 +1083,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
             if (volume.getScalarData) {
               scalarData = volume.getScalarData();
               if (scalarData && scalarData.length > 0) {
-                console.log('✅ Got scalar data via getScalarData() after waiting');
                 attempts.push(`polling getScalarData() at ${waitTime}ms - SUCCESS`);
                 break;
               }
@@ -1317,7 +1095,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
             if (volume.voxelManager?.getScalarData) {
               scalarData = volume.voxelManager.getScalarData();
               if (scalarData && scalarData.length > 0) {
-                console.log('✅ Got scalar data via voxelManager.getScalarData() after waiting');
                 attempts.push(`polling voxelManager.getScalarData() at ${waitTime}ms - SUCCESS`);
                 break;
               }
@@ -1330,17 +1107,7 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
           if (waitTime % 1000 === 0) { // Log status every second
             try {
               const streamingVolume = volume as any;
-              console.log(`📊 Polling volume status (${waitTime}ms):`, {
-                hasScalarVolume: streamingVolume.hasScalarVolume || false,
-                framesLoaded: streamingVolume.framesLoaded || 0,
-                framesProcessed: streamingVolume.framesProcessed || 0,
-                cachedFrames: Object.keys(streamingVolume.cachedFrames || {}).length,
-                hasVoxelManager: !!volume.voxelManager,
-                voxelManagerHasGetComplete: !!(volume.voxelManager?.getCompleteScalarDataArray),
-                voxelManagerHasGetScalar: !!(volume.voxelManager?.getScalarData)
-              });
             } catch (e) {
-              console.warn(`⚠️ Error checking volume status during polling at ${waitTime}ms:`, e.message);
             }
           }
           
@@ -1350,16 +1117,9 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       }
       
       if (!scalarData) {
-        console.error('❌ CRITICAL: No real DICOM scalar data available for patient sizing');
-        console.error('❌ Cannot proceed with synthetic data for TAVI patient sizing');
         throw new Error('Real DICOM scalar data is required for patient sizing - no synthetic data allowed');
       }
       
-      console.log('✅ Successfully accessed real DICOM scalar data:', {
-        dataLength: scalarData.length,
-        dataType: scalarData.constructor.name,
-        expectedLength: dimensions[0] * dimensions[1] * dimensions[2]
-      });
       
       // Now extract real CPR from the actual data
       // Swap dimensions to make CPR vertical (height=centerline, width=cross-section)
@@ -1375,14 +1135,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         if (scalarData[i] > maxVal) maxVal = scalarData[i];
       }
       
-      console.log('🔄 Extracting CPR from real DICOM data:', {
-        centerlinePoints: centerlinePoints.length,
-        cprDimensions: [cprWidth, cprHeight],
-        volumeDimensions: dimensions,
-        volumeSpacing: spacing,
-        volumeOrigin: origin,
-        dataRange: [minVal, maxVal]
-      });
       
       // Sample the real volume data along the centerline with proper perpendicular cross-sections
       for (let i = 0; i < centerlinePoints.length; i++) {
@@ -1479,10 +1231,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         if (cprData[i] > cprMaxVal) cprMaxVal = cprData[i];
       }
       
-      console.log('✅ Real CPR data extracted from volume:', {
-        cprDimensions: [cprWidth, cprHeight, 1],
-        dataRange: [cprMinVal, cprMaxVal]
-      });
       
       // Create VTK ImageData with proper physical spacing (width x height)
       const cprImageData = vtkImageData.newInstance();
@@ -1497,11 +1245,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       cprImageData.setSpacing(cprSpacing);
       cprImageData.setOrigin([0, 0, 0]);
       
-      console.log('📊 CPR ImageData created with physical spacing:', {
-        dimensions: [cprWidth, cprHeight, 1],
-        spacing: cprSpacing,
-        physicalSize: [cprWidth * cprSpacing[0], cprHeight * cprSpacing[1]]
-      });
       
       const scalars = vtkDataArray.newInstance({
         name: 'Scalars',
@@ -1513,8 +1256,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       return { cprImageData, cprData, scalarData };
       
     } catch (error) {
-      console.error('❌ Failed to extract real CPR data:', error);
-      console.log('🔄 Falling back to synthetic CPR data...');
       const fallbackResult = createCPRFromVolumeCharacteristics(volume, centerlinePoints);
       return { cprImageData: fallbackResult, cprData: null };
     }
@@ -1524,11 +1265,9 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
 
   // Create real CPR data for three different views
   const createMultiViewCPRData = async (volume: any, centerlinePoints: Point3D[]) => {
-    console.log('🔧 Creating real multi-view CPR data...');
     
     try {
       // Extract the main CPR using the working method from HybridCPRViewport
-      console.log('🔧 Extracting real CPR data...');
       const mainCprResult = await extractRealCPRFromVolume(volume, centerlinePoints);
       const { cprImageData: mainImageData, cprData: mainData, scalarData: extractedScalarData } = typeof mainCprResult === 'object' && 'cprImageData' in mainCprResult 
         ? mainCprResult 
@@ -1538,7 +1277,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         throw new Error('Failed to extract real CPR data');
       }
       
-      console.log('✅ Real CPR data extracted successfully');
       
       // Create cross-section with error handling - reuse the already extracted scalar data
       let crossSectionResult;
@@ -1547,9 +1285,7 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
           throw new Error('No scalar data available for cross-section creation');
         }
         crossSectionResult = await createRealCrossSection(extractedScalarData, volume, centerlinePoints);
-        console.log('✅ Cross-section created successfully using extracted scalar data');
       } catch (error) {
-        console.error('❌ Cross-section creation failed, creating simple cross-section from CPR data:', error);
         // Create a simple cross-section by taking a slice from the successfully extracted CPR data
         const crossSectionImageData = createCrossSectionFromCPRData(mainData, centerlinePoints);
         crossSectionResult = { cprImageData: crossSectionImageData, cprData: null };
@@ -1562,15 +1298,12 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         crossSection: crossSectionResult
       };
     } catch (error) {
-      console.error('❌ CRITICAL ERROR: Failed to create real multi-view CPR data for patient sizing');
-      console.error('❌ This is a critical failure - TAVI sizing requires real DICOM data');
       throw new Error(`Cannot create CPR data for patient sizing: ${error.message}`);
     }
   };
 
   // Create simple cross-section from CPR data (fallback approach)
   const createCrossSectionFromCPRData = (cprData: Float32Array, centerlinePoints: Point3D[]) => {
-    console.log('🔧 Creating cross-section from successfully extracted CPR data...');
     
     // Take a perpendicular slice from the middle of the CPR data
     const cprHeight = centerlinePoints.length;
@@ -1605,19 +1338,13 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
     });
     crossImageData.getPointData().setScalars(scalars);
     
-    console.log('✅ Cross-section VTK ImageData created from CPR data successfully');
     return crossImageData;
   };
 
   // Create real cross-section using already extracted scalar data
   const createRealCrossSection = async (extractedScalarData: Float32Array, volume: any, centerlinePoints: Point3D[]) => {
-    console.log('🔧 Creating real cross-section using already extracted DICOM data...');
     
     try {
-      console.log('✅ Using already extracted scalar data for cross-section:', {
-        dataLength: extractedScalarData.length,
-        dataType: extractedScalarData.constructor?.name
-      });
       
       // Get volume characteristics  
       const dimensions = volume.dimensions;
@@ -1628,14 +1355,9 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       const middleIndex = Math.floor(centerlinePoints.length / 2);
       const centerPoint = centerlinePoints[middleIndex];
       
-      console.log('📊 Cross-section center point:', centerPoint);
       
       // Use the already extracted scalar data (no need to access it again from volume)
       const scalarData = extractedScalarData;
-      console.log('✅ Cross-section using already extracted scalar data:', {
-        dataLength: scalarData.length,
-        dataType: scalarData.constructor.name
-      });
       
       // Skip all scalar data access attempts - we already have the extracted data!
       
@@ -1692,13 +1414,10 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       });
       crossImageData.getPointData().setScalars(scalars);
       
-      console.log('✅ Real cross-section data created from DICOM');
       return { cprImageData: crossImageData, cprData: crossData };
       
     } catch (error) {
-      console.error('❌ Failed to create real cross-section:', error);
       // Fall back to volume characteristics approach
-      console.log('🔄 Cross-section falling back to volume characteristics approach (catch block)');
       const fallbackImageData = createCPRFromVolumeCharacteristics(volume, centerlinePoints);
       return { cprImageData: fallbackImageData, cprData: null };
     }
@@ -1714,7 +1433,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       throw new Error(`CPR image data for ${viewName} is not available`);
     }
 
-    console.log(`🔧 Setting up ${viewName} VTK rendering...`);
 
     const genericRenderWindow = vtkGenericRenderWindow.newInstance();
     genericRenderWindow.setContainer(containerRef.current);
@@ -1765,12 +1483,9 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
     try {
       if (cprImageData && typeof cprImageData.getBounds === 'function') {
         bounds = cprImageData.getBounds();
-        console.log(`📊 ${viewName} bounds:`, bounds);
       } else {
-        console.warn(`⚠️ ${viewName}: getBounds not available, using default camera settings`);
       }
     } catch (error) {
-      console.warn(`⚠️ ${viewName}: Error getting bounds:`, error);
     }
     
     if (bounds && bounds.length >= 6) {
@@ -1790,7 +1505,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       const parallelScale = maxDimension / 2;
       camera.setParallelScale(parallelScale);
       
-      console.log(`📷 ${viewName} camera setup with bounds`);
     } else {
       // Default camera settings
       camera.setPosition(0, 0, 100);
@@ -1798,7 +1512,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       camera.setViewUp(0, 1, 0);
       camera.setParallelScale(50);
       
-      console.log(`📷 ${viewName} camera setup with defaults`);
     }
 
     renderer.resetCameraClippingRange();
@@ -1849,14 +1562,12 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         const worldZ = center[2]; // Use center Z for 2D slice
         
         const pickedPoint: [number, number, number] = [worldX, worldY, worldZ];
-        console.log(`🎯 Point picked in ${viewName}:`, pickedPoint);
         
         // Create cusp dot at picked position
         handleCuspDotPlacement(pickedPoint);
       }
     });
 
-    console.log(`✅ ${viewName} VTK rendering setup complete with point picking`);
     
     return {
       renderWindow,
@@ -1878,12 +1589,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
     while (Date.now() - startTime < maxWaitMs) {
       attemptCount++;
       
-      console.log(`⏳ Container check attempt ${attemptCount}...`);
-      console.log('Refs exist?', {
-        cpr1: !!cpr1Ref.current,
-        cpr2: !!cpr2Ref.current, 
-        crossSection: !!crossSectionRef.current
-      });
       
       if (cpr1Ref.current && cpr2Ref.current && crossSectionRef.current) {
         // Additional check: ensure containers have dimensions
@@ -1891,34 +1596,24 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         const rect2 = cpr2Ref.current.getBoundingClientRect();
         const rect3 = crossSectionRef.current.getBoundingClientRect();
         
-        console.log('Container dimensions:', {
-          cpr1: { width: rect1.width, height: rect1.height },
-          cpr2: { width: rect2.width, height: rect2.height },
-          crossSection: { width: rect3.width, height: rect3.height }
-        });
         
         if (rect1.width > 0 && rect1.height > 0 &&
             rect2.width > 0 && rect2.height > 0 &&
             rect3.width > 0 && rect3.height > 0) {
-          console.log('✅ All container elements ready with valid dimensions');
           return true;
         } else {
-          console.log('⚠️ Containers exist but have zero dimensions');
         }
       } else {
-        console.log('⚠️ Some container refs are null');
       }
       
       await new Promise(resolve => setTimeout(resolve, 200));
     }
     
-    console.error('❌ Timeout waiting for container elements after', Math.round((Date.now() - startTime) / 1000), 'seconds');
     return false;
   };
 
   // Setup VTK rendering for all three views
   const setupVTKRendering = async (cprResults: any) => {
-    console.log('🔧 Setting up three-view VTK rendering...');
     
     // Wait for containers to be ready
     const containersReady = await waitForContainers();
@@ -1930,16 +1625,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       throw new Error('CPR results not available');
     }
 
-    console.log('📊 CPR Results validation:', {
-      hasCpr1: !!cprResults.cpr1,
-      hasCpr2: !!cprResults.cpr2,
-      hasCrossSection: !!cprResults.crossSection,
-      cpr1ImageData: !!cprResults.cpr1?.cprImageData,
-      cpr2ImageData: !!cprResults.cpr2?.cprImageData,
-      crossSectionImageData: !!cprResults.crossSection?.cprImageData,
-      crossSectionType: typeof cprResults.crossSection,
-      crossSectionStructure: cprResults.crossSection ? Object.keys(cprResults.crossSection) : 'N/A'
-    });
 
     // Validate that all required data is available
     if (!cprResults.cpr1?.cprImageData) {
@@ -1949,7 +1634,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       throw new Error('CPR2 image data is missing');
     }
     if (!cprResults.crossSection?.cprImageData) {
-      console.error('❌ CrossSection structure:', cprResults.crossSection);
       throw new Error('CrossSection image data is missing');
     }
 
@@ -1978,16 +1662,12 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         const window = maxVal - minVal;
         const level = (maxVal + minVal) / 2;
         setWindowLevel({ window, level });
-        console.log('📊 Window/Level set from CPR1 data:', { window, level });
       } else {
         // Use default window/level
         setWindowLevel({ window: 1000, level: 300 });
-        console.log('📊 Using default window/level');
       }
 
-      console.log('✅ Three-view VTK rendering setup complete');
     } catch (error) {
-      console.error('❌ Error setting up three-view VTK rendering:', error);
       throw error;
     }
   };
@@ -1995,7 +1675,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
   // Main initialization (adapted from HybridCPRViewport)
   const initializeCPRViewport = async () => {
     if (isInitialized) {
-      console.log('🚫 Already initialized, skipping...');
       return;
     }
     
@@ -2003,7 +1682,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       setIsLoading(true);
       setError(null);
 
-      console.log('🔄 Initializing CPR viewport with cusp dots...');
 
       // Load DICOM data
       const { volume, imageIds } = await loadDicomData();
@@ -2016,63 +1694,38 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         throw new Error('Failed to generate centerline');
       }
 
-      console.log('📏 Generated centerline points:', centerlinePoints.length);
 
       // Wait a bit more for volume data to be fully available (like HybridCPRViewport pattern)
-      console.log('🔄 Waiting additional time for volume data to be fully available...');
       await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 more seconds
       
       // Debug: Check volume state again after additional wait
-      console.log('📊 Volume state after additional wait:', {
-        hasGetScalarData: typeof volume.getScalarData === 'function',
-        hasVoxelManager: !!volume.voxelManager,
-        hasImageData: !!volume.imageData,
-        hasVtkImageData: !!volume.vtkImageData,
-        dimensionsAvailable: !!volume.dimensions,
-        spacingAvailable: !!volume.spacing,
-        originAvailable: !!volume.origin
-      });
       
       // Try to access scalar data one more time before CPR extraction
       let testScalarData = null;
       try {
         if (volume.getScalarData) {
           testScalarData = volume.getScalarData();
-          console.log('📊 Test scalar data access successful:', {
-            hasData: !!testScalarData,
-            dataLength: testScalarData?.length,
-            dataType: testScalarData?.constructor?.name
-          });
         }
       } catch (e) {
-        console.log('📊 Test scalar data access failed:', e.message);
       }
       
       // Create multi-view CPR data (three views: 2 CPR + 1 cross-section)
       const cprResults = await createMultiViewCPRData(volume, centerlinePoints);
       
-      console.log('📊 Multi-view CPR results:', {
-        hasCpr1: !!cprResults.cpr1.cprImageData,
-        hasCpr2: !!cprResults.cpr2.cprImageData,
-        hasCrossSection: !!cprResults.crossSection.cprImageData
-      });
 
       // Setup three-view VTK rendering
       await setupVTKRendering(cprResults);
 
       // Setup Cornerstone overlays for annotation tools (hybrid approach - fixed)
       if (stage === 'annulus_definition') {
-        console.log('🔧 Setting up Cornerstone annotation overlays for cusp marking...');
         await setupCornerstoneOverlays(volume, imageIds);
       }
 
       setIsInitialized(true);
       setIsLoading(false);
 
-      console.log('✅ CPR viewport with hybrid annotation tools initialized successfully!');
 
     } catch (err) {
-      console.error('❌ Failed to initialize CPR viewport:', err);
       setError(`Failed to initialize: ${err}`);
       setIsLoading(false);
     }
@@ -2082,9 +1735,7 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
   useEffect(() => {
     if (patientInfo && rootPoints.length >= 3 && !isInitialized) {
       // Add a longer delay to ensure React has fully rendered the DOM elements and CSS layout is complete
-      console.log('🔄 Scheduling TriViewCPRViewport initialization...');
       setTimeout(() => {
-        console.log('🔄 Starting TriViewCPRViewport initialization...');
         initializeCPRViewport();
       }, 500);
     }
@@ -2102,7 +1753,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       }
       lastResizeTime.current = now;
       
-      console.log('🔄 Window/container resized, updating VTK renderers...');
       
       // Helper function to resize a single VTK view
       const resizeSingleView = (vtkView: any, viewName: string) => {
@@ -2119,7 +1769,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
           if (rect.width <= 0 || rect.height <= 0 || 
               rect.width > 10000 || rect.height > 10000 ||
               !isFinite(rect.width) || !isFinite(rect.height)) {
-            console.warn(`⚠️ ${viewName} has invalid container dimensions:`, rect);
             return;
           }
           
@@ -2137,10 +1786,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
           // Store current dimensions
           lastDimensions.current.set(viewName, { width: rect.width, height: rect.height });
           
-          console.log(`🔧 ${viewName} container size changed:`, {
-            width: rect.width.toFixed(1),
-            height: rect.height.toFixed(1)
-          });
           
           // Resize the VTK render window
           vtkView.genericRenderWindow.resize();
@@ -2155,9 +1800,7 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
             vtkView.renderWindow.render();
           }
           
-          console.log(`✅ ${viewName} resized and re-rendered`);
         } catch (error) {
-          console.error(`❌ Error resizing ${viewName}:`, error);
         }
       };
       
@@ -2166,7 +1809,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       resizeSingleView(vtkObjects.current.cpr2, 'CPR2');
       resizeSingleView(vtkObjects.current.crossSection, 'CrossSection');
       
-      console.log('✅ All VTK renderers resize handling complete');
     };
 
     // Debounced resize handler
@@ -2183,7 +1825,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
     // Handle browser console open/close (visibility change)
     const handleVisibilityChange = () => {
       if (!document.hidden) {
-        console.log('🔄 Page became visible, refreshing VTK renderers...');
         setTimeout(() => handleResize(), 200);
       }
     };
@@ -2197,14 +1838,9 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         
         // Ignore invalid dimensions that could cause loops
         if (width <= 0 || height <= 0 || width > 10000 || height > 10000) {
-          console.warn('⚠️ Ignoring invalid container dimensions:', { width, height });
           continue;
         }
         
-        console.log('🔄 Container resized:', entry.target.className, {
-          width: width.toFixed(1),
-          height: height.toFixed(1)
-        });
       }
       
       // Use the same debounced handler
@@ -2231,12 +1867,10 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
     if (stage === 'annulus_definition' && cornerstoneObjects.current.toolGroup) {
       // Enable/disable Cornerstone annotation tools based on placement mode
       if (isPlacingCuspDots) {
-        console.log('🎯 Activating Cornerstone annotation tools for cusp placement');
         cornerstoneObjects.current.toolGroup.setToolActive(ProbeTool.toolName, {
           bindings: [{ mouseButton: ToolEnums.MouseBindings.Primary }],
         });
       } else {
-        console.log('🎯 Deactivating Cornerstone annotation tools');
         cornerstoneObjects.current.toolGroup.setToolPassive(ProbeTool.toolName);
       }
     }
@@ -2252,7 +1886,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
   // Setup Cornerstone3D overlay viewports for annotation tools
   const setupCornerstoneOverlays = async (volume: any, imageIds: string[]) => {
     try {
-      console.log('🔧 Setting up Cornerstone3D overlay viewports for annotation tools...');
       
       // Create Cornerstone rendering engine for overlays
       const renderingEngineId = 'cprOverlayEngine';
@@ -2330,29 +1963,23 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       // Setup annotation tools
       await setupCornerstoneAnnotationTools(toolGroupId);
       
-      console.log('✅ Cornerstone3D overlay viewports setup complete');
       
     } catch (error) {
-      console.error('❌ Failed to setup Cornerstone overlays:', error);
     }
   };
   
   // Setup Cornerstone annotation tools for cusp marking
   const setupCornerstoneAnnotationTools = async (toolGroupId: string) => {
     try {
-      console.log('🔧 Setting up Cornerstone annotation tools...');
       
       // Initialize Cornerstone tools if not already done
       try {
         await toolsInit();
-        console.log('✅ Cornerstone tools initialized');
       } catch (e) {
-        console.log('📝 Cornerstone tools already initialized or initialization failed:', e.message);
       }
       
       // Add probe tool to the global tool registry
       addTool(ProbeTool);
-      console.log('✅ ProbeTool added to registry');
       
       // Create tool group for overlays  
       try {
@@ -2369,7 +1996,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       
       // Add probe tool for cusp marking
       cornerstoneObjects.current.toolGroup.addTool(ProbeTool.toolName);
-      console.log('✅ ProbeTool added to tool group');
       
       // Add overlay viewports to tool group
       const overlayViewportIds = ['overlay-cpr1', 'overlay-cpr2', 'overlay-cross'];
@@ -2379,7 +2005,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
           cornerstoneObjects.current.renderingEngine!.id
         );
       });
-      console.log('✅ Overlay viewports added to tool group');
       
       // Set tool to passive initially (will be activated when user clicks "Place Cusps")
       cornerstoneObjects.current.toolGroup.setToolPassive(ProbeTool.toolName);
@@ -2387,20 +2012,16 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       // Listen for annotation events using the correct Cornerstone3D event system
       eventTarget.addEventListener(ToolEnums.Events.ANNOTATION_COMPLETED, handleCornerstoneAnnotation);
       
-      console.log('✅ Cornerstone annotation tools setup complete');
       
     } catch (error) {
-      console.error('❌ Failed to setup Cornerstone annotation tools:', error);
     }
   };
   
   // Handle Cornerstone annotation events (probe tool clicks)
   const handleCornerstoneAnnotation = (evt: any) => {
-    console.log('🎯 Cornerstone annotation event:', evt);
     
     if (evt.detail?.annotation?.data?.handles?.points) {
       const worldPos = evt.detail.annotation.data.handles.points[0];
-      console.log('🎯 Cusp marked at world position:', worldPos);
       
       // Convert to our cusp dot format
       if (cuspDots.length < 3) {
@@ -2429,7 +2050,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
           })));
         }
         
-        console.log(`✅ Cusp dot ${placementIndex + 1}/3 marked using Cornerstone tools`);
       }
     }
   };
@@ -2437,7 +2057,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
   // Cleanup function for Cornerstone overlays
   const cleanupCornerstoneOverlays = () => {
     try {
-      console.log('🧹 Cleaning up Cornerstone overlays...');
       
       // Remove event listener
       eventTarget.removeEventListener(ToolEnums.Events.ANNOTATION_COMPLETED, handleCornerstoneAnnotation);
@@ -2447,7 +2066,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         try {
           ToolGroupManager.destroyToolGroup('CPR_OVERLAY_TOOLS');
         } catch (e) {
-          console.warn('Failed to destroy tool group:', e);
         }
       }
       
@@ -2456,23 +2074,18 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         try {
           cornerstoneObjects.current.renderingEngine.destroy();
         } catch (e) {
-          console.warn('Failed to destroy Cornerstone rendering engine:', e);
         }
       }
       
       // Clear refs
       cornerstoneObjects.current = {};
       
-      console.log('✅ Cornerstone overlays cleanup complete');
     } catch (error) {
-      console.warn('Cornerstone cleanup error:', error);
     }
   };
 
   // Create VTK sphere actor for cusp nadir point - positioned properly in image plane (fallback)
   const createCuspSphere = (position: [number, number, number], cuspType: 'left' | 'right' | 'non-coronary', placementIndex: number, renderer?: any) => {
-    console.log('🎯 Creating VTK sphere for cusp:', { position, cuspType, placementIndex });
-    console.log('🎯 Sphere position values:', position);
 
     // Position sphere properly in the 2D image slice coordinate system
     let sphereRadius = 3.0;
@@ -2496,18 +2109,9 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
             // The image slice is typically at Z=0, so we position sphere slightly forward
             spherePosition[2] = imageBounds[5] + 0.1; // Just in front of the image slice
             
-            console.log('🎯 Positioning sphere in image coordinate system:', {
-              originalPosition: position,
-              imageBounds,
-              spherePosition,
-              imageWidth: imageWidth.toFixed(2),
-              imageHeight: imageHeight.toFixed(2),
-              sphereRadius: sphereRadius.toFixed(2)
-            });
           }
         }
       } catch (e) {
-        console.warn('🎯 Could not get image bounds:', e);
       }
     }
 
@@ -2516,7 +2120,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
     sphereSource.setCenter(spherePosition);
     sphereSource.setRadius(sphereRadius);
     
-    console.log('🎯 Creating sphere - radius:', sphereRadius.toFixed(2), 'center:', spherePosition);
 
     // Create mapper
     const mapper = vtkMapper.newInstance();
@@ -2549,11 +2152,9 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
     actor.setPickable(true); // Make it interactive
 
     // Log final sphere info
-    console.log('🎯 Sphere created with center at:', spherePosition, 'radius:', sphereRadius);
     
     // Verify sphere was created properly
     const bounds = actor.getBounds();
-    console.log('🎯 Sphere actor bounds:', bounds);
 
     return {
       actor,
@@ -2569,10 +2170,8 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
 
   // Test cube instead of sphere - different geometry to rule out sphere issues
   const addSimpleTestSphere = (vtkRenderObjects: any, viewName: string) => {
-    console.log(`🧪 Adding test CUBE to ${viewName} at image center (sphere alternative)...`);
     
     if (!vtkRenderObjects.renderer || !vtkRenderObjects.renderWindow) {
-      console.warn(`🧪 No renderer/renderWindow for ${viewName}`);
       return null;
     }
     
@@ -2586,11 +2185,8 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
           (bounds[2] + bounds[3]) / 2,
           (bounds[4] + bounds[5]) / 2
         ];
-        console.log(`🧪 ${viewName} image center:`, centerPosition);
-        console.log(`🧪 ${viewName} image bounds:`, bounds);
       }
     } catch (e) {
-      console.warn(`🧪 Could not get image bounds for ${viewName}:`, e);
     }
     
     // Try CUBE instead of sphere - completely different geometry
@@ -2633,13 +2229,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
     const actorBounds = actor.getBounds();
     const cameraBounds = vtkRenderObjects.renderer.computeVisiblePropBounds();
     
-    console.log(`🧪 ${viewName} CUBE test:`, {
-      actorsCount: actors?.length || 0,
-      cubeBounds: actorBounds,
-      cameraBounds: cameraBounds,
-      cubeCenter: centerPosition,
-      cubeSize: [40, 40, 40]
-    });
     
     // Try to force actor visibility
     actor.setVisibility(true);
@@ -2647,18 +2236,15 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
     vtkRenderObjects.renderer.modified();
     vtkRenderObjects.renderWindow.render();
     
-    console.log(`🧪 Green CUBE added to ${viewName} - testing alternative to sphere`);
     
     return actor;
   };
 
   // Add sphere to all three views
   const addSphereToAllViews = (sphereData: any) => {
-    console.log('🎯 Adding sphere to all VTK views:', sphereData);
 
     // Add to CPR1
     if (vtkObjects.current.cpr1?.renderer) {
-      console.log('🎯 Adding sphere to CPR1...');
       
       // FIRST: Add simple test sphere using SphereMarkerTool pattern
       const testSphere1 = addSimpleTestSphere(vtkObjects.current.cpr1, 'CPR1');
@@ -2696,27 +2282,21 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
           }
         }
       } catch (e) {
-        console.warn('🎯 Could not configure sphere depth handling:', e);
       }
       
       // Enhanced visibility checks
       const bounds = cpr1Sphere.actor.getBounds();
       const cameraBounds = vtkObjects.current.cpr1.renderer.computeVisiblePropBounds();
-      console.log('🎯 CPR1 sphere bounds:', bounds);
-      console.log('🎯 CPR1 camera bounds:', cameraBounds);
       
       // Check lighting in the scene
       const lights = vtkObjects.current.cpr1.renderer.getLights();
-      console.log('🎯 CPR1 lights count:', lights ? lights.length : 0);
       
       // Force add lights to ensure visibility
-      console.log('🎯 CPR1 lights count:', lights ? lights.length : 0);
       vtkObjects.current.cpr1.renderer.setAutomaticLightCreation(true);
       vtkObjects.current.cpr1.renderer.setLightFollowCamera(true);
       
       // Manually add a bright light if none exist
       if (!lights || lights.length === 0) {
-        console.log('🎯 Manually adding bright light to CPR1...');
         const light = vtkLight.newInstance();
         light.setLightTypeToHeadlight();
         light.setIntensity(1.0);
@@ -2736,16 +2316,12 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       try {
         const camera = vtkObjects.current.cpr1.renderer.getActiveCamera();
         if (camera) {
-          console.log('🎯 CPR1 camera position before:', camera.getPosition());
-          console.log('🎯 CPR1 camera focal point before:', camera.getFocalPoint());
           
           // Set camera to look at the sphere
           camera.setFocalPoint(sphereData.position[0], sphereData.position[1], sphereData.position[2]);
           
-          console.log('🎯 CPR1 camera focal point after:', camera.getFocalPoint());
         }
       } catch (e) {
-        console.warn('🎯 Could not adjust camera:', e);
       }
       
       // Force immediate render without depth issues
@@ -2754,7 +2330,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       // Ensure the camera can see both image and sphere
       const camera = vtkObjects.current.cpr1.renderer.getActiveCamera();
       const clippingRange = camera.getClippingRange();
-      console.log('🎯 CPR1 camera clipping range:', clippingRange);
       
       // Extend clipping range to ensure sphere is visible
       camera.setClippingRange(clippingRange[0] * 0.1, clippingRange[1] * 2.0);
@@ -2764,23 +2339,12 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       vtkObjects.current.cpr1.renderWindow?.render();
       vtkObjects.current.cpr1.renderWindow?.render(); // Double render for safety
       
-      console.log('✅ CPR1 sphere added with extended clipping range, actors count:', vtkObjects.current.cpr1.renderer.getActors().length);
       
       // DEBUG: Check all actors visibility and try to debug rendering
       const cpr1Actors = vtkObjects.current.cpr1.renderer.getActors();
-      console.log('🎯 DEBUG: CPR1 actors analysis:', {
-        totalActors: cpr1Actors ? cpr1Actors.length : 0,
-        actorTypes: cpr1Actors ? cpr1Actors.map((actor, i) => ({
-          index: i,
-          visible: actor.getVisibility(),
-          bounds: actor.getBounds(),
-          className: actor.getClassName ? actor.getClassName() : 'unknown'
-        })) : []
-      });
       
       // Try to debug by temporarily hiding EVERYTHING except spheres
       if (cpr1Actors && cpr1Actors.length > 1) {
-        console.log('🎯 DEBUG: Hiding all actors except spheres...');
         
         // Hide the first actor (should be image slice)
         const imageActor = cpr1Actors[0];
@@ -2789,7 +2353,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         // Ensure all sphere actors are visible
         for (let i = 1; i < cpr1Actors.length; i++) {
           cpr1Actors[i].setVisibility(true);
-          console.log(`🎯 DEBUG: Ensuring actor ${i} is visible:`, cpr1Actors[i].getVisibility());
         }
         
         // Force aggressive render
@@ -2797,20 +2360,17 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         vtkObjects.current.cpr1.renderWindow?.modified();
         vtkObjects.current.cpr1.renderWindow?.render();
         
-        console.log('🎯 DEBUG: All non-image actors should now be visible (bright spheres)');
         
         // Restore after 3 seconds
         setTimeout(() => {
           imageActor.setVisibility(true);
           vtkObjects.current.cpr1.renderWindow?.render();
-          console.log('🎯 DEBUG: Image slice visibility restored');
         }, 3000);
       }
     }
 
     // Add to CPR2  
     if (vtkObjects.current.cpr2?.renderer) {
-      console.log('🎯 Adding sphere to CPR2...');
       
       // FIRST: Add test sphere using VTK.js example pattern
       const testSphere2 = addSimpleTestSphere(vtkObjects.current.cpr2, 'CPR2');
@@ -2821,19 +2381,15 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       // Enhanced visibility checks
       const bounds = cpr2Sphere.actor.getBounds();
       const cameraBounds = vtkObjects.current.cpr2.renderer.computeVisiblePropBounds();
-      console.log('🎯 CPR2 sphere bounds:', bounds);
-      console.log('🎯 CPR2 camera bounds:', cameraBounds);
       
       vtkObjects.current.cpr2.renderer.resetCameraClippingRange();
       vtkObjects.current.cpr2.renderer.modified();
       vtkObjects.current.cpr2.renderWindow?.render();
       
-      console.log('✅ CPR2 sphere added, actors count:', vtkObjects.current.cpr2.renderer.getActors().length);
     }
 
     // Add to Cross-Section
     if (vtkObjects.current.crossSection?.renderer) {
-      console.log('🎯 Adding sphere to CrossSection...');
       
       // FIRST: Add test sphere using VTK.js example pattern
       const testSphere3 = addSimpleTestSphere(vtkObjects.current.crossSection, 'CrossSection');
@@ -2844,21 +2400,16 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       // Enhanced visibility checks
       const bounds = crossSphere.actor.getBounds();
       const cameraBounds = vtkObjects.current.crossSection.renderer.computeVisiblePropBounds();
-      console.log('🎯 CrossSection sphere bounds:', bounds);
-      console.log('🎯 CrossSection camera bounds:', cameraBounds);
       
       vtkObjects.current.crossSection.renderer.resetCameraClippingRange();
       vtkObjects.current.crossSection.renderer.modified();
       vtkObjects.current.crossSection.renderWindow?.render();
       
-      console.log('✅ CrossSection sphere added, actors count:', vtkObjects.current.crossSection.renderer.getActors().length);
     }
 
-    console.log('✅ Sphere added to all three VTK views');
     
     // Force all renderers to update and render
     setTimeout(() => {
-      console.log('🎯 Force rendering all views after sphere addition...');
       if (vtkObjects.current.cpr1?.renderWindow) {
         vtkObjects.current.cpr1.renderWindow.render();
       }
@@ -2868,26 +2419,22 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       if (vtkObjects.current.crossSection?.renderWindow) {
         vtkObjects.current.crossSection.renderWindow.render();
       }
-      console.log('✅ Force render complete');
     }, 50);
   };
 
   // Setup cusp dot interaction
   const setupCuspDotInteraction = () => {
-    console.log('🎯 Setting up cusp dot interaction for three VTK views...');
 
     const handleViewClick = (viewName: string, renderer: any, renderWindow: any) => {
       if (!onCuspDotsUpdate || !isPlacingCuspDots || cuspDots.length >= 3) return;
 
       return (callData: any, event: any) => {
-        console.log(`🎯 Click detected in ${viewName} view`);
         
         // Get the image actor bounds specifically (not all visible props)
         let bounds = null;
         let imageBounds = null;
         const actors = renderer.getActors();
         
-        console.log(`📊 Total actors in ${viewName}:`, actors ? actors.length : 0);
         
         // Find the CPR image actor (should be the first one added - the CPR slice)
         if (actors && actors.length > 0) {
@@ -2895,26 +2442,22 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
           const imageActor = actors[0];
           imageBounds = imageActor.getBounds();
           bounds = imageBounds; // Use image bounds as the primary coordinate system
-          console.log(`📊 CPR Image actor bounds for ${viewName}:`, imageBounds);
           
           // Also log all actor bounds for debugging
           actors.forEach((actor, index) => {
             const actorBounds = actor.getBounds();
-            console.log(`📊 Actor ${index} bounds in ${viewName}:`, actorBounds);
           });
         }
         
         // Fallback to renderer bounds if image actor bounds not available
         if (!bounds || bounds.length < 6) {
           bounds = renderer.computeVisiblePropBounds();
-          console.log(`📊 Fallback renderer bounds for ${viewName}:`, bounds);
         }
         
         let worldPos;
         
         if (!bounds || bounds.length < 6 || 
             (bounds[0] === bounds[1] && bounds[2] === bounds[3] && bounds[4] === bounds[5])) {
-          console.warn(`❌ Could not get valid bounds for ${viewName}`);
           // Use camera center position for maximum visibility
           const cameraBounds = renderer.computeVisiblePropBounds();
           if (cameraBounds && cameraBounds.length >= 6) {
@@ -2931,7 +2474,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
               [cameraCenterX, cameraCenterY + cameraOffset, cameraCenterZ]      // non-coronary cusp
             ];
             worldPos = fallbackPositions[cuspDots.length] || [cameraCenterX, cameraCenterY, cameraCenterZ];
-            console.log(`🌍 Using camera center fallback position for ${viewName}:`, worldPos, 'camera bounds:', cameraBounds);
           } else {
             // Last resort fallback
             const fallbackPositions = [
@@ -2940,7 +2482,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
               [5, 10, 0]      // non-coronary cusp
             ];
             worldPos = fallbackPositions[cuspDots.length] || [0, 0, 0];
-            console.log(`🌍 Using absolute fallback position for ${viewName}:`, worldPos);
           }
         } else {
           // Calculate center of the CPR IMAGE bounds for sphere placement (correct coordinate space)
@@ -2948,18 +2489,12 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
           const centerY = (bounds[2] + bounds[3]) / 2;
           const centerZ = (bounds[4] + bounds[5]) / 2;
           
-          console.log(`📊 CPR image centers for ${viewName}:`, { centerX, centerY, centerZ });
           
           // Calculate CPR image dimensions (this is the correct coordinate space)
           const imageWidth = Math.abs(bounds[1] - bounds[0]);
           const imageHeight = Math.abs(bounds[3] - bounds[2]);
           const imageDepth = Math.abs(bounds[5] - bounds[4]);
           
-          console.log(`📊 CPR image dimensions for ${viewName}:`, { 
-            width: imageWidth.toFixed(2), 
-            height: imageHeight.toFixed(2), 
-            depth: imageDepth.toFixed(2) 
-          });
           
           // Place spheres in a triangular pattern within the CPR image coordinate space
           // Use reasonable offsets within the transformed CPR space
@@ -2984,17 +2519,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
           worldPos[2] = Math.max(bounds[4] + imageDepth * safeMargin, 
                                 Math.min(bounds[5] - imageDepth * safeMargin, worldPos[2]));
           
-          console.log(`🌍 Final CPR position for ${viewName}:`, worldPos);
-          console.log(`📏 Sphere ${cuspDots.length + 1} will be placed at CPR coordinates:`, {
-            x: worldPos[0].toFixed(2),
-            y: worldPos[1].toFixed(2), 
-            z: worldPos[2].toFixed(2)
-          });
-          console.log(`📏 Position check - within CPR image bounds:`, {
-            xOk: worldPos[0] >= bounds[0] && worldPos[0] <= bounds[1],
-            yOk: worldPos[1] >= bounds[2] && worldPos[1] <= bounds[3],
-            zOk: worldPos[2] >= bounds[4] && worldPos[2] <= bounds[5]
-          });
         }
 
         // Determine cusp type based on placement order
@@ -3011,7 +2535,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
           placementIndex
         };
 
-        console.log('🎯 Creating new cusp dot:', newCuspDot);
 
         // Add to state
         setCuspDots(prev => [...prev, newCuspDot]);
@@ -3034,7 +2557,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
           })));
         }
 
-        console.log(`✅ Cusp dot ${placementIndex + 1}/3 placed in ${viewName}`);
       };
     };
 
@@ -3049,7 +2571,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
               clickHandler1();
             }
           });
-          console.log('✅ CPR1 click handler set up');
         }
       }
 
@@ -3062,7 +2583,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
               clickHandler2();
             }
           });
-          console.log('✅ CPR2 click handler set up');
         }
       }
 
@@ -3075,19 +2595,15 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
               clickHandlerCS();
             }
           });
-          console.log('✅ CrossSection click handler set up');
         }
       }
     } catch (error) {
-      console.error('❌ Error setting up click handlers:', error);
     }
 
-    console.log('✅ Cusp dot interaction setup complete for all three views');
   };
 
   // Clear all cusp dots
   const clearCuspDots = () => {
-    console.log('🧹 Clearing all cusp dots from VTK views...');
 
     // Clear from state
     setCuspDots([]);
@@ -3109,7 +2625,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
             // If it's a small object (likely our sphere), remove it
             if (size < 10) {
               renderer.removeActor(actor);
-              console.log(`🧹 Removed sphere from ${viewName}`);
             }
           }
         }
@@ -3132,32 +2647,20 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       vtkObjects.current.crossSection.renderWindow?.render();
     }
 
-    console.log('✅ All cusp dots cleared from VTK views');
   };
 
   // Debug function to list all actors
   const debugListActors = () => {
-    console.log('🧪 Listing all actors in renderers...');
     
     Object.entries(vtkObjects.current).forEach(([viewName, vtkView]: [string, any]) => {
       if (!vtkView?.renderer) return;
       
       const actors = vtkView.renderer.getActors();
-      console.log(`🧪 ${viewName} actors:`, {
-        count: actors?.length || 0,
-        actors: actors ? Array.from(actors).map((actor: any, index: number) => ({
-          index,
-          className: actor.getClassName ? actor.getClassName() : 'unknown',
-          bounds: actor.getBounds ? actor.getBounds() : 'no bounds',
-          visibility: actor.getVisibility ? actor.getVisibility() : 'unknown'
-        })) : []
-      });
     });
   };
 
   // Test geometry rendering WITHOUT CT images
   const testGeometryOnly = () => {
-    console.log('🧪 Testing geometry-only rendering...');
     
     // First, debug current actors
     debugListActors();
@@ -3165,24 +2668,20 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
     Object.entries(vtkObjects.current).forEach(([viewName, vtkView]: [string, any]) => {
       if (!vtkView?.renderer || !vtkView?.renderWindow) return;
       
-      console.log(`🧪 Setting up ${viewName} for geometry-only test...`);
       
       // Get and remove all existing actors more aggressively
       const actors = vtkView.renderer.getActors();
       const actorCount = actors?.length || 0;
-      console.log(`🧪 ${viewName} removing ${actorCount} existing actors...`);
       
       if (actors && actorCount > 0) {
         // Convert to array and remove each actor
         const actorArray = Array.from(actors);
         actorArray.forEach((actor: any, index: number) => {
-          console.log(`🧪 Removing actor ${index}: ${actor.getClassName ? actor.getClassName() : 'unknown'}`);
           vtkView.renderer.removeActor(actor);
         });
         
         // Force clear all actors
         vtkView.renderer.removeAllActors();
-        console.log(`🧪 ${viewName} actors after removal:`, vtkView.renderer.getActors()?.length || 0);
       }
       
       // Set black background for contrast
@@ -3228,7 +2727,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         property.setSpecular(0.0);
         
         vtkView.renderer.addActor(actor);
-        console.log(`🧪 Added ${colors[index]} cube at ${pos} to ${viewName}`);
       });
       
       // Keep existing camera setup but adjust for image coordinates
@@ -3241,10 +2739,8 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       vtkView.renderWindow.render(); // Double render
       
       const finalActors = vtkView.renderer.getActors();
-      console.log(`🧪 ${viewName} final actors count:`, finalActors?.length || 0);
     });
     
-    console.log('🧪 Geometry-only test complete - should see colored cubes if VTK rendering works');
     
     // Debug final state
     setTimeout(() => debugListActors(), 100);
@@ -3252,15 +2748,12 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
 
   // Handle slice navigation along centerline
   const handleSliceNavigation = async (position: number) => {
-    console.log('🔄 CPR slice navigation to position:', position);
     
     if (!centerlinePoints || centerlinePoints.length === 0) {
-      console.warn('⚠️ No centerline points for navigation');
       return;
     }
     
     if (!vtkObjects.current.volume) {
-      console.warn('⚠️ No volume data for slice navigation');
       return;
     }
     
@@ -3268,14 +2761,12 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
     const pointIndex = Math.floor(position * (centerlinePoints.length - 1));
     const newCenterPoint = centerlinePoints[pointIndex];
     
-    console.log(`🔄 Moving to centerline point ${pointIndex}/${centerlinePoints.length - 1}:`, newCenterPoint);
     
     try {
       // Create new cross-section at this centerline position
       const crossSectionData = await createRealCrossSection(vtkObjects.current.volume, [newCenterPoint]);
       
       if (crossSectionData && crossSectionData.cprImageData) {
-        console.log('🔄 Updating cross-section with new slice data...');
         
         // Update cross-section view with new data
         if (vtkObjects.current.crossSection?.mapper) {
@@ -3297,7 +2788,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
             property.setColorLevel(level);
           }
           
-          console.log('✅ Cross-section updated with new slice');
         }
       }
       
@@ -3312,7 +2802,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       });
       
     } catch (error) {
-      console.error('❌ Failed to update slice:', error);
     }
     
     // Force render all views
@@ -3325,7 +2814,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
 
   // Handle rotation of CPR views
   const handleRotation = (angle: number) => {
-    console.log('🔄 CPR rotation to angle:', angle);
     
     // Convert angle to radians
     const angleRad = (angle * Math.PI) / 180;
@@ -3376,7 +2864,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
       // Reset clipping range
       vtkView.renderer?.resetCameraClippingRange();
       
-      console.log(`🔄 ${viewName} rotated to ${angle}°`);
     });
     
     // Force render all views
@@ -3389,7 +2876,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
 
   // Tool functions for UI controls
   const handleZoom = (factor: number) => {
-    console.log('🔍 Zooming all views by factor:', factor);
 
     const zoomView = (vtkView: any, viewName: string) => {
       if (!vtkView?.camera || !vtkView?.renderWindow) return;
@@ -3399,9 +2885,7 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
         const newScale = currentScale / factor;
         vtkView.camera.setParallelScale(newScale);
         vtkView.renderWindow.render();
-        console.log(`✅ ${viewName} zoomed: ${currentScale.toFixed(1)} -> ${newScale.toFixed(1)}`);
       } catch (error) {
-        console.warn(`❌ Zoom failed for ${viewName}:`, error);
       }
     };
 
@@ -3523,7 +3007,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
               </button>
               <button
                 onClick={() => {
-                  console.log('🧪 Testing simple sphere at center...');
                   testSimpleSphere();
                 }}
                 className="px-3 py-1 text-xs rounded bg-green-600 text-white hover:bg-green-700 transition-colors"
@@ -3532,7 +3015,6 @@ const TriViewCPRViewport: React.FC<TriViewCPRViewportProps> = ({
               </button>
               <button
                 onClick={() => {
-                  console.log('🧪 Testing geometry WITHOUT CT images...');
                   testGeometryOnly();
                 }}
                 className="px-3 py-1 text-xs rounded bg-purple-600 text-white hover:bg-purple-700 transition-colors"

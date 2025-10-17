@@ -53,7 +53,6 @@ export class VTKCPRGenerator {
     width: number = 400,
     height?: number
   ): Promise<CPRResult> {
-    console.log('🔄 VTK CPR Generator: Creating CPR from centerline points...');
     
     // Set input volume and width
     this.mapper.setInputData(volumeData, 0);
@@ -62,7 +61,6 @@ export class VTKCPRGenerator {
     
     // Note: ImageCPRMapper calculates height automatically based on centerline length
     // We don't need to (and can't) set height manually
-    console.log('📏 CPR mapper configured with width:', width);
 
     // Convert centerline points to VTK format
     const centerlinePositions = new Float32Array(centerlinePoints.length * 3);
@@ -104,12 +102,6 @@ export class VTKCPRGenerator {
     // Get the CPR image data
     const cprImageData = this.mapper.getOutputData();
     
-    console.log('✅ VTK CPR Generator: CPR created successfully', {
-      imageDataExists: !!cprImageData,
-      width: this.mapper.getWidth(),
-      height: this.mapper.getHeight(),
-      centerlinePoints: nPoints
-    });
 
     return {
       cprImageData,

@@ -40,10 +40,6 @@ export const SCurveOverlay: React.FC<SCurveOverlayProps> = React.memo(({
       );
 
       if (leftCusp && rightCusp && nonCoronaryCusp) {
-        console.log('🔍 Cusp identification (CORRECT COLOR MAPPING):');
-        console.log('  Left (RED):', leftCusp.type, leftCusp.position);
-        console.log('  Right (GREEN):', rightCusp.type, rightCusp.position);
-        console.log('  Non-coronary (YELLOW):', nonCoronaryCusp.type, nonCoronaryCusp.position);
 
         const leftCuspPoint = {
           x: leftCusp.position[0],
@@ -83,7 +79,6 @@ export const SCurveOverlay: React.FC<SCurveOverlayProps> = React.memo(({
           rightCuspPoint,
           nonCoronaryCuspPoint
         );
-        console.log('🔵 Setting overlap view in overlay:', overlapView);
         setTwoCuspView(overlapView);
       }
     }

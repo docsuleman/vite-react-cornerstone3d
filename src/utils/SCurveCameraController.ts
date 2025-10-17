@@ -69,7 +69,6 @@ export class SCurveCameraController {
    */
   rotateTo(laoRao: number, cranCaud: number, animate: boolean = false) {
     if (!this.viewport || !this.focalPoint) {
-      console.warn('⚠️ SCurveCameraController: Cannot rotate - viewport or focal point not set');
       return;
     }
 
@@ -105,7 +104,6 @@ export class SCurveCameraController {
     // Render the viewport
     this.viewport.render();
 
-    console.log(`📹 Camera rotated to LAO/RAO=${safeLaoRao.toFixed(1)}°, CRAN/CAUD=${safeCranCaud.toFixed(1)}°`);
   }
 
   /**
@@ -171,7 +169,6 @@ export class SCurveCameraController {
 
     this.viewport.render();
 
-    console.log('📹 Camera initialized to annular plane orientation');
   }
 
   /**
@@ -196,7 +193,6 @@ export class SCurveCameraController {
       rightCusp,
       nonCoronaryCusp
     );
-    console.log(`📹 Jumping to 3-cusp view: LAO/RAO=${laoRao.toFixed(1)}°, CRAN/CAUD=${cranCaud.toFixed(1)}°`);
     this.rotateTo(laoRao, cranCaud, animate);
   }
 
@@ -215,7 +211,6 @@ export class SCurveCameraController {
       rightCusp,
       nonCoronaryCusp
     );
-    console.log(`📹 Jumping to cusp-overlap view: LAO/RAO=${laoRao.toFixed(1)}°, CRAN/CAUD=${cranCaud.toFixed(1)}°`);
     this.rotateTo(laoRao, cranCaud, animate);
   }
 

@@ -37,7 +37,6 @@ const PatientSearch: React.FC<PatientSearchProps> = ({ onSeriesSelected, onClose
       }
     } catch (err) {
       setError('Failed to search patients. Please check your connection to the DICOM server.');
-      console.error('Search error:', err);
     } finally {
       setLoading(false);
     }
@@ -55,7 +54,6 @@ const PatientSearch: React.FC<PatientSearchProps> = ({ onSeriesSelected, onClose
       setStudies(patientStudies);
     } catch (err) {
       setError('Failed to load studies for patient');
-      console.error('Studies error:', err);
     } finally {
       setLoading(false);
     }
@@ -85,7 +83,6 @@ const PatientSearch: React.FC<PatientSearchProps> = ({ onSeriesSelected, onClose
       setSeries(sortedSeries.length > 0 ? sortedSeries : studySeries);
     } catch (err) {
       setError('Failed to load series for study');
-      console.error('Series error:', err);
     } finally {
       setLoading(false);
     }

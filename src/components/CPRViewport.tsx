@@ -363,7 +363,6 @@ const CPRViewport: React.FC<CPRViewportProps> = ({
         .getStatesWithLabel(`rotationIn${stretchPlane}`)
         .forEach((handle: any) => handle.setVisible(false));
     } catch (error) {
-      console.warn('Some widget state methods not available:', error);
     }
 
     // Create cross renderer
@@ -453,7 +452,6 @@ const CPRViewport: React.FC<CPRViewportProps> = ({
         const image = reader.getOutputData();
         
         if (!image) {
-          console.error('Failed to load volume data from:', volumeUrl);
           return;
         }
         
@@ -462,7 +460,6 @@ const CPRViewport: React.FC<CPRViewportProps> = ({
         const imageSpacing = image.getSpacing();
         
         if (!imageDimensions || !imageSpacing) {
-          console.error('Invalid image data - missing dimensions or spacing');
           return;
         }
         const diagonalVec = vec3.create();
@@ -482,10 +479,8 @@ const CPRViewport: React.FC<CPRViewportProps> = ({
         resliceActor.setUserMatrix(reslice.getResliceAxes());
         widget.updateCameraPoints(crossRenderer, crossViewType, true, true);
       }).catch((error) => {
-        console.error('Error loading volume data:', error);
       });
     }).catch((error) => {
-      console.error('Error setting volume URL:', error);
     });
   }, [isInitialized, volumeUrl]);
 
@@ -611,7 +606,6 @@ const CPRViewport: React.FC<CPRViewportProps> = ({
             value={cprMode}
             onChange={(e) => {
               // This would need to be passed up to parent component
-              console.log('CPR Mode changed to:', e.target.value);
             }}
             className="bg-slate-700 text-white px-2 py-1 rounded text-sm"
           >

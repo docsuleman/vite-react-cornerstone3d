@@ -88,7 +88,6 @@ class DicomWebService {
           includePatient = nameToCheck.includes(searchTerm) && searchTerm.length > 0;
           
           // Debug logging
-          console.log(`Checking patient: "${nameToCheck}" against search: "${searchTerm}" - Include: ${includePatient}`);
         }
         
         if (searchParams?.PatientID) {
@@ -109,7 +108,6 @@ class DicomWebService {
       
       return Array.from(patientMap.values());
     } catch (error) {
-      console.error("Error searching patients:", error);
       throw new Error("Failed to search patients");
     }
   }
@@ -137,12 +135,10 @@ class DicomWebService {
           // Ensure study belongs to the requested patient
           const belongsToPatient = study.PatientID === patientID;
           if (!belongsToPatient) {
-            console.warn(`Study ${study.StudyInstanceUID} does not belong to patient ${patientID}, belongs to ${study.PatientID}`);
           }
           return belongsToPatient;
         });
     } catch (error) {
-      console.error("Error getting studies for patient:", error);
       throw new Error("Failed to get studies for patient");
     }
   }
@@ -171,12 +167,10 @@ class DicomWebService {
           // Ensure series belongs to the requested study
           const belongsToStudy = series.StudyInstanceUID === studyInstanceUID;
           if (!belongsToStudy) {
-            console.warn(`Series ${series.SeriesInstanceUID} does not belong to study ${studyInstanceUID}`);
           }
           return belongsToStudy;
         });
     } catch (error) {
-      console.error("Error getting series for study:", error);
       throw new Error("Failed to get series for study");
     }
   }
@@ -200,7 +194,6 @@ class DicomWebService {
         InstanceNumber: this.extractValue(instance, "00200013"),
       }));
     } catch (error) {
-      console.error("Error getting instances for series:", error);
       throw new Error("Failed to get instances for series");
     }
   }
@@ -225,12 +218,10 @@ class DicomWebService {
           // Ensure instance belongs to the requested series
           const belongsToSeries = instance.SeriesInstanceUID === seriesInstanceUID;
           if (!belongsToSeries) {
-            console.warn(`Instance ${instance.SOPInstanceUID} does not belong to series ${seriesInstanceUID}`);
           }
           return belongsToSeries;
         });
     } catch (error) {
-      console.error("Error getting instances for series:", error);
       throw new Error("Failed to get instances for series");
     }
   }
@@ -250,7 +241,6 @@ class DicomWebService {
 
       return instances;
     } catch (error) {
-      console.error("Error getting series metadata:", error);
       throw new Error("Failed to get series metadata");
     }
   }

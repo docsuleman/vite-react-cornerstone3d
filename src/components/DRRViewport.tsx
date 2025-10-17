@@ -130,7 +130,6 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
   useEffect(() => {
     if (!containerRef.current) return;
 
-    console.log('🎥 Initializing DRR viewport with VTK.js...');
 
     // Create generic render window with GRAY background (neutral for debugging)
     const genericRenderWindow = vtkGenericRenderWindow.newInstance({
@@ -163,12 +162,10 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
 
     const setupVolume = async () => {
       try {
-        console.log('📦 Loading volume data for DRR:', volumeId);
 
         // Get Cornerstone volume
         const volume = cornerstone3D.cache.getVolume(volumeId);
         if (!volume) {
-          console.error('Volume not found in cache:', volumeId);
           return;
         }
 
@@ -208,13 +205,6 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
         const renderer = grw.getRenderer();
         renderer.addVolume(actor);
 
-        console.log('✅ Volume actor added to renderer:', {
-          actorType: actor.getClassName(),
-          mapperType: mapper.getClassName(),
-          blendMode: mapper.getBlendMode(),
-          volumeDimensions: vtkImageData.getDimensions(),
-          volumeSpacing: vtkImageData.getSpacing(),
-        });
 
         // Setup camera with proper X-ray geometry
         const calculatedFocalPoint = focalPoint || calculateVolumeCenterPoint(volume);
@@ -229,13 +219,6 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
         }
 
         // Log volume information
-        console.log('📦 Volume information:', {
-          dimensions: volume.dimensions,
-          spacing: volume.spacing,
-          origin: volume.origin,
-          calculatedCenter: calculatedFocalPoint,
-          scalarRange: `[${minValue.toFixed(1)}, ${maxValue.toFixed(1)}]`
-        });
 
         // Get volume bounds
         const bounds = [
@@ -246,12 +229,6 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
           volume.origin[2],
           volume.origin[2] + volume.dimensions[2] * volume.spacing[2]
         ];
-        console.log('📦 Volume bounds:', {
-          x: `[${bounds[0].toFixed(1)}, ${bounds[1].toFixed(1)}]`,
-          y: `[${bounds[2].toFixed(1)}, ${bounds[3].toFixed(1)}]`,
-          z: `[${bounds[4].toFixed(1)}, ${bounds[5].toFixed(1)}]`,
-          size: `${(bounds[1]-bounds[0]).toFixed(1)} × ${(bounds[3]-bounds[2]).toFixed(1)} × ${(bounds[5]-bounds[4]).toFixed(1)} mm`
-        });
 
         // Reset camera to fit volume and get proper parallel scale
         renderer.resetCamera();
@@ -263,11 +240,6 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
         // Reduce the auto-calculated distance by 50% to zoom in more
         const calculatedDistance = defaultCameraDistance * 0.5;
 
-        console.log('🎥 Auto camera settings from resetCamera:', {
-          parallelScale: autoParallelScale,
-          autoDistance: defaultCameraDistance,
-          usedDistance: calculatedDistance
-        });
 
         // Store the calculated distance for future angle updates
         setCameraDistance(calculatedDistance);
@@ -290,9 +262,7 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
         setVolumeActor(actor);
         setIsInitialized(true);
 
-        console.log('✅ DRR viewport initialized successfully');
       } catch (error) {
-        console.error('Error setting up DRR volume:', error);
       }
     };
 
@@ -305,7 +275,6 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
 
     const renderer = grw.getRenderer();
     if (!renderer) {
-      console.warn('⚠️ Renderer not available for camera update');
       return;
     }
 
@@ -314,11 +283,6 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
 
     const calculatedFocalPoint = focalPoint || calculateVolumeCenterPoint(volume);
 
-    console.log('📐 DRR camera update:', {
-      laoRao: laoRao.toFixed(1),
-      cranCaud: cranCaud.toFixed(1),
-      focalPoint: calculatedFocalPoint.map(v => v.toFixed(1))
-    });
 
     updateCamera(
       renderer,
@@ -369,7 +333,6 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
     const mapper = volumeActor.getMapper();
     if (mapper) {
       mapper.setBlendMode(blendMode);
-      console.log('🔄 Blend mode changed to:', blendModes.find(m => m.value === blendMode)?.label);
       grw.getRenderWindow().render();
     }
   }, [volumeActor, grw, blendMode]);
@@ -695,13 +658,11 @@ function updateCamera(
   autoParallelScale?: number
 ): void {
   if (!renderer) {
-    console.error('❌ updateCamera called with undefined renderer');
     return;
   }
 
   const camera = renderer.getActiveCamera();
   if (!camera) {
-    console.error('❌ getActiveCamera returned undefined');
     return;
   }
 
@@ -757,18 +718,6 @@ function updateCamera(
   camera.setClippingRange(nearClip, farClip);
 
   const clippingRange = camera.getClippingRange();
-  console.log('📐 DRR X-ray geometry:', {
-    sourcePosition: sourcePosition.map(v => v.toFixed(1)),
-    focalPoint: focalPoint.map(v => v.toFixed(1)),
-    SOD: sourceObjectDistance,
-    SID: sourceImageDistance,
-    magnification: magnification.toFixed(2),
-    viewAngle: viewAngle.toFixed(1) + '°',
-    detectorHeight: detectorHeight,
-    clippingRange: `[${clippingRange[0].toFixed(1)}, ${clippingRange[1].toFixed(1)}]`,
-    laoRao: laoRao.toFixed(1) + '°',
-    cranCaud: cranCaud.toFixed(1) + '°'
-  });
 }
 
 /**
@@ -805,11 +754,6 @@ function applySlicerXRayTransferFunctions(
   opacityFunction.addPoint(3071, maxOpacity); // Maximum density: 10%
   property.setScalarOpacity(0, opacityFunction);
 
-  console.log('📊 Slicer-matched opacity function (COMPOSITE mode):', {
-    transparent: `${opacityLow} HU and below`,
-    contrastStart: `${opacityHigh} HU at ${(maxOpacity * 0.3 * 100).toFixed(1)}%`,
-    maximum: `3071 HU at ${(maxOpacity * 100).toFixed(1)}%`,
-  });
 
   // COLOR FUNCTION: User-controllable color inversion
   const colorFunction = vtkColorTransferFunction.newInstance();
@@ -841,13 +785,4 @@ function applySlicerXRayTransferFunctions(
   // Enable interpolation for smoother rendering
   property.setInterpolationTypeToLinear();
 
-  console.log('🎨 Applied Slicer-style transfer functions:', {
-    opacityRange: `${opacityLow} to ${opacityHigh} HU`,
-    maxOpacity: `${(maxOpacity * 100).toFixed(1)}%`,
-    mode: 'COMPOSITE (Slicer FluoroRenderingPreset_01)',
-    colorInversion: invertColors ? 'INVERTED (angiography)' : 'NORMAL (CT-like)',
-    colors: invertColors
-      ? 'Low HU=WHITE (light), High HU=BLACK (dark)'
-      : 'Low HU=BLACK (dark), High HU=WHITE (bright)',
-  });
 }

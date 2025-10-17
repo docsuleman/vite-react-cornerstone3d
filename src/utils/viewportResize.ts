@@ -46,7 +46,6 @@ export function createViewportResizeObserver(options: ViewportResizeOptions) {
     const renderingEngine = getRenderingEngine(renderingEngineId);
 
     if (!renderingEngine) {
-      console.warn('Rendering engine not found for resize:', renderingEngineId);
       return;
     }
 
@@ -57,7 +56,6 @@ export function createViewportResizeObserver(options: ViewportResizeOptions) {
         .filter(Boolean) as Types.IViewport[];
 
       if (viewports.length === 0) {
-        console.warn('No viewports found for resize');
         return;
       }
 
@@ -77,9 +75,7 @@ export function createViewportResizeObserver(options: ViewportResizeOptions) {
         }
       });
 
-      console.log('✅ Viewport resize completed with presentation preservation');
     } catch (error) {
-      console.error('Error during viewport resize:', error);
     }
   };
 
@@ -245,12 +241,9 @@ export function applyDisplayArea(
     if (viewport.setDisplayArea) {
       viewport.setDisplayArea(preset);
       viewport.render();
-      console.log('✅ Display area applied to viewport:', viewport.id);
     } else {
-      console.warn('Viewport does not support setDisplayArea:', viewport.id);
     }
   } catch (error) {
-    console.error('Error applying display area:', error);
   }
 }
 
@@ -273,7 +266,6 @@ export function manualResize(
   const renderingEngine = getRenderingEngine(renderingEngineId);
 
   if (!renderingEngine) {
-    console.warn('Rendering engine not found:', renderingEngineId);
     return;
   }
 
@@ -296,8 +288,6 @@ export function manualResize(
       }
     });
 
-    console.log('✅ Manual resize completed');
   } catch (error) {
-    console.error('Error during manual resize:', error);
   }
 }

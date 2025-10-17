@@ -109,7 +109,6 @@ export class MeasurementWorkflowManager {
           const calculateOffset = new Function('annulusArea', `return ${step.offsetCalculation}`);
           return calculateOffset(annulusArea);
         } catch (error) {
-          console.error('Error calculating dynamic offset:', error);
           return 0;
         }
 

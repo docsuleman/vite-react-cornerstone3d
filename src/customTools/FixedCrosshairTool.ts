@@ -97,7 +97,6 @@ class FixedCrosshairTool extends BaseTool {
    */
   setAnnularPlaneDefined(isDefined: boolean) {
     this.annularPlaneDefined = isDefined;
-    console.log(`🔒 Center dot ${isDefined ? 'LOCKED' : 'UNLOCKED'} (annular plane ${isDefined ? 'defined' : 'not defined'})`);
   }
 
   /**
@@ -105,7 +104,6 @@ class FixedCrosshairTool extends BaseTool {
    */
   setCenterDraggingDisabled(disabled: boolean) {
     this.centerDraggingDisabled = disabled;
-    console.log(`${disabled ? '🔒' : '🔓'} Center dragging ${disabled ? 'DISABLED' : 'ENABLED'} (measurements: ${disabled})`);
   }
 
   /**
@@ -114,7 +112,6 @@ class FixedCrosshairTool extends BaseTool {
   setAnnulusReference(position: Types.Point3 | null) {
     this.annulusReferencePosition = position ? [...position] as Types.Point3 : null;
     this.showDistanceFromAnnulus = position !== null;
-    console.log(`📏 Distance measurement ${position ? 'ENABLED' : 'DISABLED'} at:`, position);
   }
 
   /**
@@ -124,7 +121,6 @@ class FixedCrosshairTool extends BaseTool {
    */
   setCPRRotationCallback(callback: ((deltaAngle: number) => void) | null) {
     FixedCrosshairTool.globalCPRRotationCallback = callback;
-    console.log(`🔧 CPR rotation callback ${callback ? 'SET (CPR mode)' : 'CLEARED (MPR mode)'}`);
   }
 
   /**
@@ -145,7 +141,6 @@ class FixedCrosshairTool extends BaseTool {
     // Clean up any existing lines
     this.cleanupLines();
 
-    console.log('🔓 FixedCrosshairTool: Position cleared');
   }
 
   /**
@@ -153,7 +148,6 @@ class FixedCrosshairTool extends BaseTool {
    * Call this when viewport layout changes (e.g., entering measurements stage)
    */
   resetViewportSizes() {
-    console.log('🔄 FixedCrosshairTool: Resetting viewport size cache');
     this.lastViewportSizes = {};
     this.skipDrawUntil = {};
   }
@@ -192,7 +186,6 @@ class FixedCrosshairTool extends BaseTool {
     };
 
     this.rafId = requestAnimationFrame(render);
-    console.log('🎬 FixedCrosshairTool: Render loop started');
   }
 
   /**
@@ -202,7 +195,6 @@ class FixedCrosshairTool extends BaseTool {
     if (this.rafId !== null) {
       cancelAnimationFrame(this.rafId);
       this.rafId = null;
-      console.log('⏹️ FixedCrosshairTool: Render loop stopped');
     }
   }
 
@@ -243,7 +235,6 @@ class FixedCrosshairTool extends BaseTool {
 
           if (lastSize && (lastSize.width !== currentWidth || lastSize.height !== currentHeight)) {
             // Viewport resized - skip drawing for 100ms to let Cornerstone settle
-            console.log(`🔄 ${viewportId} resized: ${lastSize.width}x${lastSize.height} → ${currentWidth}x${currentHeight}`);
             this.skipDrawUntil[viewportId] = Date.now() + 100; // Skip for 100ms
             viewport.render();
           }
@@ -261,7 +252,6 @@ class FixedCrosshairTool extends BaseTool {
 
           // Debug resize behavior
           if (this.skipDrawUntil[viewportId] && Date.now() >= this.skipDrawUntil[viewportId]) {
-            console.log(`✅ ${viewportId} settled after resize, canvasPoint=[${canvasPoint[0].toFixed(1)}, ${canvasPoint[1].toFixed(1)}]`);
             delete this.skipDrawUntil[viewportId];
           }
 
@@ -824,7 +814,6 @@ class FixedCrosshairTool extends BaseTool {
       //   }
       // }
     } catch (error) {
-      console.error('FixedCrosshairTool draw error:', error);
     }
   }
 
@@ -835,7 +824,6 @@ class FixedCrosshairTool extends BaseTool {
     sphere.addEventListener('mousedown', (e: MouseEvent) => {
       // Prevent dragging if disabled (measurements stage)
       if (this.centerDraggingDisabled) {
-        console.log('⛔ Center dragging disabled (measurements mode)');
         e.preventDefault();
         e.stopPropagation();
         return;
@@ -844,7 +832,6 @@ class FixedCrosshairTool extends BaseTool {
       e.preventDefault();
       e.stopPropagation();
 
-      console.log('🎯 Starting center dot drag');
       this.isCenterDragging = true;
       this.dragStartWorldPos = [...this.fixedPosition!] as Types.Point3;
 
@@ -903,11 +890,9 @@ class FixedCrosshairTool extends BaseTool {
             this.dragStartWorldPos![2] + axialNormal[2] * projectionOnNormal
           ] as Types.Point3;
 
-          console.log('🔒 Axial-only movement:', projectionOnNormal.toFixed(2), 'mm');
         } else {
           // BEFORE 3 cusp dots: Free movement in all directions
           finalPosition = newWorldPos;
-          console.log('🆓 Free movement');
         }
 
         // Update the fixed position
@@ -923,7 +908,6 @@ class FixedCrosshairTool extends BaseTool {
       const handleMouseUp = () => {
         if (this.isCenterDragging) {
           this.isCenterDragging = false;
-          console.log('✅ Center dot drag complete');
 
           // Reset cursor
           sphere.style.cursor = 'grab';
@@ -948,7 +932,6 @@ class FixedCrosshairTool extends BaseTool {
       e.preventDefault();
       e.stopPropagation();
 
-      console.log('🔄 Starting crosshair rotation from marker in viewport:', viewportId);
       this.isDragging = true;
 
       // Get center point in canvas coordinates
@@ -966,7 +949,6 @@ class FixedCrosshairTool extends BaseTool {
       // Change cursor to grabbing
       marker.style.cursor = 'grabbing';
 
-      console.log('📎 Adding global event listeners to document');
       let moveCount = 0;
 
       // Add global mousemove listener
@@ -975,31 +957,19 @@ class FixedCrosshairTool extends BaseTool {
 
         // Log every 10th move to reduce console spam
         if (moveCount % 10 === 1) {
-          console.log(`🖱️ MouseMove event #${moveCount}`, {
-            isDragging: this.isDragging,
-            hasRenderingEngineId: !!this.renderingEngineId,
-            hasFixedPosition: !!this.fixedPosition
-          });
         }
 
         if (!this.isDragging || !this.renderingEngineId || !this.fixedPosition) {
-          console.warn('⚠️ MouseMove: Conditions not met', {
-            isDragging: this.isDragging,
-            hasRenderingEngineId: !!this.renderingEngineId,
-            hasFixedPosition: !!this.fixedPosition
-          });
           return;
         }
 
         const renderingEngine = getRenderingEngine(this.renderingEngineId);
         if (!renderingEngine) {
-          console.warn('⚠️ MouseMove: Rendering engine not found');
           return;
         }
 
         const axialViewport = renderingEngine.getViewport('axial');
         if (!axialViewport) {
-          console.warn('⚠️ MouseMove: Axial viewport not found');
           return;
         }
 
@@ -1026,23 +996,19 @@ class FixedCrosshairTool extends BaseTool {
 
         // Log rotation updates
         if (Math.abs(deltaAngle) > 0.001) {
-          console.log(`🔄 Rotating: deltaAngle=${(deltaAngle * 180 / Math.PI).toFixed(2)}°, total=${(FixedCrosshairTool.globalRotationAngle * 180 / Math.PI).toFixed(1)}°`);
         }
 
         // Always update for smooth rotation - even tiny movements
         if (Math.abs(deltaAngle) > 0) {
           // Rotate the MPR viewing planes (negate deltaAngle to fix direction)
-          console.log('📐 Calling rotateMPRPlanes...');
           this.rotateMPRPlanes(renderingEngine, 'axial', -deltaAngle);
         }
       };
 
       // Add global mouseup listener
       const handleMouseUp = () => {
-        console.log(`🖱️ MouseUp event, total moves: ${moveCount}`);
         if (this.isDragging) {
           this.isDragging = false;
-          console.log(`✅ Crosshair rotation complete: ${(FixedCrosshairTool.globalRotationAngle * 180 / Math.PI).toFixed(1)}°`);
 
           // Reset cursor on all markers
           const allMarkers = document.querySelectorAll('[id*="-fixed-"][id*="-marker"]');
@@ -1052,7 +1018,6 @@ class FixedCrosshairTool extends BaseTool {
         }
 
         // Remove global listeners
-        console.log('🗑️ Removing global event listeners');
         document.removeEventListener('mousemove', handleMouseMove);
         document.removeEventListener('mouseup', handleMouseUp);
       };
@@ -1066,12 +1031,10 @@ class FixedCrosshairTool extends BaseTool {
       const testMove = () => {
         testCount++;
         if (testCount <= 5) {
-          console.log(`🧪 Test mousemove event ${testCount}`);
         }
       };
       document.addEventListener('mousemove', testMove);
       setTimeout(() => {
-        console.log(`🧪 Test complete: ${testCount} mousemove events detected`);
         document.removeEventListener('mousemove', testMove);
       }, 2000);
     });
@@ -1081,14 +1044,12 @@ class FixedCrosshairTool extends BaseTool {
    * Render the fixed crosshair lines on all viewports
    */
   onSetToolEnabled() {
-    console.log('✅ FixedCrosshairTool enabled');
     if (this.fixedPosition) {
       this.startRenderLoop();
     }
   }
 
   onSetToolDisabled() {
-    console.log('🔇 FixedCrosshairTool disabled');
     this.stopRenderLoop();
     this.cleanupLines();
   }
@@ -1129,7 +1090,6 @@ class FixedCrosshairTool extends BaseTool {
         this.windowingStartValues = { windowCenter: 40, windowWidth: 400 };
       }
 
-      console.log('🪟 Starting windowing:', this.windowingStartValues);
       return true; // We're handling this event
     }
 
@@ -1189,14 +1149,12 @@ class FixedCrosshairTool extends BaseTool {
     if (distanceToCenter <= centerGrabRadius) {
       // Clicking on center sphere - check if dragging is disabled
       if (this.centerDraggingDisabled) {
-        console.log('⛔ Center dragging disabled (measurements mode)');
         return false; // Don't handle this event, let rotation work
       }
 
       // Start center drag
       this.isCenterDragging = true;
       this.dragStartWorldPos = [...this.fixedPosition] as Types.Point3;
-      console.log('🎯 Starting center dot drag from preMouseDown');
       return true; // We're handling this event
     }
 
@@ -1212,7 +1170,6 @@ class FixedCrosshairTool extends BaseTool {
         this.isDragging = true;
         const angleToClick = Math.atan2(canvas[1] - centerCanvas[1], canvas[0] - centerCanvas[0]);
         this.dragStartAngle = angleToClick - FixedCrosshairTool.globalRotationAngle;
-        console.log('🔄 Starting crosshair rotation from marker');
         return true; // We're handling this event
       }
     }
@@ -1374,29 +1331,24 @@ class FixedCrosshairTool extends BaseTool {
    */
   private rotateMPRPlanes(renderingEngine: any, activeViewportId: string, deltaAngle: number) {
     if (!this.fixedPosition) {
-      console.warn('⚠️ rotateMPRPlanes: No fixed position');
       return;
     }
 
     // Only allow rotation from axial view
     if (activeViewportId !== 'axial') {
-      console.log(`⏭️ rotateMPRPlanes: Ignoring rotation from ${activeViewportId} (only axial allowed)`);
       return;
     }
 
     // If CPR rotation callback is set (check static property), use it instead of standard rotation
     // IMPORTANT: Only use CPR callback if it's actually set and not null
     if (FixedCrosshairTool.globalCPRRotationCallback && typeof FixedCrosshairTool.globalCPRRotationCallback === 'function') {
-      console.log('🔄 Using CPR rotation callback for CPR mode');
       FixedCrosshairTool.globalCPRRotationCallback(deltaAngle);
       return;
     }
 
-    console.log(`🔄 Using MPR rotation (standard camera rotation): deltaAngle=${(deltaAngle * 180 / Math.PI).toFixed(1)}°`);
 
     const axialViewport = renderingEngine.getViewport('axial') as Types.IVolumeViewport;
     if (!axialViewport) {
-      console.warn('⚠️ rotateMPRPlanes: Axial viewport not found');
       return;
     }
 
@@ -1409,7 +1361,6 @@ class FixedCrosshairTool extends BaseTool {
     longAxisViewports.forEach(viewportId => {
       const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
       if (!viewport) {
-        console.warn(`⚠️ rotateMPRPlanes: ${viewportId} viewport not found`);
         return;
       }
 
@@ -1450,7 +1401,6 @@ class FixedCrosshairTool extends BaseTool {
       );
 
       // Set the new camera with ALL parameters including viewPlaneNormal
-      console.log(`  📷 Updating ${viewportId} camera...`);
       viewport.setCamera({
         position: newPosition,
         viewUp: newViewUp,
@@ -1462,13 +1412,11 @@ class FixedCrosshairTool extends BaseTool {
 
       // Force immediate render - call render() directly on viewport
       viewport.render();
-      console.log(`  ✅ ${viewportId} camera updated and rendered`);
     });
 
     // CRITICAL: Force render all viewports together to ensure synchronization
     // This is especially important for the new 2-row layout in measurements stage
     renderingEngine.renderViewports(['axial', 'sagittal', 'coronal']);
-    console.log('  🔄 All viewports rendered together');
 
     // DON'T rotate the axial viewport camera - only the visual crosshair lines rotate
     // This is handled by the rotationAngle in the drawing code
@@ -1512,17 +1460,14 @@ class FixedCrosshairTool extends BaseTool {
       this.isWindowing = false;
       this.windowingStartPos = null;
       this.windowingStartValues = null;
-      console.log('✅ Windowing complete');
       return true;
     }
     if (this.isCenterDragging) {
       this.isCenterDragging = false;
-      console.log('✅ Center dot drag complete');
       return true;
     }
     if (this.isDragging) {
       this.isDragging = false;
-      console.log(`✅ Crosshair rotation complete: ${(FixedCrosshairTool.globalRotationAngle * 180 / Math.PI).toFixed(1)}°`);
       return true;
     }
     return false;

@@ -30,7 +30,6 @@ const VolumeRendering3DViewport: React.FC<VolumeRendering3DViewportProps> = ({
 
     const initializeViewport = async () => {
       try {
-        console.log('🎨 Initializing 3D Volume Rendering viewport:', viewportId);
 
         // Get or create rendering engine
         let renderingEngine = RenderingEngine.getRenderingEngine(renderingEngineId);
@@ -120,10 +119,8 @@ const VolumeRendering3DViewport: React.FC<VolumeRendering3DViewportProps> = ({
 
           viewport.render();
           setIsInitialized(true);
-          console.log('✅ 3D Volume Rendering viewport initialized');
         }
       } catch (error) {
-        console.error('❌ Failed to initialize 3D viewport:', error);
       }
     };
 
@@ -137,7 +134,6 @@ const VolumeRendering3DViewport: React.FC<VolumeRendering3DViewportProps> = ({
           renderingEngine.disableElement(viewportId);
         }
       } catch (error) {
-        console.warn('Cleanup error for 3D viewport:', error);
       }
     };
   }, [viewportId, renderingEngineId, volumeId]);
@@ -164,7 +160,6 @@ const VolumeRendering3DViewport: React.FC<VolumeRendering3DViewportProps> = ({
   const applyCropping = (viewport: Types.IVolumeViewport, cropInfo: VolumeCropInfo) => {
     // TODO: Implement cropping using VTK clipping planes or volume mapper VOI
     // For now, log the crop bounds
-    console.log('📦 Applying crop to 3D viewport:', cropInfo.worldBounds);
 
     // This would use VTK.js APIs to set clipping planes
     // Example:
@@ -174,7 +169,6 @@ const VolumeRendering3DViewport: React.FC<VolumeRendering3DViewportProps> = ({
   };
 
   const clearCropping = (viewport: Types.IVolumeViewport) => {
-    console.log('🔓 Clearing crop from 3D viewport');
     // Reset VOI or remove clipping planes
   };
 

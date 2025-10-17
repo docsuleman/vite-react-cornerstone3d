@@ -30,7 +30,6 @@ function detectCardiacPhases(instances) {
   const IMAGE_POSITION_PATIENT = "00200032"; // Image Position Patient
   const SLICE_LOCATION = "00201041"; // Slice Location
 
-  console.log('📊 Detecting phases from', instances.length, 'instances');
 
   // First, try to group by slice location to identify unique slices
   const sliceGroups = new Map();
@@ -53,7 +52,6 @@ function detectCardiacPhases(instances) {
     sliceGroups.get(sliceKey).push(instance);
   });
 
-  console.log('📊 Found', sliceGroups.size, 'unique slice locations');
 
   // If each slice location has multiple instances, they are likely phases
   const hasMultiplePhasesPerSlice = Array.from(sliceGroups.values()).some(group => group.length > 1);
@@ -101,10 +99,6 @@ function detectCardiacPhases(instances) {
       }
     }
 
-    console.log(`📊 DICOM Cardiac Tags Found:`);
-    console.log(`   Nominal %: ${nominalPercentageValues.size}, Nominal Trigger Delay: ${nominalTriggerDelayValues.size}, Actual Trigger Delay: ${actualTriggerDelayValues.size}`);
-    console.log(`   Temporal Index: ${temporalIndexValues.size}, Temporal Position: ${temporalPositionValues.size}`);
-    console.log(`   Acquisition#: ${acquisitionValues.size}, Trigger Time: ${triggerTimeValues.size}`);
 
     // Now group instances using a tag that actually varies
     const phaseGroups = new Map();
@@ -169,7 +163,6 @@ function detectCardiacPhases(instances) {
         phaseId = (instanceNum - 1) % phasesPerSlice;
         if (index === 0) {
           detectionMethod = `⚠️ FALLBACK: Instance# modulo (NO DICOM CARDIAC TAGS FOUND)`;
-          console.warn(`⚠️ WARNING: No standard DICOM cardiac phase tags found! Using instance number pattern as fallback.`);
         }
       }
 
@@ -184,7 +177,6 @@ function detectCardiacPhases(instances) {
       }
     });
 
-    console.log(`📊 Multi-phase series detected: ${phaseGroups.size} phases using ${detectionMethod}`);
 
     // Log phase group details with their IDs
     const sortedPhaseIds = Array.from(phaseGroups.keys()).sort((a, b) => {
@@ -195,7 +187,6 @@ function detectCardiacPhases(instances) {
     sortedPhaseIds.forEach(phaseId => {
       const instances = phaseGroups.get(phaseId);
       const percentInfo = phasePercentages.has(phaseId) ? ` (${phasePercentages.get(phaseId)}%)` : '';
-      console.log(`  Phase ${phaseId}${percentInfo}: ${instances.length} instances`);
     });
 
     if (phaseGroups.size > 1) {
@@ -241,7 +232,6 @@ function detectCardiacPhases(instances) {
   }
 
   // Single phase or can't detect phases
-  console.log('📊 Single phase series or phases in separate series');
   return {
     isMultiPhase: false,
     phases: [{
@@ -290,34 +280,23 @@ export default async function createImageIdsAndCacheMetaData({
     // Detect cardiac phases
     const phaseInfo = detectCardiacPhases(instances);
 
-    console.log('📊 Phase detection result:', {
-      isMultiPhase: phaseInfo.isMultiPhase,
-      totalPhases: phaseInfo.totalPhases,
-      totalInstances: instances.length,
-      selectedPhase
-    });
 
     // If multi-phase and no phase selected, use first phase
     let instancesToUse = instances;
     if (phaseInfo.isMultiPhase) {
-      console.log(`📊 Detected ${phaseInfo.totalPhases} cardiac phases`);
 
       // Log all phases
       phaseInfo.phases.forEach((phase, idx) => {
-        console.log(`  ${phase.phaseName}: ${phase.imageCount} images`);
       });
 
       if (selectedPhase !== null && phaseInfo.phases[selectedPhase]) {
         instancesToUse = phaseInfo.phases[selectedPhase].instances;
-        console.log(`✅ Using selected ${phaseInfo.phases[selectedPhase].phaseName} with ${instancesToUse.length} images`);
       } else {
         // Default to first phase
         const firstPhase = phaseInfo.phases[0];
         instancesToUse = firstPhase.instances;
-        console.log(`✅ Using default ${firstPhase.phaseName} with ${instancesToUse.length} images`);
       }
     } else {
-      console.log(`ℹ️ Single phase detected or phases in separate series - using all ${instancesToUse.length} instances`);
     }
 
     // CRITICAL: Sort instances by slice location for proper spatial ordering
@@ -348,7 +327,6 @@ export default async function createImageIdsAndCacheMetaData({
       return parseInt(aInstanceNum) - parseInt(bInstanceNum);
     });
 
-    console.log(`📐 Sorted ${instancesToUse.length} instances by slice location`);
 
 
     // Extract spacing values from the first instance to use as reference
@@ -361,12 +339,10 @@ export default async function createImageIdsAndCacheMetaData({
       try {
         // Validate metadata structure
         if (!instanceMetaData[SERIES_INSTANCE_UID] || !instanceMetaData[SERIES_INSTANCE_UID].Value) {
-          console.warn(`Instance ${index}: Missing SeriesInstanceUID in metadata`);
           return null;
         }
 
         if (!instanceMetaData[SOP_INSTANCE_UID] || !instanceMetaData[SOP_INSTANCE_UID].Value) {
-          console.warn(`Instance ${index}: Missing SOPInstanceUID in metadata`);
           return null;
         }
 
@@ -423,7 +399,6 @@ export default async function createImageIdsAndCacheMetaData({
 
         return imageId
       } catch (error) {
-        console.warn(`Failed to process instance ${index}:`, error);
         return null;
       }
     }).filter(Boolean); // Remove null entries
@@ -438,7 +413,6 @@ export default async function createImageIdsAndCacheMetaData({
     };
 
   } catch (error) {
-    console.error('❌ Error in createImageIdsAndCacheMetaData:', error);
     throw new Error(`Failed to fetch DICOM metadata: ${error.message || error}`);
   }
 }

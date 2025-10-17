@@ -217,7 +217,6 @@ class TAVISphereMarkerTool extends BaseTool {
     const placementCheck = this.canPlaceSphere();
     
     if (!placementCheck.canPlace) {
-      console.warn(placementCheck.reason);
       return;
     }
 
@@ -282,7 +281,6 @@ class TAVISphereMarkerTool extends BaseTool {
   private placeSphere(sphereData: TAVISphere) {
     const enabledElements = getEnabledElements();
     if (enabledElements.length === 0) {
-      console.error('No enabled viewports found.');
       return;
     }
 

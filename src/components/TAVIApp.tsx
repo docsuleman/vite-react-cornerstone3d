@@ -74,7 +74,6 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
   // Initialize measurement workflow when entering MEASUREMENTS stage
   useEffect(() => {
     if (state.currentStage === WorkflowStage.MEASUREMENTS && !state.measurementWorkflowActive) {
-      console.log('🎯 Initializing measurement workflow');
 
       workflowManager.reset();
       const workflow = workflowManager.loadWorkflow();
@@ -144,7 +143,6 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
     try {
       // Check if the SELECTED series has multiple phases within it
       // by using the phase detection from createImageIdsAndCacheMetaData
-      console.log(`🔍 Checking for multiple phases in series ${series.SeriesInstanceUID}`);
 
       // Temporarily load metadata to detect phases
       const { phaseInfo } = await createImageIdsAndCacheMetaData({
@@ -153,22 +151,18 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
         wadoRsRoot: dicomWebService.getWadoRsRoot()
       });
 
-      console.log(`📊 Phase detection result:`, phaseInfo);
 
       // If this series has multiple phases, show phase selection modal
       if (phaseInfo.isMultiPhase && phaseInfo.totalPhases > 1) {
-        console.log(`✨ Found ${phaseInfo.totalPhases} phases in series - showing phase modal`);
         setPendingStudy(study);
         // Store the series with phase info
         setAvailableSeries([series]); // Just one series, but with multiple phases inside
         setShowPhaseModal(true);
       } else {
         // Single phase - proceed directly
-        console.log(`➡️ Single phase detected - proceeding directly`);
         proceedWithSeries(study, series);
       }
     } catch (error) {
-      console.error('Failed to detect cardiac phases:', error);
       // Fallback: proceed with the selected series
       proceedWithSeries(study, series);
     }
@@ -282,7 +276,6 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
   const handleSCurveAngleChange = useCallback((laoRao: number, cranCaud: number) => {
     // Update current angles state - this will trigger camera rotation in ProperMPRViewport
     setCurrent3DAngles({ laoRao, cranCaud });
-    console.log(`📐 S-curve angle changed: LAO/RAO=${laoRao.toFixed(1)}°, CRAN/CAUD=${cranCaud.toFixed(1)}°`);
   }, []);
 
   // Handle toolbar button clicks
@@ -300,7 +293,6 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
       const rectangleAnnotations = annotationManager.getAnnotations('RectangleROI');
 
       if (!rectangleAnnotations || rectangleAnnotations.length === 0) {
-        console.warn('⚠️ No crop box found. Please draw a rectangle ROI first.');
         actions.addWarning('No crop box found. Please draw a rectangle ROI on the viewport first.');
         return;
       }
@@ -310,7 +302,6 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
       const points = cropAnnotation.data.handles.points;
 
       if (!points || points.length < 4) {
-        console.error('❌ Invalid crop annotation');
         return;
       }
 
@@ -338,10 +329,7 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
       };
 
       actions.setVolumeCrop(volumeCropInfo);
-      console.log('✅ Crop applied:', volumeCropInfo);
-      console.log('📦 Crop bounds (world):', worldBounds);
     } catch (error) {
-      console.error('❌ Failed to apply crop:', error);
       actions.addError('Failed to apply crop. Please try again.');
     }
   };
@@ -363,12 +351,10 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
         });
       }
 
-      console.log('🔄 Crop reset - all crop boxes cleared');
 
       // TODO: Optionally initialize a default cardiac crop box
       // This would create a ~150x150x150mm box centered on the volume
     } catch (error) {
-      console.error('❌ Failed to reset crop:', error);
       actions.addError('Failed to reset crop.');
     }
   };
@@ -780,7 +766,8 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
           {/* Debug log for centerline prop */}
           {console.log('🔍 [TAVIApp RENDER] Passing centerlineData to ProperMPRViewport:', {
             hasCenterline: !!state.centerline,
-            numPoints: state.centerline?.length || 0,
+            numPoints: state.centerline?.position ? (state.centerline.position.length / 3) : 0,
+            annulusPlaneIndex: state.centerline?.annulusPlaneIndex ?? 'not set',
             currentStage: state.currentStage
           })}
           <ProperMPRViewport
@@ -842,7 +829,6 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
               // The onMeasurementComplete callback above has already been called
             }}
             onImageLoaded={(imageData) => {
-              console.log('DICOM images loaded for stage:', state.currentStage);
             }}
             onSpherePositionsUpdate={(spheres) => {
               // Handle sphere updates differently based on workflow stage
@@ -851,7 +837,6 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
               // Do NOT clear centerline - it has been modified to be perpendicular to annular plane
               if (state.currentStage === WorkflowStage.ANNULUS_DEFINITION) {
                 if (spheres.length >= 3) {
-                  console.log('🔄 [ANNULUS_DEFINITION] Updating AV valve point (red sphere) to annulus center');
 
                   // Find the red sphere (middle one - AORTIC_VALVE)
                   const redSphere = spheres[1]; // Middle sphere is always AV valve
@@ -867,7 +852,6 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
                   // This will update the existing AV point without clearing centerline
                   actions.addRootPoint(avRootPoint);
 
-                  console.log('✅ Red sphere updated to annulus center:', redSphere.pos);
                 }
                 return; // Exit early - don't process full sphere list
               }
@@ -923,7 +907,6 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             }}
             onCuspDotsUpdate={async (dots) => {
               if (dots.length === 3) {
-                console.log('3 cusp nadir dots placed in MPR, updating annulus points');
 
                 // Clear existing annulus points first
                 actions.clearAnnulusPoints();
@@ -970,42 +953,17 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
 
                   actions.updateMeasurement({ annulus: annulusMeasurements });
 
-                  // Modify centerline to be perpendicular to annular plane
-                  const { CenterlineModifier } = await import('../utils/CenterlineModifier');
-                  const modifiedCenterline = CenterlineModifier.modifyCenterlineWithAnnulusPlane(
-                    state.rootPoints.map(p => ({ x: p.position[0], y: p.position[1], z: p.position[2], type: p.type })),
-                    annularPlane
-                  );
+                  // [CL_DEBUG] Regenerate centerline WITH annular plane to add 6mm straight segment
+                  console.log(`[CL_DEBUG] 🔄 Regenerating centerline with annular plane...`);
+                  const { CenterlineGenerator } = await import('../utils/CenterlineGenerator');
+                  const centerlineData = CenterlineGenerator.generateFromRootPoints(state.rootPoints, annularPlane);
 
-                  // Update centerline data in workflow state
-                  // CRITICAL: Also store the modifiedCenterline array with isAnnulusPlane markers
-                  // This allows ProperMPRViewport to find the annulus plane position for default camera positioning
-                  const centerlineData = {
-                    position: new Float32Array(modifiedCenterline.flatMap(p => [p.x, p.y, p.z])),
-                    orientation: new Float32Array(modifiedCenterline.length * 3), // Will be calculated as needed
-                    length: modifiedCenterline.length,
-                    generatedFrom: state.rootPoints,
-                    modifiedCenterline: modifiedCenterline // Preserve annulus plane markers
-                  };
+                  console.log(`[CL_DEBUG] ✅ Centerline regenerated with perpendicular segment`);
+                  console.log(`[CL_DEBUG]    Annulus plane index in centerline: ${centerlineData.annulusPlaneIndex}`);
 
                   actions.setCenterline(centerlineData);
-                  console.log('🔄 [TAVIApp] setCenterline called with', centerlineData.length, 'points');
 
-                  // Find and log the annulus plane index for verification
-                  const annulusPlaneIndex = modifiedCenterline.findIndex(p => p.isAnnulusPlane === true);
-                  console.log(`📍 Annulus plane marked at centerline index ${annulusPlaneIndex} of ${modifiedCenterline.length} points`);
-
-                  console.log('📐 Annular plane calculated from MPR:', annularPlane);
-                  console.log('📏 Annulus measurements calculated:', annulusMeasurements);
-                  console.log('🔄 Centerline modified to be perpendicular to annular plane (MPR):', {
-                    originalPoints: modifiedCenterline.length,
-                    storedLength: centerlineData.length,
-                    positionArrayLength: centerlineData.position.length,
-                    annulusPlaneIndex
-                  });
-                  console.log('✅ Annulus definition complete with 3 cusp nadir points');
                 } catch (error) {
-                  console.error('Failed to calculate annular plane:', error);
                   actions.addError('Failed to calculate annular plane from cusp points');
                 }
               }
@@ -1062,7 +1020,6 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
           onPhaseSelected={(phaseIndex) => {
             // When phase is selected, proceed with the series and phase index
             if (pendingStudy && availableSeries[0]) {
-              console.log(`✅ User selected phase ${phaseIndex}`);
               proceedWithSeries(pendingStudy, availableSeries[0]);
               // TODO: Store selected phase index in workflow state
             }

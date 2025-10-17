@@ -98,7 +98,6 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
   useEffect(() => {
     if (!patientInfo?.seriesInstanceUID || rootPoints.length < 3) return;
 
-    console.log('🔄 Initializing Cornerstone3D CPR Viewport...');
     
     // Small delay to ensure DOM is ready
     const timer = setTimeout(() => {
@@ -113,7 +112,6 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
 
   const cleanup = () => {
     try {
-      console.log('🧹 Cleaning up Cornerstone CPR Viewport...');
       
       // Clean up cusp dot actors
       cuspDots.forEach(dot => {
@@ -125,7 +123,6 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
               viewport.render();
             }
           } catch (e) {
-            console.warn(`Failed to remove actor from ${viewportId}:`, e);
           }
         });
       });
@@ -137,7 +134,6 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
           ToolGroupManager.destroyToolGroup(toolGroupId);
         }
       } catch (error) {
-        console.warn('Failed to destroy tool group:', error);
       }
 
       // Clean up rendering engine
@@ -146,9 +142,7 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
         renderingEngine.current = null;
       }
 
-      console.log('✅ Cornerstone CPR Viewport cleanup complete');
     } catch (error) {
-      console.warn('Cleanup error:', error);
     }
   };
 
@@ -157,10 +151,8 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
       setIsLoading(true);
       setError(null);
 
-      console.log('🔄 Initializing Cornerstone3D...');
       await initializeCornerstone();
 
-      console.log('🔍 Loading DICOM data...');
       const imageIds = await createImageIdsAndCacheMetaData({
         StudyInstanceUID: patientInfo!.studyInstanceUID!,
         SeriesInstanceUID: patientInfo!.seriesInstanceUID!,
@@ -171,7 +163,6 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
         throw new Error('No DICOM images found for this series');
       }
 
-      console.log(`📋 Found ${imageIds.length} DICOM images`);
 
       // Create volume
       const volumeName = `cprVolume_${Date.now()}`;
@@ -180,7 +171,6 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
       volume.load();
 
       // Wait for volume to load
-      console.log('⏳ Waiting for volume to load...');
       await new Promise(resolve => setTimeout(resolve, 3000));
 
       // Clean up any existing rendering engine with this ID
@@ -213,26 +203,21 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
       setIsInitialized(true);
       setIsLoading(false);
 
-      console.log('✅ Cornerstone3D CPR Viewport initialized successfully!');
 
     } catch (err) {
-      console.error('❌ Failed to initialize Cornerstone CPR Viewport:', err);
       setError(`Failed to initialize: ${err}`);
       setIsLoading(false);
     }
   };
 
   const setupViewports = async () => {
-    console.log('🔧 Setting up CPR viewports...');
 
     // Check if DOM elements are ready
     if (!axialRef.current || !sagittalRef.current || !coronalRef.current) {
-      console.error('Viewport DOM elements not ready');
       return;
     }
 
     if (!renderingEngine.current) {
-      console.error('Rendering engine not initialized');
       return;
     }
 
@@ -256,13 +241,11 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
         });
       });
     } catch (error) {
-      console.error('Failed to setup viewports:', error);
       throw error;
     }
   };
 
   const setupVolumeRendering = async () => {
-    console.log('🔧 Setting up CPR volume rendering...');
 
     try {
       // Generate centerline FIRST before setting up viewports
@@ -284,14 +267,11 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
       }
 
       // Apply CPR transformations BEFORE any render
-      console.log('🚀 About to apply CPR transformations...');
       await applyCPRToViewports(centerline);
       
       // Force render all viewports with CPR positioning
-      console.log('🎬 Rendering CPR views...');
       viewportIds.forEach(id => {
         const viewport = renderingEngine.current!.getViewport(id);
-        console.log(`📺 Rendering viewport: ${id}`);
         viewport.render();
       });
 
@@ -300,18 +280,14 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
         viewportIds.forEach(id => {
           renderingEngine.current!.getViewport(id).render();
         });
-        console.log('🔄 Additional render cycle completed');
       }, 100);
 
-      console.log('✅ CPR views initialized successfully');
     } catch (err) {
-      console.error('Failed to setup CPR volume rendering:', err);
       throw err;
     }
   };
 
   const applyCPRToViewports = async (centerline: any) => {
-    console.log('🔄 Applying CPR transformations to viewports...');
     
     // Get the volume viewport
     const mainViewport = renderingEngine.current!.getViewport('cpr-main') as Types.IVolumeViewport;
@@ -319,7 +295,6 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
     const crossViewport = renderingEngine.current!.getViewport('cpr-cross-section') as Types.IVolumeViewport;
     
     if (!mainViewport || !longViewport || !crossViewport) {
-      console.error('Failed to get viewports for CPR');
       return;
     }
 
@@ -352,12 +327,6 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
     longViewport.resetCamera();
     crossViewport.resetCamera();
     
-    console.log('🎯 Setting CPR cameras:', {
-      annularPoint,
-      normalizedTangent,
-      viewUp,
-      viewPlaneNormal
-    });
     
     // Main view: En face view of annulus (perpendicular to centerline)
     mainViewport.setCamera({
@@ -443,7 +412,6 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
       slabThickness: 5 // Very thin for true cross-section
     });
 
-    console.log('✅ CPR views configured at annular plane');
   };
 
   const createOrthogonalVectors = (direction: number[]): { viewUp: number[], viewPlaneNormal: number[] } => {
@@ -484,7 +452,6 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
   };
 
   const setupToolsAndPicking = async () => {
-    console.log('🔧 Setting up tools and picking...');
 
     // Add tools
     cornerstoneTools.addTool(ZoomTool);
@@ -594,7 +561,6 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
     const color = colors[cuspDots.length];
     const dotId = `cusp_${cuspType}_${Date.now()}`;
 
-    console.log(`🎯 Adding cusp dot: ${cuspType} at`, worldPos);
 
     // Create VTK sphere
     const sphereSource = vtkSphereSource.newInstance();
@@ -639,11 +605,9 @@ const CornerstoneCPRViewport: React.FC<CornerstoneCPRViewportProps> = ({
       onCuspDotsUpdate(dotsForCallback);
     }
 
-    console.log(`✅ Cusp dot placed: ${cuspType} (${updatedDots.length}/3)`);
   };
 
   const clearCuspDots = () => {
-    console.log('🧹 Clearing all cusp dots...');
     
     // Remove actors from all viewports
     cuspDots.forEach(dot => {

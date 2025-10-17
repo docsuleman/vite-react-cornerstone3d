@@ -50,10 +50,8 @@ export default async function createImageIdsFromDicomWeb({
       return imageId;
     });
 
-    console.log(`Created ${imageIds.length} image IDs for series ${SeriesInstanceUID}`);
     return imageIds;
   } catch (error) {
-    console.error("Error creating image IDs from DICOM-web:", error);
     throw new Error(`Failed to create image IDs: ${error.message}`);
   }
 }
@@ -79,7 +77,6 @@ export async function getStudySeriesInfo(studyInstanceUID: string): Promise<{
       seriesNumber: s.SeriesNumber,
     }));
   } catch (error) {
-    console.error("Error getting study series info:", error);
     throw new Error(`Failed to get series info: ${error.message}`);
   }
 }

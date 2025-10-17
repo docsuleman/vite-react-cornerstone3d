@@ -149,7 +149,6 @@ const ProperCPRViewport: React.FC<ProperCPRViewportProps> = ({
   // Load real DICOM data from your Orthanc server
   const loadDicomData = async () => {
     try {
-      console.log('🔄 Loading real DICOM data from Orthanc server...');
       
       // Use your real DICOM server and patient data
       const imageIds = await createImageIdsAndCacheMetaData({
@@ -162,7 +161,6 @@ const ProperCPRViewport: React.FC<ProperCPRViewportProps> = ({
         throw new Error('No DICOM images found for this series');
       }
 
-      console.log(`📋 Found ${imageIds.length} DICOM images`);
 
       // Create volume from real DICOM data (like Cornerstone3D workflow)
       const volumeId = `cprVolume_${Date.now()}`;
@@ -173,17 +171,10 @@ const ProperCPRViewport: React.FC<ProperCPRViewportProps> = ({
       // Load the volume
       await volume.load();
       
-      console.log('✅ Real DICOM volume loaded successfully');
-      console.log('📊 Volume info:', {
-        dimensions: volume.dimensions,
-        spacing: volume.spacing,
-        origin: volume.origin
-      });
 
       return volume;
 
     } catch (error) {
-      console.error('❌ Failed to load DICOM data:', error);
       throw error;
     }
   };
@@ -191,11 +182,8 @@ const ProperCPRViewport: React.FC<ProperCPRViewportProps> = ({
   // Convert Cornerstone3D volume to VTK ImageData
   const cornerstoneToVTKImageData = async (volume: any) => {
     try {
-      console.log('🔄 Converting Cornerstone3D volume to VTK ImageData...');
       
       // Debug: Check what properties/methods the volume has
-      console.log('🔍 Volume properties:', Object.keys(volume));
-      console.log('🔍 Volume methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(volume)).filter(name => typeof volume[name] === 'function'));
       
       // Try different approaches to get VTK ImageData
       let imageData = null;
@@ -203,16 +191,13 @@ const ProperCPRViewport: React.FC<ProperCPRViewportProps> = ({
       // Method 1: Check if volume has vtkImageData property
       if (volume.vtkImageData) {
         imageData = volume.vtkImageData;
-        console.log('✅ Found vtkImageData property');
       }
       // Method 2: Check if volume has imageData property
       else if (volume.imageData) {
         imageData = volume.imageData;
-        console.log('✅ Found imageData property');
       }
       // Method 3: Check if volume has scalarData and we need to create VTK ImageData
       else if (volume.scalarData && volume.dimensions) {
-        console.log('🔄 Creating VTK ImageData from volume scalarData...');
         
         // Create VTK ImageData manually
         imageData = vtkImageData.newInstance();
@@ -228,12 +213,10 @@ const ProperCPRViewport: React.FC<ProperCPRViewportProps> = ({
         });
         imageData.getPointData().setScalars(scalars);
         
-        console.log('✅ VTK ImageData created from scalarData');
       }
       // Method 4: Check if it's already VTK ImageData
       else if (volume.getDimensions && typeof volume.getDimensions === 'function') {
         imageData = volume;
-        console.log('✅ Volume is already VTK ImageData');
       }
       else {
         throw new Error('Could not find or create VTK ImageData from Cornerstone volume');
@@ -243,17 +226,10 @@ const ProperCPRViewport: React.FC<ProperCPRViewportProps> = ({
         throw new Error('ImageData is null after all conversion attempts');
       }
       
-      console.log('✅ VTK ImageData ready:', {
-        dimensions: imageData.getDimensions(),
-        spacing: imageData.getSpacing(),
-        origin: imageData.getOrigin(),
-        bounds: imageData.getBounds()
-      });
       
       return imageData;
       
     } catch (error) {
-      console.error('❌ Failed to convert volume to VTK:', error);
       throw error;
     }
   };
@@ -263,7 +239,6 @@ const ProperCPRViewport: React.FC<ProperCPRViewportProps> = ({
     const { widget, mapper, cprManipulator, renderer } = vtkObjects.current;
     
     if (!widget || !mapper || !cprManipulator) {
-      console.warn('⚠️ updateDistanceAndDirection: Missing required objects');
       return;
     }
 
@@ -277,7 +252,6 @@ const ProperCPRViewport: React.FC<ProperCPRViewportProps> = ({
     // Check if widget state is properly initialized
     const widgetPlanes = widgetState.getPlanes();
     if (!widgetPlanes || !widgetPlanes[stretchViewType] || !widgetPlanes[stretchViewType].normal) {
-      console.warn('⚠️ Widget planes not properly initialized yet, skipping update');
       return;
     }
     
@@ -286,7 +260,6 @@ const ProperCPRViewport: React.FC<ProperCPRViewportProps> = ({
     const worldNormal = widgetPlanes[stretchViewType].viewUp;
     
     if (!worldBitangent || !worldNormal) {
-      console.warn('⚠️ Widget directions not available yet, skipping update');
       return;
     }
     
@@ -393,8 +366,6 @@ const ProperCPRViewport: React.FC<ProperCPRViewportProps> = ({
       setIsLoading(true);
       setError(null);
 
-      console.log('🔄 Initializing Proper CPR with real DICOM data...');
-      console.log('🎯 Root points:', rootPoints);
 
       // Load real DICOM data from your server
       const volume = await loadDicomData();
@@ -448,13 +419,6 @@ const ProperCPRViewport: React.FC<ProperCPRViewportProps> = ({
       mapper.setProjectionSlabThickness(0.1);
       mapper.setProjectionSlabNumberOfSamples(10);
       
-      console.log('🔧 CPR Mapper configured with real DICOM data:', {
-        mode: cprMode,
-        projection: projectionMode,
-        width: mapper.getWidth(),
-        imageDimensions,
-        imageSpacing
-      });
 
       // Add actor to renderer
       renderer.addActor(actor);
@@ -476,7 +440,6 @@ const ProperCPRViewport: React.FC<ProperCPRViewportProps> = ({
       widgetState.getCenterHandle().setVisible(false);
 
       // Setup CPR manipulator (like the example)
-      console.log('🔧 Setting up CPR manipulator...');
       const cprManipulator = vtkCPRManipulator.newInstance({
         cprActor: actor,
       });
@@ -485,20 +448,15 @@ const ProperCPRViewport: React.FC<ProperCPRViewportProps> = ({
       
       try {
         widget.setManipulator(cprManipulator);
-        console.log('✅ CPR manipulator set successfully');
       } catch (error) {
-        console.warn('⚠️ Failed to set CPR manipulator:', error);
       }
 
       // Position widget at centerline midpoint (like the example)
       try {
         const midPointDistance = mapper.getHeight() / 2;
-        console.log('🎯 Positioning widget at midpoint distance:', midPointDistance);
         const { worldCoords } = cprManipulator.distanceEvent(midPointDistance);
         widgetState.setCenter(worldCoords);
-        console.log('✅ Widget positioned at:', worldCoords);
       } catch (error) {
-        console.warn('⚠️ Failed to position widget:', error);
         // Set a default center
         widgetState.setCenter([0, 0, 0]);
       }
@@ -508,7 +466,6 @@ const ProperCPRViewport: React.FC<ProperCPRViewportProps> = ({
 
       // Delay initial update to allow widget state to initialize
       setTimeout(() => {
-        console.log('🔄 Performing delayed updateDistanceAndDirection...');
         updateDistanceAndDirection();
       }, 1000);
 
@@ -531,10 +488,8 @@ const ProperCPRViewport: React.FC<ProperCPRViewportProps> = ({
       setIsInitialized(true);
       setIsLoading(false);
       
-      console.log('✅ Proper CPR initialized successfully with real DICOM data');
 
     } catch (error) {
-      console.error('❌ Proper CPR initialization failed:', error);
       setError(`CPR initialization failed: ${error}`);
       setIsLoading(false);
     }
@@ -548,7 +503,6 @@ const ProperCPRViewport: React.FC<ProperCPRViewportProps> = ({
     // Cleanup
     return () => {
       if (vtkObjects.current.renderWindow) {
-        console.log('🧹 Cleaning up Proper CPR viewport');
       }
     };
   }, [patientInfo, rootPoints, cprMode, projectionMode]);

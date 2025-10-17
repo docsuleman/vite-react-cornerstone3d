@@ -86,7 +86,6 @@ export function setupReferenceLinesTool(
   // Enable the tool (it will be visible on all viewports)
   toolGroup.setToolEnabled(ReferenceLinesTool.toolName);
 
-  console.log('✅ Reference lines tool setup complete');
 }
 
 /**
@@ -110,7 +109,6 @@ export function updateReferenceLineSource(
   // Re-enable to apply changes
   toolGroup.setToolEnabled(ReferenceLinesTool.toolName);
 
-  console.log('🔄 Reference line source updated to:', sourceViewportId);
 }
 
 /**
@@ -131,7 +129,6 @@ export function toggleFullDimensionLines(
     showFullDimension,
   });
 
-  console.log('📏 Full dimension lines:', showFullDimension ? 'ON' : 'OFF');
 }
 
 /**

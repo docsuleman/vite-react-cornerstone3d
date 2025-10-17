@@ -58,7 +58,6 @@ class SphereMarkerTool extends BaseTool {
   // Force all spheres visible regardless of slice position (for measurements stage)
   setForceVisible(forceVisible: boolean) {
     this.forceVisible = forceVisible;
-    console.log(`🔧 CLIPPING FIX: SphereMarkerTool force visible: ${forceVisible}`);
 
     const enabledElements = getEnabledElements();
 
@@ -72,7 +71,6 @@ class SphereMarkerTool extends BaseTool {
           const mapper = actor.getMapper();
           if (mapper && typeof mapper.setClippingPlanes === 'function') {
             mapper.setClippingPlanes([]); // Clear all clipping planes
-            console.log(`🔧 CLIPPING FIX: 🔓 Cleared clipping planes for sphere ${sphere.id}`);
           }
           // Don't call actor.modified() - let render listeners handle it
         });
@@ -87,7 +85,6 @@ class SphereMarkerTool extends BaseTool {
           const mapper = actor.getMapper();
           if (mapper && typeof mapper.setClippingPlanes === 'function') {
             mapper.setClippingPlanes([]); // Clear all clipping planes
-            console.log(`🔧 CLIPPING FIX: 🔓 Cleared clipping planes for centerline`);
           }
           // Don't call actor.modified() - let render listeners handle it
         }
@@ -95,7 +92,6 @@ class SphereMarkerTool extends BaseTool {
 
       // Trigger one render to apply changes
       enabledElements.forEach(({ viewport }) => viewport.render());
-      console.log(`🔧 CLIPPING FIX: ✅ Cleared clipping planes once for all spheres and centerline`);
     } else {
       // Remove render listeners when forceVisible is disabled
       enabledElements.forEach(({ viewport }) => {
@@ -105,7 +101,6 @@ class SphereMarkerTool extends BaseTool {
           this.renderListeners.delete(viewport.id);
         }
       });
-      console.log(`🔧 CLIPPING FIX: 🚫 Removed render listeners`);
     }
   }
 
@@ -158,7 +153,6 @@ class SphereMarkerTool extends BaseTool {
     }
 
     if (!referenceViewport) {
-      console.warn('No reference viewport found for sphere radius calculation');
       return;
     }
 
@@ -211,7 +205,6 @@ class SphereMarkerTool extends BaseTool {
     let minDistance = Infinity;
     let insertIndex = this.spheres.length; // Default: append to end
 
-    console.log(`🔍 Finding closest segment for insertion at position [${newPos[0].toFixed(2)}, ${newPos[1].toFixed(2)}, ${newPos[2].toFixed(2)}]`);
 
     // Check distance to each segment between consecutive spheres
     for (let i = 0; i < this.spheres.length - 1; i++) {
@@ -259,7 +252,6 @@ class SphereMarkerTool extends BaseTool {
         Math.pow(newPos[2] - closestPoint[2], 2)
       );
 
-      console.log(`  Segment ${i}→${i+1}: t=${t.toFixed(3)}, distance=${distance.toFixed(2)}mm`);
 
       // Track segment with minimum distance
       if (distance < minDistance) {
@@ -268,7 +260,6 @@ class SphereMarkerTool extends BaseTool {
       }
     }
 
-    console.log(`✅ Closest segment found: inserting at index ${insertIndex} (distance: ${minDistance.toFixed(2)}mm)`);
 
     return insertIndex;
   }
@@ -311,7 +302,6 @@ class SphereMarkerTool extends BaseTool {
               // For now, just center using camera method but with better calculation
               this._centerSingleViewport(viewport, worldPos, viewportId);
             } catch (error) {
-              console.warn(`Could not use slice-based centering for ${viewportId}, using camera method`);
               this._centerSingleViewport(viewport, worldPos, viewportId);
             }
           } else {
@@ -319,7 +309,6 @@ class SphereMarkerTool extends BaseTool {
           }
         }
       } catch (error) {
-        console.error(`❌ Failed to center viewport ${index}:`, error);
       }
     });
     
@@ -332,7 +321,6 @@ class SphereMarkerTool extends BaseTool {
         try {
           viewport.render();
         } catch (error) {
-          console.warn('Could not force render:', error);
         }
       });
       
@@ -416,7 +404,6 @@ class SphereMarkerTool extends BaseTool {
           
           
           if (canvasDiff[0] > 5 || canvasDiff[1] > 5) {
-            console.warn(`⚠️ Large canvas coordinate mismatch detected! This explains sphere positioning issues.`);
           }
         }
         
@@ -431,12 +418,10 @@ class SphereMarkerTool extends BaseTool {
           
           
           if (sliceDistance > 10) {
-            console.warn(`⚠️ Sphere is ${sliceDistance.toFixed(1)}mm away from current slice - may appear displaced!`);
           }
         }
         
       } catch (error) {
-        console.warn('Could not perform position debug analysis:', error);
       }
     }
   }
@@ -463,7 +448,6 @@ class SphereMarkerTool extends BaseTool {
       }
       
     } catch (error) {
-      console.warn('Could not update crosshair position:', error);
     }
   }
 
@@ -737,19 +721,13 @@ class SphereMarkerTool extends BaseTool {
       ];
 
       // Debug: Check if element has offset from canvas
-      console.log(`Element rect: left=${rect.left.toFixed(2)}, top=${rect.top.toFixed(2)}, width=${rect.width.toFixed(2)}, height=${rect.height.toFixed(2)}`);
-      console.log(`Mouse event: clientX=${nativeEvent.clientX}, clientY=${nativeEvent.clientY}`);
 
       // Check if element is actually a canvas or has a canvas child
       if (element.tagName === 'CANVAS') {
-        console.log(`✓ Element IS a canvas`);
       } else {
-        console.log(`⚠️ Element is ${element.tagName}, checking for canvas child...`);
         const canvasChild = element.querySelector('canvas');
         if (canvasChild) {
           const canvasRect = canvasChild.getBoundingClientRect();
-          console.log(`  Canvas child rect: left=${canvasRect.left.toFixed(2)}, top=${canvasRect.top.toFixed(2)}`);
-          console.log(`  Offset from parent: dx=${(canvasRect.left - rect.left).toFixed(2)}, dy=${(canvasRect.top - rect.top).toFixed(2)}`);
         }
       }
     }
@@ -759,7 +737,6 @@ class SphereMarkerTool extends BaseTool {
     const enabledElement = enabledElements.find(el => el.viewport.element === element);
 
     if (!enabledElement || !enabledElement.viewport) {
-      console.warn('No viewport found for click event');
       return;
     }
 
@@ -781,22 +758,15 @@ class SphereMarkerTool extends BaseTool {
       const camera = viewport.getCamera();
       const focalPoint = camera.focalPoint;
       const viewPlaneNormal = camera.viewPlaneNormal;
-      console.log(`🎯 Click in ${viewport.id}:`);
-      console.log(`   DPR: ${dpr}, Element: ${element.clientWidth}x${element.clientHeight}, Canvas: ${canvas.width}x${canvas.height}`);
-      console.log(`   Event canvas: [${canvasPos[0].toFixed(2)}, ${canvasPos[1].toFixed(2)}]`);
       if (rawCanvasPos) {
-        console.log(`   Raw canvas: [${rawCanvasPos[0].toFixed(2)}, ${rawCanvasPos[1].toFixed(2)}]`);
         const diff = Math.sqrt(Math.pow(rawCanvasPos[0] - canvasPos[0], 2) + Math.pow(rawCanvasPos[1] - canvasPos[1], 2));
-        console.log(`   Difference: ${diff.toFixed(2)} pixels`);
       }
-      console.log(`   World coords: [${canvasToWorldPos[0].toFixed(2)}, ${canvasToWorldPos[1].toFixed(2)}, ${canvasToWorldPos[2].toFixed(2)}]`);
 
       // Check distance from click to focal plane
       const distanceToFocalPlane =
         (canvasToWorldPos[0] - focalPoint[0]) * viewPlaneNormal[0] +
         (canvasToWorldPos[1] - focalPoint[1]) * viewPlaneNormal[1] +
         (canvasToWorldPos[2] - focalPoint[2]) * viewPlaneNormal[2];
-      console.log(`   Distance to focal plane: ${distanceToFocalPlane.toFixed(2)}mm`);
 
       // Calculate difference
       const diff = [
@@ -805,12 +775,10 @@ class SphereMarkerTool extends BaseTool {
         Math.abs(eventWorldPos[2] - canvasToWorldPos[2])
       ];
       const maxDiff = Math.max(...diff);
-      console.log(`   Coordinate difference: ${maxDiff.toFixed(2)}mm`);
 
       // Use canvasToWorld as it should be more accurate for orthographic viewports
       worldPos = canvasToWorldPos;
     } else {
-      console.error('Viewport does not have canvasToWorld method');
       return;
     }
 
@@ -831,7 +799,6 @@ class SphereMarkerTool extends BaseTool {
     // First 3 spheres: key anatomical points (LV outflow → valve → aorta)
     // Additional spheres after 3: refinement points inserted on the centerline
     if (this.spheres.length >= 10) {
-      console.warn('Maximum of 10 spheres allowed for centerline definition.');
       return;
     }
 
@@ -842,7 +809,6 @@ class SphereMarkerTool extends BaseTool {
     // Use worldPos directly - canvasToWorld already gives us the correct position
     const finalPos: Vector3 = [worldPos[0], worldPos[1], worldPos[2]];
 
-    console.log('Final sphere position:', finalPos);
 
     const sphereData = {
       id: sphereId,
@@ -857,7 +823,6 @@ class SphereMarkerTool extends BaseTool {
     if (this.spheres.length >= 3) {
       // Find the closest segment and insert the sphere there
       const insertIndex = this._findClosestSegmentForInsertion(finalPos);
-      console.log(`📍 Inserting sphere at index ${insertIndex} (between existing dots)`);
       this.spheres.splice(insertIndex, 0, sphereData);
     } else {
       // First 3 spheres: append normally
@@ -874,14 +839,12 @@ class SphereMarkerTool extends BaseTool {
     // After 3 spheres, identify the middle one as the valve (annulus)
     if (this.spheres.length === 3) {
       this._updateSphereColors();
-      console.log('✅ 3 key anatomical points placed. You can now add more dots on the centerline to refine it.');
     } else if (this.spheres.length > 3) {
       // Re-color spheres to ensure valve (middle) stays red
       this._updateSphereColors();
     }
 
     // CRITICAL: Center all viewports on the newly placed dot
-    console.log('📍 Centering all viewports on newly placed dot...');
     this._centerAllViewportsOnPoint(finalPos);
 
     this._notifyPositionUpdate();
@@ -997,7 +960,6 @@ class SphereMarkerTool extends BaseTool {
   _placeSphere(sphereData: { id: string; pos: Vector3; actors: Map<string, any>; source: any; color: string }, canvasPos?: [number, number], clickedViewport?: any) {
     const enabledElements = getEnabledElements();
     if (enabledElements.length === 0) {
-      console.error('No enabled viewports found.');
       return;
     }
 
@@ -1031,7 +993,6 @@ class SphereMarkerTool extends BaseTool {
     // Add sphere to all viewports - they share the same world coordinate system
     enabledElements.forEach(({ viewport }, index) => {
       if (!viewport.addActor) {
-        console.warn('Viewport does not support adding actors.');
         return;
       }
 
@@ -1044,7 +1005,6 @@ class SphereMarkerTool extends BaseTool {
 
       // Don't set actor position - the sphere source center already defines the position
       // This matches how the polydata points work for the connection lines
-      console.log(`Sphere source center set to:`, sphereData.pos);
 
       // DEBUG: Check if the sphere appears where expected
       if (clickedViewport && viewport.id === clickedViewport.id && canvasPos) {
@@ -1055,15 +1015,9 @@ class SphereMarkerTool extends BaseTool {
           const diffY = renderedCanvasPos[1] - canvasPos[1];
           const diffPixels = Math.sqrt(diffX * diffX + diffY * diffY);
 
-          console.log(`📍 ${viewport.id} viewport:`);
-          console.log(`   Click canvas: [${canvasPos[0].toFixed(2)}, ${canvasPos[1].toFixed(2)}]`);
-          console.log(`   Sphere canvas: [${renderedCanvasPos[0].toFixed(2)}, ${renderedCanvasPos[1].toFixed(2)}]`);
-          console.log(`   Difference: ${diffPixels.toFixed(2)} pixels (${diffX.toFixed(2)}px X, ${diffY.toFixed(2)}px Y)`);
 
           if (diffPixels > 2) {
-            console.warn(`⚠️ Sphere is ${diffPixels.toFixed(1)} pixels away from click!`);
           } else {
-            console.log(`✓ Sphere positioned correctly`);
           }
         }, 100);
       }
@@ -1117,16 +1071,10 @@ class SphereMarkerTool extends BaseTool {
           const volumes = cache.getVolumes();
           if (volumes && volumes.length > 0) {
             const vol = volumes[0];
-            console.log(`📦 Volume info:`);
-            console.log(`  Origin: [${vol.origin[0].toFixed(2)}, ${vol.origin[1].toFixed(2)}, ${vol.origin[2].toFixed(2)}]`);
-            console.log(`  Spacing: [${vol.spacing[0].toFixed(2)}, ${vol.spacing[1].toFixed(2)}, ${vol.spacing[2].toFixed(2)}]`);
-            console.log(`  Dimensions: [${vol.dimensions[0]}, ${vol.dimensions[1]}, ${vol.dimensions[2]}]`);
             if (vol.direction) {
-              console.log(`  Direction matrix: [${vol.direction.map((v: number) => v.toFixed(2)).join(', ')}]`);
             }
           }
         } catch (e) {
-          console.warn('Could not get volume info:', e);
         }
       }
 
@@ -1194,7 +1142,6 @@ class SphereMarkerTool extends BaseTool {
     
     const enabledElements = getEnabledElements();
     if (enabledElements.length === 0) {
-      console.error('No enabled viewports found for lines.');
       return;
     }
 
@@ -1208,7 +1155,6 @@ class SphereMarkerTool extends BaseTool {
         
         // Green test line removed - only showing smooth spline curves now
       } catch (error) {
-        console.error('🌊 Spline creation failed, falling back to straight lines:', error);
         this._createStraightLines();
       }
     }
@@ -1221,7 +1167,6 @@ class SphereMarkerTool extends BaseTool {
         viewport.render();
         
       } catch (error) {
-        console.error(`❌ Failed to render viewport ${index}:`, error);
       }
     });
   }
@@ -1248,7 +1193,6 @@ class SphereMarkerTool extends BaseTool {
     
     const enabledElements = getEnabledElements();
     if (enabledElements.length === 0) {
-      console.error('🌊 No enabled elements for spline creation');
       return;
     }
     
@@ -1257,7 +1201,6 @@ class SphereMarkerTool extends BaseTool {
     
     
     if (splinePoints.length === 0) {
-      console.error('🌊 No spline points generated - cannot create curve');
       return;
     }
     
@@ -1273,7 +1216,6 @@ class SphereMarkerTool extends BaseTool {
     splinePoints.forEach((point, index) => {
       // Ensure point is a valid 3D coordinate
       if (!point || point.length !== 3) {
-        console.error(`🌊 Invalid point at index ${index}:`, point);
         return;
       }
       
@@ -1299,7 +1241,6 @@ class SphereMarkerTool extends BaseTool {
     
     // Test with simple direct line first (if spline fails)
     if (splinePoints.length < 2) {
-      console.error('🌊 Not enough spline points for curve');
       return;
     }
     
@@ -1357,7 +1298,6 @@ class SphereMarkerTool extends BaseTool {
     // Add spline to all viewports with anti-aliasing
     enabledElements.forEach(({ viewport }, viewportIndex) => {
       if (!viewport.addActor) {
-        console.warn(`🌊 Viewport ${viewportIndex} does not support adding actors.`);
         return;
       }
       
@@ -1370,7 +1310,6 @@ class SphereMarkerTool extends BaseTool {
         viewport.render(); // Force render after adding
         
       } catch (error) {
-        console.error(`❌ Failed to add spline to viewport ${viewportIndex}:`, error);
       }
     });
     
@@ -1419,7 +1358,6 @@ class SphereMarkerTool extends BaseTool {
             if (t === 0 || t === resolution - 1) {
             }
           } catch (error) {
-            console.error(`🌊 Error in interpolation for segment ${i}, t=${t}:`, error);
           }
         }
       }
@@ -1433,7 +1371,6 @@ class SphereMarkerTool extends BaseTool {
       return splinePoints;
       
     } catch (error) {
-      console.error('🌊 ❌ Error in spline point generation:', error);
       return [];
     }
   }
@@ -1510,7 +1447,6 @@ class SphereMarkerTool extends BaseTool {
     
     const enabledElements = getEnabledElements();
     if (enabledElements.length === 0) {
-      console.error('📏 No enabled elements for line creation');
       return;
     }
     
@@ -1564,7 +1500,6 @@ class SphereMarkerTool extends BaseTool {
       // Add line to all viewports
       enabledElements.forEach(({ viewport }, viewportIndex) => {
         if (!viewport.addActor) {
-          console.warn(`📏 Viewport ${viewportIndex} does not support adding actors.`);
           return;
         }
         
@@ -1572,7 +1507,6 @@ class SphereMarkerTool extends BaseTool {
           viewport.addActor({ uid: lineId, actor });
           
         } catch (error) {
-          console.error(`❌ Failed to add straight line ${lineId} to viewport ${viewportIndex}:`, error);
         }
       });
     }
@@ -1584,7 +1518,6 @@ class SphereMarkerTool extends BaseTool {
     
     const enabledElements = getEnabledElements();
     if (enabledElements.length === 0) {
-      console.error('🏗️ No enabled elements for line creation');
       return;
     }
     
@@ -1629,10 +1562,8 @@ class SphereMarkerTool extends BaseTool {
           viewport.addActor({ uid: lineId, actor });
           
         } catch (error) {
-          console.error(`🏗️ Failed to add line ${lineId} to viewport ${viewportIndex}:`, error);
         }
       } else {
-        console.warn(`🏗️ Viewport ${viewportIndex} doesn't support addActor`);
       }
     });
   }
@@ -1649,7 +1580,6 @@ class SphereMarkerTool extends BaseTool {
             viewport._removeActor(line.id);
             
           } catch (error) {
-            console.warn(`⚠️ Failed to remove line ${line.id} from viewport ${viewportIndex}:`, error);
           }
         }
       });
@@ -1786,7 +1716,6 @@ class SphereMarkerTool extends BaseTool {
         // console.log(`🔍 ${viewport.id}: viewPlaneNormal=[${viewPlaneNormal.map(v => v.toFixed(2)).join(',')}], scroll axis=${['X','Y','Z'][maxIndex]}, spacing=${sliceSpacing.toFixed(2)}mm`);
       }
     } catch (error) {
-      console.warn('Could not get volume spacing, using default:', error);
     }
 
     // STRICT visibility threshold - only show when crosshair is very close
@@ -1971,7 +1900,6 @@ class SphereMarkerTool extends BaseTool {
 
   // Hide all spheres (useful to avoid visual confusion with cusp dots)
   hideAllSpheres() {
-    console.log('👁️ Hiding all root definition spheres');
 
     this.spheres.forEach((sphere, sphereIndex) => {
       sphere.actors.forEach((actor, viewportId) => {
@@ -1988,13 +1916,11 @@ class SphereMarkerTool extends BaseTool {
       }
     });
 
-    console.log('✅ All root definition spheres hidden');
   }
 
   // Move the valve sphere (middle sphere) to a new position (annulus center)
   moveValveSphereToPosition(newPosition: Vector3) {
     if (this.spheres.length < 3) {
-      console.warn('⚠️ Need at least 3 spheres to identify valve sphere');
       return;
     }
 
@@ -2002,8 +1928,6 @@ class SphereMarkerTool extends BaseTool {
     const middleIndex = Math.floor(this.spheres.length / 2);
     const valveSphere = this.spheres[middleIndex];
 
-    console.log(`🔴 Moving valve sphere from:`, valveSphere.pos);
-    console.log(`   to annulus center:`, newPosition);
 
     // Update sphere position
     valveSphere.pos = [newPosition[0], newPosition[1], newPosition[2]];
@@ -2035,7 +1959,6 @@ class SphereMarkerTool extends BaseTool {
     // Notify position update
     this._notifyPositionUpdate();
 
-    console.log('✅ Valve sphere moved to annulus center');
   }
   
   // Debug method to check sphere status
@@ -2135,7 +2058,6 @@ class SphereMarkerTool extends BaseTool {
             
             
           } catch (error) {
-            console.error(`❌ Error re-adding sphere ${sphere.id} to viewport ${viewport.id}:`, error);
           }
         }
       });

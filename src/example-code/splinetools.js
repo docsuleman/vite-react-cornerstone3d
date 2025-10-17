@@ -12,9 +12,6 @@ import {
 import * as cornerstoneTools from '@cornerstonejs/tools';
 
 // This is for debugging purposes
-console.warn(
-  'Click on index.ts to open source code for this example --------->'
-);
 
 const DEFAULT_SPLINE_RESOLUTION = 20;
 const DEFAULT_CARDINAL_SCALE = 0.5;

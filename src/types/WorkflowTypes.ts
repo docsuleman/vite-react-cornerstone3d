@@ -40,6 +40,7 @@ export interface CenterlineData {
   orientation: Float32Array;
   length: number;
   generatedFrom: RootPoint[];
+  annulusPlaneIndex?: number; // Index of the annulus plane point in the centerline
 }
 
 export interface AnnularPlane {

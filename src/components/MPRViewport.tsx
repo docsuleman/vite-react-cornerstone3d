@@ -88,7 +88,6 @@ const MPRViewport: React.FC<MPRViewportProps> = ({
           throw new Error('No image data loaded');
         }
         
-        console.log('Image data loaded:', imageData);
 
         // Get image information
         const dimensions = imageData.getDimensions();
@@ -127,7 +126,6 @@ const MPRViewport: React.FC<MPRViewportProps> = ({
         setIsLoading(false);
       })
       .catch((err) => {
-        console.error('Failed to load volume:', err);
         setError(`Failed to load volume: ${err.message}`);
         setIsLoading(false);
       });

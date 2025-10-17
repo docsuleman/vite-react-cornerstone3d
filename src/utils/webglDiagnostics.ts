@@ -145,7 +145,6 @@ export const performWebGLDiagnostics = (): WebGLDiagnostics => {
         loseContext.loseContext();
       }
     } catch (cleanupError) {
-      console.warn('Failed to clean up test WebGL context:', cleanupError);
     }
 
     canvas.remove();
@@ -161,14 +160,7 @@ export const performWebGLDiagnostics = (): WebGLDiagnostics => {
 export const logWebGLDiagnostics = (diagnostics: WebGLDiagnostics): void => {
   console.group('🔍 WebGL Diagnostics Report');
   
-  console.log(`WebGL Supported: ${diagnostics.supported}`);
   if (diagnostics.supported) {
-    console.log(`Version: ${diagnostics.version}`);
-    console.log(`Vendor: ${diagnostics.vendor}`);
-    console.log(`Renderer: ${diagnostics.renderer}`);
-    console.log(`Max Texture Size: ${diagnostics.maxTextureSize}`);
-    console.log(`Max Viewport Dimensions: ${diagnostics.maxViewportDims.join('x')}`);
-    console.log(`Extensions: ${diagnostics.extensions.length} available`);
   }
 
   if (diagnostics.issues.length > 0) {

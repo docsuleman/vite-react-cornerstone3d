@@ -158,48 +158,33 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
   }>({});
 
   useEffect(() => {
-    console.log('🔍 TrueCPRViewport useEffect', {
-      hasPatient: !!patientInfo?.seriesInstanceUID,
-      rootPointsLength: rootPoints.length,
-      isInitializingRef: isInitializingRef.current
-    });
 
     if (!patientInfo?.seriesInstanceUID || rootPoints.length < 3) {
-      console.log('⏭️ Skipping - no patient or insufficient rootPoints');
       return;
     }
 
     // Check if rootPoints have actually changed using a hash
     const currentHash = JSON.stringify(rootPoints.map(p => [p.x, p.y, p.z]));
 
-    console.log('📊 Hash check:', {
-      current: currentHash.substring(0, 50),
-      previous: rootPointsHashRef.current.substring(0, 50),
-      same: currentHash === rootPointsHashRef.current
-    });
 
     // Skip if same rootPoints
     if (currentHash === rootPointsHashRef.current) {
-      console.log('⏭️ Skipping - rootPoints unchanged');
       return;
     }
 
     // Skip if already initializing
     if (isInitializingRef.current) {
-      console.log('⏭️ Skipping - already initializing');
       return;
     }
 
     // RootPoints changed, cleanup previous and reinitialize
     if (rootPointsHashRef.current !== '') {
-      console.log('🧹 Cleaning up previous');
       cleanup();
     }
 
     rootPointsHashRef.current = currentHash;
     isInitializingRef.current = true;
 
-    console.log('⏰ Calling initializeTrueCPR immediately');
     // Call immediately instead of using timer to avoid React StrictMode double-render issues
     initializeTrueCPR();
   }, [patientInfo, rootPoints]);
@@ -231,7 +216,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
           viewport.render();
         }
       } catch (error) {
-        console.warn(`Failed to apply window/level to ${viewportId}:`, error);
       }
     });
 
@@ -250,7 +234,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
             viewport.render();
           }
         } catch (error) {
-          console.warn(`Failed to apply W/L to VTK actor for ${viewportId}:`, error);
         }
       });
     }
@@ -277,7 +260,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         try {
           ToolGroupManager.destroyToolGroup('CPR_ANNOTATION_TOOLS');
         } catch (e) {
-          console.warn('Failed to destroy tool group:', e);
         }
       }
 
@@ -291,12 +273,10 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
 
       
     } catch (error) {
-      console.warn('Cleanup error:', error);
     }
   };
 
   const initializeTrueCPR = async () => {
-    console.log('🎯 initializeTrueCPR called');
 
     try {
       setIsLoading(true);
@@ -386,7 +366,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
                         viewport.render();
                       }
                     } catch (e) {
-                      console.warn(`Failed to sync W/L to ${id}:`, e);
                     }
                   }
                 });
@@ -406,7 +385,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
                         viewport.render();
                       }
                     } catch (e) {
-                      console.warn(`Failed to sync W/L to VTK actor for ${actorViewportId}:`, e);
                     }
                   });
                 }
@@ -424,15 +402,12 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
           }
         });
       } catch (err) {
-        console.warn('Could not add VOI_MODIFIED listener:', err);
       }
 
       setIsInitialized(true);
       setIsLoading(false);
-      console.log('✅ TrueCPR initialization complete');
 
     } catch (err) {
-      console.error('❌ Failed to initialize True CPR Viewport:', err);
       setError(`Failed to initialize: ${err}`);
       setIsLoading(false);
       isInitializingRef.current = false; // Reset on error
@@ -879,7 +854,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       // Check that dimensions match scalar data length
       const expectedLength = dimensions[0] * dimensions[1] * dimensions[2];
       if (scalarData.length !== expectedLength) {
-        console.warn(`⚠️ Scalar data length (${scalarData.length}) doesn't match dimensions (${expectedLength})`);
       }
       
       // Create VTK ImageData
@@ -915,7 +889,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       return vtkImageData;
       
     } catch (error) {
-      console.error('❌ Failed to convert volume to VTK:', error);
       throw error;
     }
   };
@@ -1023,7 +996,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       const toolGroup = ToolGroupManager.createToolGroup('CPR_NAVIGATION_TOOLS');
       
       if (!toolGroup) {
-        console.error('Failed to create CPR navigation tool group');
         return;
       }
 
@@ -1053,7 +1025,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       
       
     } catch (error) {
-      console.error('❌ Failed to setup CPR interactive tools:', error);
     }
   };
 
@@ -1090,14 +1061,12 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       // Get the rendering engine
       const renderingEngine = cornerstoneObjects.current.renderingEngine;
       if (!renderingEngine) {
-        console.warn('No rendering engine available for cross-section update');
         return;
       }
 
       // Get cross-section viewport
       const crossSectionViewport = renderingEngine.getViewport('cpr-main') as Types.IVolumeViewport;
       if (!crossSectionViewport) {
-        console.warn('Cross-section viewport not found');
         return;
       }
 
@@ -1190,7 +1159,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       
       
     } catch (error) {
-      console.error('❌ Failed to update cross-section view:', error);
     }
   };
 
@@ -1283,7 +1251,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
     // Get the volume to access voxelManager (from discussion solution)
     const volume = vtkObjects.current.volume;
     if (!volume) {
-      console.error('❌ Volume not available for CPR mapper');
       return;
     }
     
@@ -1303,7 +1270,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         
         
         if (!imageData?.imageData) {
-          console.warn(`⚠️ No image data available for ${viewportConfig.id}`);
           continue;
         }
         
@@ -1313,7 +1279,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         
         
         if (!scalarData || scalarData.length === 0) {
-          console.warn(`⚠️ No scalar data available from voxelManager for ${viewportConfig.id}`);
           continue;
         }
         
@@ -1494,7 +1459,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         
         
       } catch (error) {
-        console.error(`❌ Failed to add CPR actor to ${viewportConfig.id}:`, error);
       }
     }
     
@@ -1564,11 +1528,9 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         
         
         if (!isReady) {
-          console.warn(`⚠️ CPR mapper ${view.name} failed pre-render check`);
         }
         
       } catch (mapperError) {
-        console.error(`❌ Failed to configure CPR mapper for ${view.name}:`, mapperError);
         throw mapperError;
       }
       
@@ -1671,7 +1633,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
       
       
     } catch (error) {
-      console.error('❌ Failed to setup annotation overlays:', error);
     }
   };
 
@@ -1706,14 +1667,11 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
   };
 
   const updateCPROrientations = async (rotationDegrees: number) => {
-    console.log('🔄 updateCPROrientations called with rotation:', rotationDegrees);
 
     if (!cornerstoneObjects.current.cprMappers) {
-      console.warn('⚠️ No CPR mappers available');
       return;
     }
 
-    console.log('📊 Number of CPR mappers:', cornerstoneObjects.current.cprMappers.length);
 
     // CRITICAL: Rotate CPR so the cutting plane (en face view at yellow line) stays horizontal
     // The CT anatomy rotates, but the plane orientation in the view stays horizontal
@@ -1724,7 +1682,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
 
     cornerstoneObjects.current.cprMappers.forEach((mapperInfo: any) => {
       const { mapper, viewportConfig } = mapperInfo;
-      console.log(`🔧 Updating mapper for ${viewportConfig.id}, cprView: ${viewportConfig.cprView}`);
 
       // Both longitudinal views rotate the same way to keep the cutting plane horizontal
       // The yellow line stays horizontal, the CT rotates underneath
@@ -1735,7 +1692,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
           0, 0, 1
         ]);
         mapper.setDirectionMatrix(directions);
-        console.log(`🔄 Updated longitudinal (green) view: ${Math.round(rotationDegrees)}°`);
       } else if (viewportConfig.cprView === 'side') {
         // Side view is orthogonal - rotates 90° relative to longitudinal
         const sideRotationRadians = rotationRadians + Math.PI / 2;
@@ -1748,7 +1704,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
           0, 0, 1
         ]);
         mapper.setDirectionMatrix(directions);
-        console.log(`🔄 Updated side (red) view: ${Math.round(sideRotationRadians * 180 / Math.PI)}°`);
       }
 
       // Trigger re-render
@@ -1793,17 +1748,6 @@ const TrueCPRViewport: React.FC<TrueCPRViewportProps> = ({
         }
 
         percent = (closestIndex / (numPoints - 1)) * 100;
-        console.log('🎯 Valve position calculation:', {
-          closestIndex,
-          numPoints,
-          percent,
-          valvePoint,
-          closestCenterlinePoint: {
-            x: centerlineData.position[closestIndex * 3],
-            y: centerlineData.position[closestIndex * 3 + 1],
-            z: centerlineData.position[closestIndex * 3 + 2]
-          }
-        });
       }
     }
 

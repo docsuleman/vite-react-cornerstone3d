@@ -195,7 +195,6 @@ export class SCurveGenerator {
     );
     const xCC = (Math.atan((2 * Rz - Lz - Nz) / denominator) * 180) / Math.PI;
 
-    console.log('📐 3-cusp view (RCC Anterior):', { laoRao: xLR, cranCaud: xCC });
     return { laoRao: xLR, cranCaud: xCC };
   }
 
@@ -228,7 +227,6 @@ export class SCurveGenerator {
     );
     const xCC = -((Math.atan((2 * Nz - Rz - Lz) / denominator) * 180) / Math.PI);
 
-    console.log('📐 Cusp-overlap view (NCC centered):', { laoRao: xLR, cranCaud: xCC });
     return { laoRao: xLR, cranCaud: xCC };
   }
 }

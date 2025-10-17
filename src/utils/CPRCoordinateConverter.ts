@@ -236,12 +236,6 @@ export class CPRCoordinateConverter {
     worldCoords: Point3D, 
     description: string = 'Coordinate transformation'
   ): void {
-    console.log(`🔄 ${description}:`, {
-      originalWorld: worldCoords,
-      toCPR: this.worldToCpr(worldCoords),
-      backToWorld: this.cprToWorld(this.worldToCpr(worldCoords)),
-      isValid: this.validateCoordinates(worldCoords)
-    });
   }
 }
 

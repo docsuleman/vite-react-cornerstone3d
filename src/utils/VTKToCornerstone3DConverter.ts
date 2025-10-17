@@ -46,7 +46,6 @@ export class VTKToCornerstone3DConverter {
     vtkImageInfo: VTKImageInfo,
     seriesPrefix: string = 'synthetic_cpr'
   ): Promise<string[]> {
-    console.log('🔄 Converting VTK ImageData to Cornerstone3D format...');
 
     const { imageData, width, height, transformData } = vtkImageInfo;
     
@@ -66,13 +65,6 @@ export class VTKToCornerstone3DConverter {
 
     const scalarData = scalars.getData();
     
-    console.log('📊 VTK Image properties:', {
-      dimensions,
-      spacing,
-      origin,
-      scalarDataLength: scalarData.length,
-      scalarDataType: scalarData.constructor.name
-    });
 
     // For 2D CPR images, we'll create a single slice
     // If it's 3D, we'll create multiple slices
@@ -116,13 +108,8 @@ export class VTKToCornerstone3DConverter {
       this.syntheticImages.set(imageId, metadata);
       imageIds.push(imageId);
       
-      console.log(`✅ Created synthetic imageId: ${imageId} (slice ${sliceIndex}/${numSlices})`);
     }
     
-    console.log('✅ VTK to Cornerstone3D conversion complete:', {
-      totalSlices: numSlices,
-      imageIds: imageIds.length
-    });
     
     return imageIds;
   }
@@ -188,14 +175,12 @@ export class VTKToCornerstone3DConverter {
     // Register loader for our synthetic images
     imageLoader.registerImageLoader('synthetic_cpr', this.syntheticImageLoader.bind(this));
     
-    console.log('✅ Registered synthetic CPR image loader');
   }
 
   /**
    * Custom image loader for synthetic CPR images
    */
   private async syntheticImageLoader(imageId: string): Promise<any> {
-    console.log('🔄 Loading synthetic CPR image:', imageId);
     
     const metadata = this.syntheticImages.get(imageId);
     if (!metadata) {
@@ -240,12 +225,6 @@ export class VTKToCornerstone3DConverter {
       transformData: metadata.transformData // Custom property for coordinate conversion
     };
     
-    console.log('✅ Synthetic CPR image loaded:', {
-      imageId,
-      dimensions: [metadata.width, metadata.height],
-      spacing: metadata.spacing,
-      hasTransformData: !!metadata.transformData
-    });
     
     return { promise: Promise.resolve(image) };
   }
@@ -265,7 +244,6 @@ export class VTKToCornerstone3DConverter {
     vtkImageInfos: VTKImageInfo[],
     volumeId: string
   ): Promise<string[]> {
-    console.log('🔄 Creating volume from multiple CPR slices...');
     
     const allImageIds: string[] = [];
     
@@ -277,11 +255,6 @@ export class VTKToCornerstone3DConverter {
       allImageIds.push(...imageIds);
     }
     
-    console.log('✅ Volume created from CPR slices:', {
-      volumeId,
-      totalSlices: allImageIds.length,
-      views: vtkImageInfos.length
-    });
     
     return allImageIds;
   }
@@ -304,7 +277,6 @@ export class VTKToCornerstone3DConverter {
       this.syntheticImages.clear();
     }
     
-    console.log('🧹 Cleaned up synthetic images:', seriesPrefix || 'all');
   }
 
   /**

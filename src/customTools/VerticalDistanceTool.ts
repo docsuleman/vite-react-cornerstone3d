@@ -77,7 +77,6 @@ class VerticalDistanceTool extends AnnotationTool {
   ) => {
     const { distanceMM } = this.calculateVerticalDistance(canvasPoint, viewport);
 
-    console.log(`📏 Vertical Distance from Annulus: ${distanceMM.toFixed(2)} mm`);
 
     // Create annotation data
     const annotation = {

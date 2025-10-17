@@ -142,7 +142,6 @@ function App() {
             
             viewport.render();
           } catch (error) {
-            console.warn(`Error setting camera for viewport ${id}:`, error);
             // Fallback: just reset and render
             viewport.resetCamera();
             viewport.render();
@@ -265,7 +264,6 @@ function App() {
 
       // Set up the callback
       sphereTool.setPositionUpdateCallback((spherePositions) => {
-        console.log('Updated sphere positions:', spherePositions);
         
         // Example of how you might use the positions
         if (spherePositions.length === 3) {
@@ -335,9 +333,7 @@ function App() {
 
   const activateTool = (toolName) => {
     const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
-    console.log(toolGroup);
     if (!toolGroup) {
-      console.error("Tool group not found!");
       return;
     }
   
@@ -371,7 +367,6 @@ function App() {
       ]
     })
   
-    console.log(`${toolName} is now active.`);
   };
 
   const GridDisplay = ({ elementRefs }) => {

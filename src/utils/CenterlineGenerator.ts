@@ -1,43 +1,69 @@
 import { Vector3 } from '@kitware/vtk.js/types';
 import { vec3, mat3, mat4, quat } from 'gl-matrix';
-import { RootPoint, RootPointType, CenterlineData } from '../types/WorkflowTypes';
+import { RootPoint, RootPointType, CenterlineData, AnnularPlane } from '../types/WorkflowTypes';
 
 interface SplinePoint {
   position: Vector3;
   tangent: Vector3;
   distance: number;
+  isAnnulusPlane?: boolean;
 }
 
 export class CenterlineGenerator {
   /**
    * Generate a smooth centerline from 3 or more root points
+   * If annularPlane is provided, creates 6mm perfectly straight segment perpendicular to annulus
    */
-  static generateFromRootPoints(rootPoints: RootPoint[]): CenterlineData {
+  static generateFromRootPoints(rootPoints: RootPoint[], annularPlane?: AnnularPlane): CenterlineData {
     if (rootPoints.length < 3) {
       throw new Error('At least 3 root points are required for centerline generation');
     }
-    
-    console.log(`🔧 Generating centerline from ${rootPoints.length} root points...`);
+
 
     // Sort points by anatomical order: LV -> Valve -> Ascending Aorta
     const sortedPoints = this.sortRootPointsByOrder(rootPoints);
     const positions = sortedPoints.map(p => p.position);
 
     // Generate smooth spline through the points
-    const splinePoints = this.generateCatmullRomSpline(positions, 50);
-    
+    let splinePoints = this.generateCatmullRomSpline(positions, 50);
+
+    // [CL_DEBUG] Log before modification
+    console.log(`[CL_DEBUG] 🏗️ CenterlineGenerator: Generated ${splinePoints.length} spline points`);
+    console.log(`[CL_DEBUG]    Has annularPlane: ${!!annularPlane}`);
+
+    // If annular plane is provided, modify centerline to be perpendicular
+    if (annularPlane) {
+      console.log(`[CL_DEBUG]    Modifying centerline with 6mm straight perpendicular segment...`);
+      splinePoints = this.modifyWithAnnulusPlane(splinePoints, sortedPoints, annularPlane);
+      console.log(`[CL_DEBUG]    ✅ Modified centerline has ${splinePoints.length} points`);
+
+      // Find annulus plane marker
+      const annulusIndex = splinePoints.findIndex(p => p.isAnnulusPlane === true);
+      console.log(`[CL_DEBUG]    Annulus plane marker at index: ${annulusIndex}`);
+      if (annulusIndex >= 0) {
+        const annulusPoint = splinePoints[annulusIndex];
+        console.log(`[CL_DEBUG]    Annulus position: [${annulusPoint.position[0].toFixed(6)}, ${annulusPoint.position[1].toFixed(6)}, ${annulusPoint.position[2].toFixed(6)}]`);
+      }
+    }
+
     // Calculate orientations along the spline
     const orientations = this.calculateOrientations(splinePoints);
-    
+
     // Convert to the format expected by VTK ImageCPRMapper
     const centerlinePosition = new Float32Array(splinePoints.length * 3);
     const centerlineOrientation = new Float32Array(splinePoints.length * 16);
+    let annulusPlaneIndex = -1;
 
     for (let i = 0; i < splinePoints.length; i++) {
       // Position (x, y, z)
       centerlinePosition[i * 3] = splinePoints[i].position[0];
       centerlinePosition[i * 3 + 1] = splinePoints[i].position[1];
       centerlinePosition[i * 3 + 2] = splinePoints[i].position[2];
+
+      // Track annulus plane index
+      if (splinePoints[i].isAnnulusPlane === true) {
+        annulusPlaneIndex = i;
+      }
 
       // Orientation as 4x4 matrix (16 elements)
       const matrix = orientations[i];
@@ -48,11 +74,17 @@ export class CenterlineGenerator {
 
     const totalLength = splinePoints[splinePoints.length - 1].distance;
 
+    console.log(`[CL_DEBUG] 📊 Final centerline data:`);
+    console.log(`[CL_DEBUG]    Total points: ${splinePoints.length}`);
+    console.log(`[CL_DEBUG]    Annulus plane index: ${annulusPlaneIndex}`);
+    console.log(`[CL_DEBUG]    Total length: ${totalLength.toFixed(2)} mm`);
+
     return {
       position: centerlinePosition,
       orientation: centerlineOrientation,
       length: totalLength,
       generatedFrom: rootPoints,
+      annulusPlaneIndex: annulusPlaneIndex, // Store the index for easy lookup
     };
   }
 
@@ -62,8 +94,6 @@ export class CenterlineGenerator {
   private static sortRootPointsByOrder(rootPoints: RootPoint[]): RootPoint[] {
     // If we have exactly 3 points with anatomical types, use the original sorting
     if (rootPoints.length === 3 && rootPoints.every(p => p.type)) {
-      console.log('🔍 DEBUG: Sorting 3 root points by anatomical order');
-      console.log('   Root points received:', rootPoints.map(p => ({ id: p.id, type: p.type, typeOf: typeof p.type })));
 
       const order = [
         RootPointType.LV_OUTFLOW,
@@ -71,20 +101,14 @@ export class CenterlineGenerator {
         RootPointType.ASCENDING_AORTA,
       ];
 
-      console.log('   Looking for types:', order);
 
       return order.map(type => {
-        console.log(`   Searching for type: "${type}" (${typeof type})`);
         const point = rootPoints.find(p => {
-          console.log(`     Checking point: type="${p.type}" (${typeof p.type}), match=${p.type === type}`);
           return p.type === type;
         });
         if (!point) {
-          console.error(`   ❌ Could not find point with type: "${type}"`);
-          console.error('   Available types:', rootPoints.map(p => p.type));
           throw new Error(`Missing root point of type: ${type}`);
         }
-        console.log(`   ✅ Found point for type "${type}"`);
         return point;
       });
     }
@@ -92,7 +116,6 @@ export class CenterlineGenerator {
     // For more than 3 points (refinement points added), PRESERVE the array order
     // The spheres are already in the correct order from the insertion logic
     // DO NOT re-sort by Z-coordinate as this can reverse the centerline direction
-    console.log(`📍 Using ${rootPoints.length} points in original placement order (no re-sorting)`);
     return [...rootPoints];
   }
 
@@ -414,21 +437,87 @@ export class CenterlineGenerator {
   private static calculateLocalCurvature(p1: Vector3, p2: Vector3, p3: Vector3): number {
     const v1 = vec3.subtract(vec3.create(), p2, p1);
     const v2 = vec3.subtract(vec3.create(), p3, p2);
-    
+
     const cross = vec3.cross(vec3.create(), v1, v2);
     const crossMag = vec3.length(cross);
-    
+
     const v1Mag = vec3.length(v1);
     const v2Mag = vec3.length(v2);
-    
+
     if (v1Mag === 0 || v2Mag === 0) return 0;
-    
+
     // Curvature = |v1 × v2| / (|v1| * |v2| * |v1 + v2|)
     const sumVec = vec3.add(vec3.create(), v1, v2);
     const sumMag = vec3.length(sumVec);
-    
+
     if (sumMag === 0) return 0;
-    
+
     return crossMag / (v1Mag * v2Mag * sumMag);
+  }
+
+  /**
+   * Modify centerline to add 6mm straight segment perpendicular to annular plane
+   * This is integrated from CenterlineModifier for simplicity
+   */
+  private static modifyWithAnnulusPlane(
+    splinePoints: SplinePoint[],
+    rootPoints: RootPoint[],
+    annularPlane: AnnularPlane
+  ): SplinePoint[] {
+    // Copy logic from CenterlineModifier.modifyCenterlineWithAnnulusPlane
+    // Convert SplinePoints to simple points for processing
+    const points = splinePoints.map(p => ({ x: p.position[0], y: p.position[1], z: p.position[2] }));
+    const rootPts = rootPoints.map(p => ({ x: p.position[0], y: p.position[1], z: p.position[2], type: p.type }));
+
+    // Call the modifier logic (we'll import it)
+    const { CenterlineModifier } = require('./CenterlineModifier');
+    const modifiedPoints = CenterlineModifier.modifyCenterlineWithAnnulusPlane(rootPts, annularPlane);
+
+    // Convert back to SplinePoints
+    let cumulativeDistance = 0;
+    const result: SplinePoint[] = modifiedPoints.map((p, i) => {
+      // Calculate distance from previous point
+      if (i > 0) {
+        const prev = modifiedPoints[i - 1];
+        const dist = Math.sqrt(
+          (p.x - prev.x) ** 2 +
+          (p.y - prev.y) ** 2 +
+          (p.z - prev.z) ** 2
+        );
+        cumulativeDistance += dist;
+      }
+
+      // Calculate tangent (use finite differences)
+      let tangent: Vector3;
+      if (i === 0) {
+        // Forward difference
+        const next = modifiedPoints[i + 1];
+        tangent = [next.x - p.x, next.y - p.y, next.z - p.z];
+      } else if (i === modifiedPoints.length - 1) {
+        // Backward difference
+        const prev = modifiedPoints[i - 1];
+        tangent = [p.x - prev.x, p.y - prev.y, p.z - prev.z];
+      } else {
+        // Central difference
+        const prev = modifiedPoints[i - 1];
+        const next = modifiedPoints[i + 1];
+        tangent = [next.x - prev.x, next.y - prev.y, next.z - prev.z];
+      }
+
+      // Normalize tangent
+      const len = Math.sqrt(tangent[0] ** 2 + tangent[1] ** 2 + tangent[2] ** 2);
+      if (len > 0) {
+        tangent = [tangent[0] / len, tangent[1] / len, tangent[2] / len];
+      }
+
+      return {
+        position: [p.x, p.y, p.z] as Vector3,
+        tangent: tangent as Vector3,
+        distance: cumulativeDistance,
+        isAnnulusPlane: p.isAnnulusPlane
+      };
+    });
+
+    return result;
   }
 }

@@ -55,13 +55,11 @@ class CuspNadirTool extends BaseTool {
   // Set draggable state (disable after annulus creation)
   setDraggable(draggable: boolean) {
     this.isDraggable = draggable;
-    console.log(`🔒 CuspNadirTool draggable state: ${draggable}`);
   }
 
   // Set visibility threshold multiplier (for wider visibility range across slices)
   setVisibilityThresholdMultiplier(multiplier: number) {
     this.visibilityThresholdMultiplier = multiplier;
-    console.log(`👁️ CuspNadirTool visibility threshold multiplier: ${multiplier}x`);
 
     // Update visibility for all viewports with new threshold
     const enabledElements = getEnabledElements();
@@ -73,7 +71,6 @@ class CuspNadirTool extends BaseTool {
   // Force all dots visible regardless of slice position (for measurements stage)
   setForceVisible(forceVisible: boolean) {
     this.forceVisible = forceVisible;
-    console.log(`🔧 CLIPPING FIX: CuspNadirTool force visible: ${forceVisible}`);
 
     const enabledElements = getEnabledElements();
 
@@ -87,7 +84,6 @@ class CuspNadirTool extends BaseTool {
           const mapper = actor.getMapper();
           if (mapper && typeof mapper.setClippingPlanes === 'function') {
             mapper.setClippingPlanes([]);
-            console.log(`🔧 CLIPPING FIX: 🔓 Cleared clipping planes for cusp dot ${dot.cuspType}`);
           }
           // Don't call actor.modified() - let render listeners handle it
         });
@@ -95,7 +91,6 @@ class CuspNadirTool extends BaseTool {
 
       // Trigger one render to apply changes
       enabledElements.forEach(({ viewport }) => viewport.render());
-      console.log(`🔧 CLIPPING FIX: ✅ Cleared clipping planes once for all cusp dots`);
     } else {
       // Remove render listeners when forceVisible is disabled
       enabledElements.forEach(({ viewport }) => {
@@ -105,7 +100,6 @@ class CuspNadirTool extends BaseTool {
           this.renderListeners.delete(viewport.id);
         }
       });
-      console.log(`🔧 CLIPPING FIX: 🚫 Removed render listeners`);
     }
   }
 
@@ -174,30 +168,25 @@ class CuspNadirTool extends BaseTool {
         distanceFromCamera
       };
 
-      console.log(`🎯 CuspNadirTool capturing event - dragging ${closestDot.cuspType} dot`);
 
       // Return true to indicate that this tool has captured the mouse
       // This prevents FixedCrosshairTool from handling this event
       return true;
     }
 
-    console.log('🔄 CuspNadirTool - not over a dot, delegating to FixedCrosshairTool for rotation');
 
     // Return false to allow FixedCrosshairTool to handle rotation
     return false;
   };
 
   mouseClickCallback = (evt: any) => {
-    console.log('🎯 CuspNadirTool mouseClickCallback triggered, isDraggable:', this.isDraggable);
 
     if (!this.isDraggable) {
-      console.log('🔒 CuspNadirTool is locked, ignoring click');
       return; // Tool is locked
     }
 
     // If we're in drag mode, don't add a new dot
     if (this.activeDotDrag) {
-      console.log('🎯 Currently dragging, ignoring click');
       return;
     }
 
@@ -209,7 +198,6 @@ class CuspNadirTool extends BaseTool {
     const enabledElement = enabledElements.find(el => el.viewport.element === element);
 
     if (!enabledElement || !enabledElement.viewport) {
-      console.warn('No viewport found for click event');
       return;
     }
 
@@ -221,27 +209,15 @@ class CuspNadirTool extends BaseTool {
       worldPos = viewport.canvasToWorld([canvasPos[0], canvasPos[1]]) as Vector3;
 
       // Debug logging
-      console.log('🎯 CuspNadirTool click coordinates:');
-      console.log('   Canvas position:', canvasPos);
-      console.log('   World position:', worldPos);
-      console.log('   Viewport:', viewport.id);
 
       // Also try currentPoints.world for comparison
       const eventWorldPos = currentPoints.world;
-      console.log('   Event world pos:', eventWorldPos);
-      console.log('   Difference:', [
-        worldPos[0] - eventWorldPos[0],
-        worldPos[1] - eventWorldPos[1],
-        worldPos[2] - eventWorldPos[2]
-      ]);
     } else {
-      console.error('Viewport does not have canvasToWorld method');
       return;
     }
 
     // Don't add a new dot if we're at the maximum
     if (this.cuspDots.length >= 3) {
-      console.warn('Maximum of 3 cusp nadir dots already placed.');
       return;
     }
 
@@ -268,7 +244,6 @@ class CuspNadirTool extends BaseTool {
     this.cuspDots.push(dotData);
     this._placeDot(dotData);
 
-    console.log(`🎯 Placed cusp nadir dot (${this.cuspDots.length}/3)`);
 
     // If all 3 dots are placed, determine anatomical positions and update colors
     if (this.cuspDots.length === 3) {
@@ -314,7 +289,6 @@ class CuspNadirTool extends BaseTool {
     const newPos: Vector3 = [worldPos[0], worldPos[1], worldPos[2]];
     this.cuspDots[dotIndex].pos = newPos;
     
-    console.log(`🎯 Dragging ${this.cuspDots[dotIndex].cuspType} cusp dot to:`, newPos);
     
     // Update the dot source directly with the new position
     if (this.cuspDots[dotIndex].source) {
@@ -332,7 +306,6 @@ class CuspNadirTool extends BaseTool {
 
   mouseUpCallback = (evt: any) => {
     if (this.activeDotDrag) {
-      console.log(`🎯 Finished dragging ${this.activeDotDrag.id}`);
       this.activeDotDrag = null;
     }
   };
@@ -346,7 +319,6 @@ class CuspNadirTool extends BaseTool {
   _determineAnatomicalPositions() {
     if (this.cuspDots.length !== 3) return;
 
-    console.log('🔍 Determining anatomical cusp positions relative to valve centerline...');
 
     // Calculate centroid (represents valve/annulus center)
     const centroid: Vector3 = [
@@ -355,7 +327,6 @@ class CuspNadirTool extends BaseTool {
       (this.cuspDots[0].pos[2] + this.cuspDots[1].pos[2] + this.cuspDots[2].pos[2]) / 3,
     ];
 
-    console.log('  Valve center (centroid):', centroid);
 
     // Find the most anterior dot (highest Y value relative to centroid) - this is RIGHT (RCA)
     let rightIndex = 0;
@@ -387,10 +358,6 @@ class CuspNadirTool extends BaseTool {
     this.cuspDots[rightIndex].color = '#00FF00'; // Green for RIGHT/RCA
     this.cuspDots[nonIndex].color = '#FFFF00';   // Yellow for NON-coronary
 
-    console.log(`✅ Determined cusp positions (order-independent, anatomical coordinates):`);
-    console.log(`  - Left cusp (Red): dot ${leftIndex}, pos:`, this.cuspDots[leftIndex].pos);
-    console.log(`  - Right/RCA cusp (Green): dot ${rightIndex}, pos:`, this.cuspDots[rightIndex].pos);
-    console.log(`  - Non-coronary cusp (Yellow): dot ${nonIndex}, pos:`, this.cuspDots[nonIndex].pos);
 
     // Update colors in all viewports
     this.cuspDots.forEach(dot => {
@@ -414,11 +381,9 @@ class CuspNadirTool extends BaseTool {
   _placeDot(dotData: { id: string; pos: Vector3; actors: Map<string, any>; source: any; color: string; cuspType: string }) {
     const enabledElements = getEnabledElements();
     if (enabledElements.length === 0) {
-      console.error('No enabled viewports found.');
       return;
     }
 
-    console.log(`🔵 Creating ${dotData.cuspType} cusp dot:`, dotData);
 
     const dotSource = vtkSphereSource.newInstance();
     // CRITICAL: setCenter expects three separate numbers, not an array!
@@ -440,7 +405,6 @@ class CuspNadirTool extends BaseTool {
     // This ensures proper rendering in all views
     enabledElements.forEach(({ viewport }) => {
       if (!viewport.addActor) {
-        console.warn('Viewport does not support adding actors.');
         return;
       }
 
@@ -580,7 +544,6 @@ class CuspNadirTool extends BaseTool {
         sliceSpacing = spacing[maxIndex];
       }
     } catch (error) {
-      console.warn('Could not get volume spacing, using default:', error);
     }
 
     // Visibility threshold - can be adjusted via multiplier
@@ -663,7 +626,6 @@ class CuspNadirTool extends BaseTool {
   clearAll() {
     const enabledElements = getEnabledElements();
 
-    console.log('🗑️ Clearing all cusp nadir dots');
 
     // Remove camera change listeners first
     this._removeCameraChangeListeners();
@@ -691,7 +653,6 @@ class CuspNadirTool extends BaseTool {
     // Notify position update
     this._notifyPositionUpdate();
 
-    console.log('🗑️ All cusp nadir dots cleared');
   }
 
   // Get current cusp dots positions
@@ -711,7 +672,6 @@ class CuspNadirTool extends BaseTool {
 
   // Force re-render all cusp dots (useful after camera changes)
   forceReRenderDots() {
-    console.log('🔄 Force re-rendering cusp dots after camera adjustment');
     const enabledElements = getEnabledElements();
 
     this.cuspDots.forEach(dot => {
@@ -742,7 +702,6 @@ class CuspNadirTool extends BaseTool {
       });
     }, 50);
 
-    console.log('✅ Cusp dots re-rendered');
   }
 }
 

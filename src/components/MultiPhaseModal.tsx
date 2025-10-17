@@ -58,14 +58,12 @@ const MultiPhaseModal: React.FC<MultiPhaseModalProps> = ({
         try {
           ToolGroupManager.destroyToolGroup('PHASE_SELECTION_TOOL_GROUP');
         } catch (e) {
-          console.warn('Failed to destroy tool group:', e);
         }
       }
       if (renderingEngineRef.current) {
         try {
           renderingEngineRef.current.destroy();
         } catch (e) {
-          console.warn('Failed to destroy rendering engine:', e);
         }
       }
     };
@@ -89,10 +87,8 @@ const MultiPhaseModal: React.FC<MultiPhaseModalProps> = ({
 
       setLoadingProgress(30);
 
-      console.log('📊 Phase info received:', phaseInfo);
 
       if (!phaseInfo.isMultiPhase || phaseInfo.totalPhases <= 1) {
-        console.warn('⚠️ No multiple phases detected in this series');
         setIsLoading(false);
         setPhases([]);
         return;
@@ -106,7 +102,6 @@ const MultiPhaseModal: React.FC<MultiPhaseModalProps> = ({
         const phase = phaseInfo.phases[index];
 
         // Load imageIds for this specific phase
-        console.log(`📦 Loading imageIds for phase ${index}: ${phase.phaseName}`);
         const { imageIds: phaseImageIds } = await createImageIdsAndCacheMetaData({
           StudyInstanceUID: studyInstanceUID,
           SeriesInstanceUID: series.SeriesInstanceUID,
@@ -114,7 +109,6 @@ const MultiPhaseModal: React.FC<MultiPhaseModalProps> = ({
           selectedPhase: index  // Select this specific phase
         });
 
-        console.log(`   Got ${phaseImageIds.length} imageIds for phase ${index}`);
 
         // Get metadata from first image of this phase
         const firstImageId = phaseImageIds[0];
@@ -130,10 +124,8 @@ const MultiPhaseModal: React.FC<MultiPhaseModalProps> = ({
             sliceThickness = metadata.sliceThickness || metadata.spacingBetweenSlices || 1.0;
             pixelSpacing = metadata.pixelSpacing || [1.0, 1.0];
           } else {
-            console.warn(`⚠️ No metadata for phase ${index}, using defaults`);
           }
         } catch (e) {
-          console.warn(`Could not get metadata for phase ${index}:`, e);
         }
 
         // Determine if systolic (0-40%)
@@ -174,14 +166,12 @@ const MultiPhaseModal: React.FC<MultiPhaseModalProps> = ({
 
       setIsLoading(false);
     } catch (error) {
-      console.error('Failed to load phases:', error);
       setIsLoading(false);
     }
   };
 
   const setupViewports = async (phasesToSetup: PhaseInfo[]) => {
     if (!viewportGridRef.current) {
-      console.error('❌ Viewport grid ref not available');
       return;
     }
 
@@ -192,11 +182,9 @@ const MultiPhaseModal: React.FC<MultiPhaseModalProps> = ({
         try {
           renderingEngineRef.current.destroy();
         } catch (e) {
-          console.warn('Failed to destroy previous rendering engine:', e);
         }
       }
 
-      console.log('🎨 Creating rendering engine...');
       const renderingEngine = new cornerstone.RenderingEngine(renderingEngineId);
       renderingEngineRef.current = renderingEngine;
 
@@ -211,7 +199,6 @@ const MultiPhaseModal: React.FC<MultiPhaseModalProps> = ({
       phasesToSetup.forEach((phase, index) => {
         const viewportElement = document.getElementById(`phase-viewport-${index}`);
         if (!viewportElement) {
-          console.error(`❌ Viewport element ${index} not found`);
           return;
         }
 
@@ -226,9 +213,7 @@ const MultiPhaseModal: React.FC<MultiPhaseModalProps> = ({
               background: [0, 0, 0] as cornerstone.Types.Point3
             }
           });
-          console.log(`✅ Enabled viewport ${index}`);
         } catch (error) {
-          console.error(`❌ Failed to enable viewport ${index}:`, error);
         }
       });
 
@@ -241,14 +226,12 @@ const MultiPhaseModal: React.FC<MultiPhaseModalProps> = ({
         const imageIds = phase.imageIds;
 
         if (!imageIds || imageIds.length === 0) {
-          console.error(`❌ No image IDs for phase ${index}`);
           continue;
         }
 
         try {
           const viewport = renderingEngine.getViewport(viewportId) as cornerstone.Types.IStackViewport;
           if (!viewport) {
-            console.error(`❌ Could not get viewport ${index}`);
             continue;
           }
 
@@ -268,10 +251,7 @@ const MultiPhaseModal: React.FC<MultiPhaseModalProps> = ({
           viewport.render();
 
           const appliedProps = viewport.getProperties();
-          console.log(`✅ Viewport ${index} rendered with slice ${middleSlice + 1}/${imageIds.length}`);
-          console.log(`   VOI Range: ${appliedProps.voiRange?.lower} to ${appliedProps.voiRange?.upper}`);
         } catch (error) {
-          console.error(`❌ Failed to setup viewport ${index}:`, error);
         }
       }
 
@@ -282,10 +262,8 @@ const MultiPhaseModal: React.FC<MultiPhaseModalProps> = ({
       try {
         cornerstoneTools.addTool(WindowLevelTool);
         cornerstoneTools.addTool(ZoomTool);
-        console.log('✅ Tools registered globally');
       } catch (e) {
         // Tools might already be registered, which is fine
-        console.log('ℹ️ Tools already registered');
       }
 
       // Destroy existing tool group if it exists
@@ -325,7 +303,6 @@ const MultiPhaseModal: React.FC<MultiPhaseModalProps> = ({
         toolGroup!.addViewport(viewportId, renderingEngineId);
       });
 
-      console.log('🛠️ Tool group configured: Right-click for W/L, Middle-click for Zoom');
 
       // Add mouse wheel scroll handlers AFTER all viewports are set up
       phasesToSetup.forEach((phase, index) => {
@@ -348,13 +325,10 @@ const MultiPhaseModal: React.FC<MultiPhaseModalProps> = ({
           (viewportElement as any).__wheelListener = wheelListener;
           viewportElement.addEventListener('wheel', wheelListener, { passive: false });
 
-          console.log(`🖱️ Mouse wheel attached to viewport ${index}`);
         }
       });
 
-      console.log('🎉 All viewports setup complete');
     } catch (error) {
-      console.error('❌ Failed to setup viewports:', error);
       throw error;
     }
   };
@@ -365,13 +339,11 @@ const MultiPhaseModal: React.FC<MultiPhaseModalProps> = ({
     const currentIndices = sliceIndicesRef.current;
 
     if (!currentPhases || phaseIndex >= currentPhases.length || phaseIndex < 0) {
-      console.warn(`Invalid scroll: phaseIndex=${phaseIndex}, phases.length=${currentPhases?.length}`);
       return;
     }
 
     const phase = currentPhases[phaseIndex];
     if (!phase || !phase.imageIds || phase.imageIds.length === 0) {
-      console.warn(`Invalid phase data for index ${phaseIndex}`);
       return;
     }
 
@@ -379,7 +351,6 @@ const MultiPhaseModal: React.FC<MultiPhaseModalProps> = ({
     const currentSlice = currentIndices[phaseIndex] || 0;
     const newSlice = Math.max(0, Math.min(maxSlice, currentSlice + delta));
 
-    console.log(`🔄 Scroll phase ${phaseIndex}: ${currentSlice} → ${newSlice} (delta: ${delta}, max: ${maxSlice})`);
 
     if (newSlice !== currentSlice) {
       // Update ref immediately
@@ -400,18 +371,13 @@ const MultiPhaseModal: React.FC<MultiPhaseModalProps> = ({
           if (viewport) {
             viewport.setImageIdIndex(newSlice);
             viewport.render();
-            console.log(`✅ Viewport ${phaseIndex} now showing slice ${newSlice + 1}/${maxSlice + 1}`);
           } else {
-            console.error(`❌ Viewport ${phaseIndex} is null`);
           }
         } catch (error) {
-          console.error(`❌ Failed to scroll slice for phase ${phaseIndex}:`, error);
         }
       } else {
-        console.error(`❌ Rendering engine or viewportId missing for phase ${phaseIndex}`);
       }
     } else {
-      console.log(`   Already at slice ${currentSlice} (no change)`);
     }
   };
 

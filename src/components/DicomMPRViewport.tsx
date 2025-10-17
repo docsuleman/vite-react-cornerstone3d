@@ -55,7 +55,6 @@ const DicomMPRViewport: React.FC<DicomMPRViewportProps> = ({
 
       // Initialize Cornerstone3D if not already initialized
       if (!isCornerStoneInitialized()) {
-        console.log('🔄 Initializing Cornerstone3D...');
         await initializeCornerstone();
       }
 
@@ -85,7 +84,6 @@ const DicomMPRViewport: React.FC<DicomMPRViewportProps> = ({
       }
 
     } catch (err) {
-      console.error('Failed to initialize Cornerstone:', err);
       setError(`Failed to initialize medical imaging: ${err}`);
       setIsLoading(false);
     }
@@ -108,7 +106,6 @@ const DicomMPRViewport: React.FC<DicomMPRViewportProps> = ({
       }
 
       // Try to actually load DICOM volume if images are available
-      console.log('🔄 Attempting to load DICOM volume with', imageIds.length, 'images');
       
       try {
         // Define volume
@@ -145,7 +142,6 @@ const DicomMPRViewport: React.FC<DicomMPRViewportProps> = ({
             onImageLoaded(imageData);
           }
 
-          console.log('✅ DICOM volume loaded successfully!');
           viewport.render();
           setIsLoading(false);
         } else {
@@ -153,7 +149,6 @@ const DicomMPRViewport: React.FC<DicomMPRViewportProps> = ({
         }
         
       } catch (volumeError) {
-        console.warn('Failed to load DICOM volume:', volumeError);
         
         // Fallback to mock data with informative message
         setImageInfo({
@@ -174,7 +169,6 @@ const DicomMPRViewport: React.FC<DicomMPRViewportProps> = ({
       }
 
     } catch (err) {
-      console.error('Failed to load DICOM series:', err);
       setError(`Failed to load medical images: ${err}`);
       setIsLoading(false);
     }
@@ -186,7 +180,6 @@ const DicomMPRViewport: React.FC<DicomMPRViewportProps> = ({
     }
 
     try {
-      console.log('🔍 Fetching instances for series:', patientInfo.seriesInstanceUID);
       
       // Import DicomWebService dynamically to avoid circular dependencies
       const { dicomWebService } = await import('../services/DicomWebService');
@@ -195,11 +188,9 @@ const DicomMPRViewport: React.FC<DicomMPRViewportProps> = ({
       const instances = await dicomWebService.getInstancesForSeriesOnly(patientInfo.seriesInstanceUID);
       
       if (instances.length === 0) {
-        console.warn('No instances found for series:', patientInfo.seriesInstanceUID);
         return [];
       }
       
-      console.log(`📋 Found ${instances.length} instances in series`);
       
       // Generate DICOM-web URLs for each instance
       const baseUrl = 'http://127.0.0.1/orthanc/dicom-web';
@@ -211,11 +202,9 @@ const DicomMPRViewport: React.FC<DicomMPRViewportProps> = ({
         return `dicomweb:${baseUrl}/studies/${studyUID}/series/${seriesUID}/instances/${instance.SOPInstanceUID}/frames/1`;
       });
       
-      console.log('✅ Generated image IDs:', imageIds.length);
       return imageIds;
       
     } catch (error) {
-      console.error('Failed to generate image IDs:', error);
       // Return empty array instead of throwing to show proper error message
       return [];
     }
@@ -241,7 +230,6 @@ const DicomMPRViewport: React.FC<DicomMPRViewportProps> = ({
       viewport.setCamera({ focalPoint });
       viewport.render();
     } catch (err) {
-      console.warn('Slice navigation not available:', err);
     }
   };
 
@@ -258,7 +246,6 @@ const DicomMPRViewport: React.FC<DicomMPRViewportProps> = ({
       });
       viewport.render();
     } catch (err) {
-      console.warn('Window/Level adjustment not available:', err);
     }
   };
 

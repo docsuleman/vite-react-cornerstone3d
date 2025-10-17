@@ -157,7 +157,6 @@ export async function setup3DVolumeViewport(
   // Render
   viewport.render();
 
-  console.log('✅ 3D volume viewport setup complete:', viewportId);
 
   return viewport;
 }
@@ -177,7 +176,6 @@ export function changeVolume3DPreset(
 ) {
   viewport.setProperties({ preset: presetName });
   viewport.render();
-  console.log('🎨 Preset changed to:', presetName);
 }
 
 /**
@@ -198,13 +196,11 @@ export function setSampleDistance(
   multiplier: number
 ) {
   if (multiplier < 1 || multiplier > 16) {
-    console.warn('Sample distance multiplier should be between 1-16');
     multiplier = Math.max(1, Math.min(16, multiplier));
   }
 
   viewport.setProperties({ sampleDistanceMultiplier: multiplier });
   viewport.render();
-  console.log('📏 Sample distance multiplier set to:', multiplier);
 }
 
 /**
@@ -219,7 +215,6 @@ export function applyRandomRotation(viewport: Types.IVolumeViewport) {
   const randomAngle = Math.random() * 360;
   viewport.setViewPresentation({ rotation: randomAngle });
   viewport.render();
-  console.log('🔄 Applied rotation:', randomAngle.toFixed(2), 'degrees');
 }
 
 /**
@@ -234,7 +229,6 @@ export function applyRandomRotation(viewport: Types.IVolumeViewport) {
 export function setRotation(viewport: Types.IVolumeViewport, angle: number) {
   viewport.setViewPresentation({ rotation: angle });
   viewport.render();
-  console.log('🔄 Rotation set to:', angle, 'degrees');
 }
 
 /**
@@ -248,7 +242,6 @@ export function setRotation(viewport: Types.IVolumeViewport, angle: number) {
 export function resetCamera(viewport: Types.IVolumeViewport) {
   viewport.resetCamera();
   viewport.render();
-  console.log('📷 Camera reset to default position');
 }
 
 /**

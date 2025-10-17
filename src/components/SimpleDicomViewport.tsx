@@ -69,7 +69,6 @@ const SimpleDicomViewport: React.FC<SimpleDicomViewportProps> = ({
 
       // Initialize Cornerstone3D if not already initialized
       if (!isCornerStoneInitialized()) {
-        console.log('🔄 Initializing Cornerstone3D...');
         await initializeCornerstone();
       }
 
@@ -103,7 +102,6 @@ const SimpleDicomViewport: React.FC<SimpleDicomViewportProps> = ({
       }
 
     } catch (err) {
-      console.error('Failed to initialize Simple DICOM Viewport:', err);
       setError(`Failed to initialize medical imaging: ${err}`);
       setIsLoading(false);
     }
@@ -111,7 +109,6 @@ const SimpleDicomViewport: React.FC<SimpleDicomViewportProps> = ({
 
   const loadDicomImages = async (engine: RenderingEngine) => {
     try {
-      console.log('🔍 Loading DICOM images for series:', patientInfo?.seriesInstanceUID);
       
       // Generate DICOM-web image IDs
       const generatedImageIds = await generateImageIds();
@@ -123,18 +120,15 @@ const SimpleDicomViewport: React.FC<SimpleDicomViewportProps> = ({
       }
 
       setImageIds(generatedImageIds);
-      console.log(`📋 Found ${generatedImageIds.length} DICOM images`);
 
       // Get viewport and load the first image
       const viewport = engine.getViewport(viewportId) as Types.IStackViewport;
       
       // Set the stack of images
       await viewport.setStack(generatedImageIds, 0);
-      console.log('✅ Stack set with', generatedImageIds.length, 'images');
 
       // Fit the image to the viewport
       viewport.resetCamera();
-      console.log('✅ Camera reset');
       
       // Set appropriate display properties for medical images
       viewport.setProperties({
@@ -143,11 +137,9 @@ const SimpleDicomViewport: React.FC<SimpleDicomViewportProps> = ({
           upper: 1000,
         },
       });
-      console.log('✅ VOI range set to -1000/1000');
 
       // Render the viewport
       viewport.render();
-      console.log('✅ Viewport rendered');
 
       // Get image information
       const currentImage = viewport.getCurrentImageId();
@@ -168,11 +160,9 @@ const SimpleDicomViewport: React.FC<SimpleDicomViewportProps> = ({
             onImageLoaded(image);
           }
 
-          console.log('✅ DICOM images loaded successfully!');
           setIsLoading(false);
           
         } catch (imageError) {
-          console.warn('Image loaded in viewport but failed to get metadata:', imageError);
           
           // Still show success since the image is displayed
           setImageInfo({
@@ -184,13 +174,11 @@ const SimpleDicomViewport: React.FC<SimpleDicomViewportProps> = ({
             imageId: currentImage
           });
 
-          console.log('✅ DICOM images displayed successfully (limited metadata)');
           setIsLoading(false);
         }
       }
 
     } catch (err) {
-      console.error('Failed to load DICOM images:', err);
       setError(`Failed to load DICOM images: ${err}`);
       setIsLoading(false);
     }
@@ -202,7 +190,6 @@ const SimpleDicomViewport: React.FC<SimpleDicomViewportProps> = ({
     }
 
     try {
-      console.log('🔍 Fetching instances for series:', patientInfo.seriesInstanceUID);
       
       // Import DicomWebService dynamically
       const { dicomWebService } = await import('../services/DicomWebService');
@@ -211,14 +198,11 @@ const SimpleDicomViewport: React.FC<SimpleDicomViewportProps> = ({
       const instances = await dicomWebService.getInstancesForSeriesOnly(patientInfo.seriesInstanceUID);
       
       if (instances.length === 0) {
-        console.warn('No instances found for series:', patientInfo.seriesInstanceUID);
         return [];
       }
       
-      console.log(`📋 Found ${instances.length} instances in series`);
       
       // Now try to load actual DICOM images
-      console.log('🏥 Attempting to load real DICOM images');
       
       // Use a simpler approach - try different Orthanc endpoint formats
       const imageIds: string[] = [];
@@ -255,11 +239,9 @@ const SimpleDicomViewport: React.FC<SimpleDicomViewportProps> = ({
         imageIds.push(`web:${testImageUrl}`);
       }
       
-      console.log('✅ Generated image IDs:', imageIds.length);
       return imageIds;
       
     } catch (error) {
-      console.error('Failed to generate image IDs:', error);
       return [];
     }
   };
@@ -286,7 +268,6 @@ const SimpleDicomViewport: React.FC<SimpleDicomViewportProps> = ({
         setImageInfo(prev => prev ? { ...prev, currentIndex: newIndex } : null);
       }
     } catch (err) {
-      console.warn('Slice navigation error:', err);
     }
   };
 
@@ -303,7 +284,6 @@ const SimpleDicomViewport: React.FC<SimpleDicomViewportProps> = ({
       });
       viewport.render();
     } catch (err) {
-      console.warn('Window/Level adjustment error:', err);
     }
   };
 

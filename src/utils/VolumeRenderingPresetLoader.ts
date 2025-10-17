@@ -65,7 +65,6 @@ export class VolumeRenderingPresetLoader {
         },
       };
     } catch (error) {
-      console.error('Error loading volume rendering preset:', error);
       throw error;
     }
   }
@@ -99,9 +98,6 @@ export class VolumeRenderingPresetLoader {
     }
 
     if (points.length !== count) {
-      console.warn(
-        `Opacity transfer function count mismatch: expected ${count}, got ${points.length}`
-      );
     }
 
     return points;
@@ -138,9 +134,6 @@ export class VolumeRenderingPresetLoader {
     }
 
     if (points.length !== count) {
-      console.warn(
-        `Color transfer function count mismatch: expected ${count}, got ${points.length}`
-      );
     }
 
     return points;
@@ -244,7 +237,6 @@ export class VolumeRenderingPresetLoader {
         const preset = await this.loadPreset(path, name);
         presets.push(preset);
       } catch (error) {
-        console.warn(`Failed to load preset ${name}:`, error);
         // Continue loading other presets even if one fails
       }
     }

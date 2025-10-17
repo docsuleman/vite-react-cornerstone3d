@@ -50,7 +50,6 @@ const SimpleCPRViewport: React.FC<SimpleCPRViewportProps> = ({
   // Create a simple "straightened" view by concatenating cross-sections
   const createSimpleCPRData = () => {
     try {
-      console.log('🔄 Creating Simple CPR - straightened cross-sections...');
       
       // Create straightened CPR image - much simpler approach
       const cprWidth = 100;   // Number of cross-sections along centerline
@@ -58,7 +57,6 @@ const SimpleCPRViewport: React.FC<SimpleCPRViewportProps> = ({
       const cprDepth = 1;     // Single slice for true 2D
       const totalPixels = cprWidth * cprHeight * cprDepth;
       
-      console.log('📊 CPR dimensions:', { width: cprWidth, height: cprHeight, totalPixels });
       
       // Create 2D image data for the straightened view
       const scalarData = new Float32Array(totalPixels);
@@ -100,7 +98,6 @@ const SimpleCPRViewport: React.FC<SimpleCPRViewportProps> = ({
       imageData.setSpacing([1.0, 1.0, 1.0]);
       imageData.setOrigin([0, 0, 0]);
       
-      console.log('📋 Image dimensions set:', imageData.getDimensions());
       
       const scalars = vtkDataArray.newInstance({
         name: 'Scalars',
@@ -110,15 +107,10 @@ const SimpleCPRViewport: React.FC<SimpleCPRViewportProps> = ({
       });
       imageData.getPointData().setScalars(scalars);
       
-      console.log('✅ Simple CPR data created successfully:', {
-        dimensions: [cprWidth, cprHeight, 1],
-        dataLength: scalarData.length
-      });
       
       return imageData;
 
     } catch (error) {
-      console.error('❌ Failed to create simple CPR data:', error);
       throw error;
     }
   };
@@ -132,7 +124,6 @@ const SimpleCPRViewport: React.FC<SimpleCPRViewportProps> = ({
       setIsLoading(true);
       setError(null);
 
-      console.log('🔄 Initializing Simple CPR fallback with root points:', rootPoints);
 
       // Create VTK rendering setup - much simpler than ImageCPRMapper
       const genericRenderWindow = vtkGenericRenderWindow.newInstance();
@@ -156,7 +147,6 @@ const SimpleCPRViewport: React.FC<SimpleCPRViewportProps> = ({
       mapper.setInputData(imageData);
       
       // Debug: log available methods
-      console.log('🔍 Available mapper methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(mapper)).filter(name => typeof mapper[name] === 'function'));
       
       const actor = vtkImageSlice.newInstance();
       actor.setMapper(mapper);
@@ -166,14 +156,10 @@ const SimpleCPRViewport: React.FC<SimpleCPRViewportProps> = ({
       property.setColorWindow(255);
       property.setColorLevel(127);
       
-      console.log('🎨 Window/Level set:', { window: 255, level: 127 });
 
       // Add actor to renderer
       renderer.addActor(actor);
       
-      console.log('🎭 Actor added to renderer');
-      console.log('📊 Image data bounds:', imageData.getBounds());
-      console.log('📊 Image data range:', imageData.getPointData().getScalars().getRange());
 
       // Set up simple camera for 2D view
       const camera = renderer.getActiveCamera();
@@ -183,9 +169,6 @@ const SimpleCPRViewport: React.FC<SimpleCPRViewportProps> = ({
       renderer.resetCamera();
       renderer.resetCameraClippingRange();
       
-      console.log('📷 Camera reset to fit image');
-      console.log('📷 Camera position:', camera.getPosition());
-      console.log('📷 Camera focal point:', camera.getFocalPoint());
 
       // Store VTK objects for cleanup
       vtkObjects.current = {
@@ -197,22 +180,18 @@ const SimpleCPRViewport: React.FC<SimpleCPRViewportProps> = ({
       };
 
       // Simple render - no complex texture management
-      console.log('🎬 Performing initial render...');
       renderWindow.render();
       
       // Force a second render after a short delay to ensure visibility
       setTimeout(() => {
-        console.log('🎬 Performing delayed render...');
         renderWindow.render();
       }, 500);
       
       setIsInitialized(true);
       setIsLoading(false);
       
-      console.log('✅ Simple CPR fallback initialized successfully - no texture errors expected');
 
     } catch (error) {
-      console.error('❌ Simple CPR initialization failed:', error);
       setError(`Simple CPR initialization failed: ${error}`);
       setIsLoading(false);
     }
@@ -226,7 +205,6 @@ const SimpleCPRViewport: React.FC<SimpleCPRViewportProps> = ({
     // Cleanup
     return () => {
       if (vtkObjects.current.renderWindow) {
-        console.log('🧹 Cleaning up Simple CPR viewport');
       }
     };
   }, [patientInfo, rootPoints]);
