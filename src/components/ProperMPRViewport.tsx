@@ -12,6 +12,7 @@ import {
   cache,
   setVolumesForViewports,
   getEnabledElement,
+  getEnabledElements,
 } from "@cornerstonejs/core";
 import { init as csRenderInit } from "@cornerstonejs/core";
 import { init as csToolsInit } from "@cornerstonejs/tools";
@@ -1008,7 +1009,10 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           // Update locked focal point to the exact annulus plane position
           const annulusPoint = centerlineDataProp.modifiedCenterline[annulusPlaneIndex];
           lockedFocalPointRef.current = [annulusPoint.x, annulusPoint.y, annulusPoint.z] as Types.Point3;
-          console.log(`🔒 Updated focal point to annulus plane position:`, lockedFocalPointRef.current.map(v => v.toFixed(1)));
+          console.log(`🔒 [ANNULUS_DEFINITION] EXACT annulus plane position from modified centerline:`);
+          console.log(`   X: ${lockedFocalPointRef.current[0].toFixed(6)}`);
+          console.log(`   Y: ${lockedFocalPointRef.current[1].toFixed(6)}`);
+          console.log(`   Z: ${lockedFocalPointRef.current[2].toFixed(6)}`);
         } else {
           console.warn('⚠️ No annulus plane marker found in modified centerline');
         }
@@ -3326,73 +3330,83 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       let yAxisArrow: any = null; // Yellow arrow for valve Y-axis
       let zAxisArrow: any = null; // Blue arrow for valve Z-axis
 
-      // Calculate TRUE perpendicular from 3 cusp dots, not from workflow state
-      const cuspDots = cuspDotsRef.current;
-      console.log(`🔍 Checking cusp dots:`, cuspDots);
+      // CRITICAL: Use the annular plane normal from workflow state (calculated in TAVIApp)
+      // This is the EXACT perpendicular to the annular plane from the 3 cusp dots
+      // The annular plane is already calculated correctly in adjustToAnnularPlane and stored in workflow
+      let normalizedNormal: number[];
 
-      if (cuspDots && cuspDots.length === 3) {
-        // Get the three cusp points - they might be direct coordinates or have .world property
+      if (annularPlane && annularPlane.normal) {
+        // Use the annular plane normal from workflow state - this is already correctly oriented
+        const normal = annularPlane.normal;
+        const length = Math.sqrt(normal[0]**2 + normal[1]**2 + normal[2]**2);
+        normalizedNormal = [normal[0]/length, normal[1]/length, normal[2]/length];
+
+        console.log(`✅ Using annular plane normal from workflow state (exact perpendicular):`);
+        console.log(`   Normal: [${normalizedNormal.map(v => v.toFixed(4)).join(', ')}]`);
+        console.log(`   Confidence: ${annularPlane.confidence}`);
+      } else {
+        // Fallback: calculate from cusp dots (should not happen)
+        console.warn('⚠️ No annular plane in workflow state, calculating from cusp dots...');
+
+        const cuspDots = cuspDotsRef.current;
+        if (!cuspDots || cuspDots.length !== 3) {
+          console.error('❌ No cusp dots available for fallback calculation');
+          return;
+        }
+
+        // Get the three cusp points
         let p1, p2, p3;
-
         if (cuspDots[0].pos) {
-          // Format: { id, pos: [x, y, z], color, cuspType }
           p1 = cuspDots[0].pos;
           p2 = cuspDots[1].pos;
           p3 = cuspDots[2].pos;
-          console.log(`✅ Found cusp dots in 'pos' property format`);
-        } else if (cuspDots[0].world) {
-          // Format: { world: [x, y, z] }
-          p1 = cuspDots[0].world;
-          p2 = cuspDots[1].world;
-          p3 = cuspDots[2].world;
-          console.log(`✅ Found cusp dots in 'world' property format`);
-        } else if (Array.isArray(cuspDots[0])) {
-          // Format: [[x, y, z], [x, y, z], [x, y, z]]
-          p1 = cuspDots[0];
-          p2 = cuspDots[1];
-          p3 = cuspDots[2];
-          console.log(`✅ Found cusp dots in array format`);
-        } else if (cuspDots[0].x !== undefined) {
-          // Format: { x, y, z }
-          p1 = [cuspDots[0].x, cuspDots[0].y, cuspDots[0].z];
-          p2 = [cuspDots[1].x, cuspDots[1].y, cuspDots[1].z];
-          p3 = [cuspDots[2].x, cuspDots[2].y, cuspDots[2].z];
-          console.log(`✅ Found cusp dots in {x,y,z} format`);
         } else {
-          console.warn('⚠️ Unknown cusp dot format:', cuspDots[0]);
-          p1 = p2 = p3 = null;
+          console.error('❌ Unknown cusp dot format');
+          return;
         }
-
-        if (p1 && p2 && p3) {
 
         // Calculate two vectors in the annular plane
         const v1 = [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]];
         const v2 = [p3[0] - p1[0], p3[1] - p1[1], p3[2] - p1[2]];
 
-        // Cross product gives perpendicular to annular plane
+        // Cross product gives perpendicular
         let normal = [
           v1[1] * v2[2] - v1[2] * v2[1],
           v1[2] * v2[0] - v1[0] * v2[2],
           v1[0] * v2[1] - v1[1] * v2[0]
         ];
 
-        console.log(`📐 Cusp dots:`, [p1, p2, p3]);
-        console.log(`📐 Vectors in plane: v1=`, v1, ` v2=`, v2);
-        console.log(`📐 Raw cross product normal:`, normal);
-
-        // Normalize the perpendicular direction
         const length = Math.sqrt(normal[0]**2 + normal[1]**2 + normal[2]**2);
-        let normalizedNormal = [normal[0]/length, normal[1]/length, normal[2]/length];
+        normalizedNormal = [normal[0]/length, normal[1]/length, normal[2]/length];
+      }
 
-        // Ensure the normal points "upward" (positive superior direction)
-        // Check the Z component - if it's negative, flip the normal
-        // In patient coords, superior (head) is usually positive Z
-        if (normalizedNormal[2] < 0) {
-          console.log(`⚠️ Normal pointing downward (Z=${normalizedNormal[2].toFixed(3)}), flipping...`);
-          normalizedNormal = [-normalizedNormal[0], -normalizedNormal[1], -normalizedNormal[2]];
+      const cuspDots = cuspDotsRef.current;
+      if (cuspDots && cuspDots.length === 3) {
+        // Get the three cusp points for annulus center calculation
+        let p1, p2, p3;
+
+        if (cuspDots[0].pos) {
+          p1 = cuspDots[0].pos;
+          p2 = cuspDots[1].pos;
+          p3 = cuspDots[2].pos;
+        } else if (cuspDots[0].world) {
+          p1 = cuspDots[0].world;
+          p2 = cuspDots[1].world;
+          p3 = cuspDots[2].world;
+        } else if (Array.isArray(cuspDots[0])) {
+          p1 = cuspDots[0];
+          p2 = cuspDots[1];
+          p3 = cuspDots[2];
+        } else if (cuspDots[0].x !== undefined) {
+          p1 = [cuspDots[0].x, cuspDots[0].y, cuspDots[0].z];
+          p2 = [cuspDots[1].x, cuspDots[1].y, cuspDots[1].z];
+          p3 = [cuspDots[2].x, cuspDots[2].y, cuspDots[2].z];
+        } else {
+          console.warn('⚠️ Unknown cusp dot format:', cuspDots[0]);
+          p1 = p2 = p3 = null;
         }
 
-        console.log(`📐 Final normalized normal (should point upward into aorta):`, normalizedNormal);
+        if (p1 && p2 && p3) {
 
         // Create an orthonormal basis aligned with the target direction
         // Map valve STL's Z-axis (BLUE arrow) to centerline direction
@@ -4997,12 +5011,18 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
         // Wait longer to ensure volumes are fully loaded before positioning cameras
         setTimeout(() => {
-          console.log('🎯 Setting up cameras at annular plane for measurements');
-          console.log('  📍 Annulus position:', lockedFocalPointRef.current);
+          console.log('🎯 [MEASUREMENTS] Setting up cameras at annular plane');
+          console.log('  📍 Locked focal point (from ANNULUS_DEFINITION):', lockedFocalPointRef.current);
           console.log('  🔗 Centerline data available:', !!centerlineDataRef.current);
 
           const annulusCenter = lockedFocalPointRef.current!;
           const centerlineData = centerlineDataRef.current;
+
+          console.log(`\n🔬 [MEASUREMENTS] ANNULUS POSITION COMPARISON:`);
+          console.log(`   Locked focal point (exact annulus from ANNULUS_DEFINITION):`);
+          console.log(`   X: ${annulusCenter[0].toFixed(6)}`);
+          console.log(`   Y: ${annulusCenter[1].toFixed(6)}`);
+          console.log(`   Z: ${annulusCenter[2].toFixed(6)}`);
 
           // Find nearest centerline index to annulus center
           const nearestIndex = findNearestCenterlineIndex(annulusCenter);
@@ -5014,7 +5034,29 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
             return;
           }
 
-          console.log('📍 Annulus center:', annulusCenter);
+          console.log(`   \n   Nearest centerline index: ${nearestIndex}`);
+          console.log(`   Position at nearest index:`);
+          console.log(`   X: ${position[0].toFixed(6)}`);
+          console.log(`   Y: ${position[1].toFixed(6)}`);
+          console.log(`   Z: ${position[2].toFixed(6)}`);
+
+          const deltaX = position[0] - annulusCenter[0];
+          const deltaY = position[1] - annulusCenter[1];
+          const deltaZ = position[2] - annulusCenter[2];
+          const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ);
+
+          console.log(`   \n   ⚠️ POSITION DIFFERENCE:`);
+          console.log(`   ΔX: ${deltaX.toFixed(6)} mm`);
+          console.log(`   ΔY: ${deltaY.toFixed(6)} mm`);
+          console.log(`   ΔZ: ${deltaZ.toFixed(6)} mm`);
+          console.log(`   Distance: ${distance.toFixed(6)} mm`);
+
+          if (distance > 0.001) {
+            console.warn(`   ❌ ERROR: Position mismatch detected! Using nearest index instead of exact annulus position.`);
+          } else {
+            console.log(`   ✅ Positions match (within 0.001mm tolerance)`);
+          }
+
           console.log('📐 Centerline tangent:', tangent);
 
           const renderingEngine = renderingEngineRef.current;
@@ -8424,12 +8466,26 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
   // Handle stage changes to lock/unlock tools and switch crosshair modes
   useEffect(() => {
-    const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
-    if (!toolGroup) return;
+    console.log(`🔄 Stage change useEffect running - currentStage: ${currentStage}`);
+    console.log(`🔍 Looking for toolGroup with ID: ${toolGroupId}`);
 
-    const sphereTool = toolGroup.getToolInstance(SphereMarkerTool.toolName) as SphereMarkerTool;
-    const cuspTool = toolGroup.getToolInstance(CuspNadirTool.toolName) as CuspNadirTool;
-    const fixedCrosshairTool = toolGroup.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
+    // CRITICAL: Add delay to ensure toolGroup is available after stage transition
+    setTimeout(() => {
+      const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+      if (!toolGroup) {
+        console.log(`❌ Tool group "${toolGroupId}" not found even after delay! Cannot set force visible.`);
+        // Try listing all tool groups to debug
+        const allToolGroups = ToolGroupManager.getAllToolGroups();
+        console.log(`📋 All available tool groups:`, allToolGroups?.map(tg => tg.id));
+        return;
+      }
+      console.log(`✅ Tool group found: ${toolGroupId}`);
+
+      const sphereTool = toolGroup.getToolInstance(SphereMarkerTool.toolName) as SphereMarkerTool;
+      const cuspTool = toolGroup.getToolInstance(CuspNadirTool.toolName) as CuspNadirTool;
+      const fixedCrosshairTool = toolGroup.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
+
+      console.log(`🔍 Tool instances - sphereTool: ${!!sphereTool}, cuspTool: ${!!cuspTool}, fixedCrosshairTool: ${!!fixedCrosshairTool}`);
 
     if (currentStage === WorkflowStage.ANNULUS_DEFINITION) {
       // CRITICAL: Delete all measurement annotations when entering annulus definition
@@ -8551,6 +8607,13 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       console.log('🔓 Stage: Annulus Definition - Both cusp dragging and rotation active');
     } else if (currentStage === WorkflowStage.MEASUREMENTS) {
+      // DEBUG: Check what props we have
+      console.log('🔧 CLIPPING FIX: 🚀 Entered MEASUREMENTS stage');
+      console.log(`🔧 CLIPPING FIX:    existingSpheres: ${existingSpheres ? existingSpheres.length : 'null/undefined'}`);
+      console.log(`🔧 CLIPPING FIX:    annulusPoints: ${annulusPoints ? annulusPoints.length : 'null/undefined'}`);
+      console.log(`🔧 CLIPPING FIX:    sphereTool: ${sphereTool ? 'found' : 'null'}`);
+      console.log(`🔧 CLIPPING FIX:    cuspTool: ${cuspTool ? 'found' : 'null'}`);
+
       // Lock all spheres and cusp dots (no dragging during measurements)
       if (sphereTool && typeof sphereTool.setDraggable === 'function') {
         sphereTool.setDraggable(false);
@@ -8559,13 +8622,187 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         cuspTool.setDraggable(false);
       }
 
-      // Use normal slice-based visibility (same as annulus definition)
-      // Annotations will show only when on or near the current slice
-      if (sphereTool && typeof sphereTool.setForceVisible === 'function') {
-        sphereTool.setForceVisible(false);
+      // SIMPLE APPROACH: Add 3 spheres at annulus points positions + 1 sphere at annulus center
+      // No complex cusp dots, no clipping issues - just simple spheres
+      if (sphereTool && annulusPoints && annulusPoints.length === 3) {
+        console.log(`\n🔍 ============ ANNULUS POSITION ANALYSIS (CUSP POINTS) ============`);
+
+        // Calculate annulus plane center (centroid of 3 cusp points)
+        const annulusCenter = [
+          (annulusPoints[0].position[0] + annulusPoints[1].position[0] + annulusPoints[2].position[0]) / 3,
+          (annulusPoints[0].position[1] + annulusPoints[1].position[1] + annulusPoints[2].position[1]) / 3,
+          (annulusPoints[0].position[2] + annulusPoints[1].position[2] + annulusPoints[2].position[2]) / 3
+        ];
+
+        console.log(`📍 Annulus Plane Center (from cusp points centroid):`);
+        console.log(`   X: ${annulusCenter[0].toFixed(6)}`);
+        console.log(`   Y: ${annulusCenter[1].toFixed(6)}`);
+        console.log(`   Z: ${annulusCenter[2].toFixed(6)}`);
+
+        console.log(`\n📍 Individual cusp points:`);
+        annulusPoints.forEach((point: any, index: number) => {
+          const distance = Math.sqrt(
+            Math.pow(point.position[0] - annulusCenter[0], 2) +
+            Math.pow(point.position[1] - annulusCenter[1], 2) +
+            Math.pow(point.position[2] - annulusCenter[2], 2)
+          );
+          console.log(`   ${point.type}: [${point.position[0].toFixed(2)}, ${point.position[1].toFixed(2)}, ${point.position[2].toFixed(2)}] - Distance from center: ${distance.toFixed(2)}mm`);
+        });
+
+        // Compare with locked focal point
+        if (lockedFocalPointRef.current) {
+          console.log(`\n🔬 COMPARING ANNULUS POSITIONS:`);
+          console.log(`   Locked focal point (from modified centerline):`);
+          console.log(`   X: ${lockedFocalPointRef.current[0].toFixed(6)}`);
+          console.log(`   Y: ${lockedFocalPointRef.current[1].toFixed(6)}`);
+          console.log(`   Z: ${lockedFocalPointRef.current[2].toFixed(6)}`);
+
+          const dx = annulusCenter[0] - lockedFocalPointRef.current[0];
+          const dy = annulusCenter[1] - lockedFocalPointRef.current[1];
+          const dz = annulusCenter[2] - lockedFocalPointRef.current[2];
+          const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+          console.log(`\n   ⚠️ DIFFERENCE between cusp centroid and locked focal point:`);
+          console.log(`   ΔX: ${dx.toFixed(6)} mm`);
+          console.log(`   ΔY: ${dy.toFixed(6)} mm`);
+          console.log(`   ΔZ: ${dz.toFixed(6)} mm`);
+          console.log(`   Distance: ${dist.toFixed(6)} mm`);
+
+          if (dist > 0.001) {
+            console.warn(`   ❌ ERROR: Cusp centroid does NOT match locked focal point!`);
+            console.warn(`   This means the modified centerline's annulus position differs from cusp centroid.`);
+          } else {
+            console.log(`   ✅ Cusp centroid matches locked focal point (within 0.001mm tolerance)`);
+          }
+        }
+
+        console.log(`\n💡 KEY INSIGHT:`);
+        console.log(`   - The crosshair in MEASUREMENTS should be at the EXACT annulus center`);
+        console.log(`   - The modified centerline's annulus plane point should equal the cusp centroid`);
+        console.log(`   - Any difference indicates the centerline was not modified correctly`);
+        console.log(`==================================================================\n`);
+
+        // Add a sphere at each annulus point position
+        annulusPoints.forEach((point: any, index: number) => {
+          const enabledElements = getEnabledElements();
+          if (enabledElements.length === 0) return;
+
+          // Create a small sphere at this annulus point
+          const vtkSphereSource = require('@kitware/vtk.js/Filters/Sources/SphereSource').default;
+          const vtkMapper = require('@kitware/vtk.js/Rendering/Core/Mapper').default;
+          const vtkActor = require('@kitware/vtk.js/Rendering/Core/Actor').default;
+
+          const sphereSource = vtkSphereSource.newInstance();
+          sphereSource.setCenter(point.position[0], point.position[1], point.position[2]);
+          sphereSource.setRadius(5.0); // 5mm radius - larger to ensure visibility
+          sphereSource.setPhiResolution(20);
+          sphereSource.setThetaResolution(20);
+
+          // Color based on cusp type
+          const color = point.type === 'left' ? [1.0, 0.0, 0.0] :  // Red
+                       point.type === 'right' ? [0.0, 1.0, 0.0] :  // Green
+                       [1.0, 1.0, 0.0];  // Yellow
+
+          enabledElements.forEach(({ viewport }) => {
+            const mapper = vtkMapper.newInstance();
+            mapper.setInputConnection(sphereSource.getOutputPort());
+
+            // CRITICAL: Disable clipping planes on this mapper so sphere is always visible
+            if (typeof mapper.setClippingPlanes === 'function') {
+              mapper.setClippingPlanes([]);
+            }
+
+            const actor = vtkActor.newInstance();
+            actor.setMapper(mapper);
+
+            const property = actor.getProperty();
+            property.setColor(color[0], color[1], color[2]);
+            property.setOpacity(1.0);
+
+            // Verify sphere was created with correct bounds
+            const bounds = sphereSource.getOutputData().getBounds();
+            console.log(`   ${point.type} sphere bounds: [${bounds.map(b => b.toFixed(2)).join(', ')}]`);
+
+            viewport.addActor({ uid: `annulus-marker-${index}`, actor });
+            console.log(`   ✅ Added ${point.type} marker actor to viewport ${viewport.id}`);
+          });
+        });
+
+        // ADD ANNULUS CENTER SPHERE (cyan/blue) to show where the crosshair actually is
+        const enabledElements = getEnabledElements();
+        if (enabledElements.length > 0) {
+          const vtkSphereSource = require('@kitware/vtk.js/Filters/Sources/SphereSource').default;
+          const vtkMapper = require('@kitware/vtk.js/Rendering/Core/Mapper').default;
+          const vtkActor = require('@kitware/vtk.js/Rendering/Core/Actor').default;
+
+          const centerSphereSource = vtkSphereSource.newInstance();
+          centerSphereSource.setCenter(annulusCenter[0], annulusCenter[1], annulusCenter[2]);
+          centerSphereSource.setRadius(6.0); // Larger to distinguish from cusp spheres
+          centerSphereSource.setPhiResolution(20);
+          centerSphereSource.setThetaResolution(20);
+
+          enabledElements.forEach(({ viewport }) => {
+            const mapper = vtkMapper.newInstance();
+            mapper.setInputConnection(centerSphereSource.getOutputPort());
+
+            // CRITICAL: Disable clipping planes on this mapper so sphere is always visible
+            if (typeof mapper.setClippingPlanes === 'function') {
+              mapper.setClippingPlanes([]);
+            }
+
+            const actor = vtkActor.newInstance();
+            actor.setMapper(mapper);
+
+            const property = actor.getProperty();
+            property.setColor(0.0, 1.0, 1.0); // Cyan - to show annulus center
+            property.setOpacity(1.0); // Fully opaque for visibility
+
+            // Verify sphere was created with correct bounds
+            const bounds = centerSphereSource.getOutputData().getBounds();
+            console.log(`   Center sphere bounds: [${bounds.map(b => b.toFixed(2)).join(', ')}]`);
+
+            viewport.addActor({ uid: `annulus-center-marker`, actor });
+            console.log(`   ✅ Added CENTER marker (cyan) to viewport ${viewport.id}`);
+          });
+
+          console.log('✅ Added CYAN sphere at annulus plane center (where crosshair is positioned)');
+        }
+
+        console.log('✅ Annulus marker spheres added (red/green/yellow = cusps, cyan = center)');
+
+        // CRITICAL: Render all viewports to make spheres visible
+        const enabledElementsForRender = getEnabledElements();
+        enabledElementsForRender.forEach(({ viewport }) => {
+          viewport.render();
+        });
+        console.log('✅ Triggered render for all viewports to display marker spheres');
       }
-      if (cuspTool && typeof cuspTool.setForceVisible === 'function') {
-        cuspTool.setForceVisible(false);
+
+      // Hide centerline AND connection lines in MEASUREMENTS stage (user doesn't need them)
+      if (sphereTool) {
+        if (typeof sphereTool.hideAllSpheres === 'function') {
+          console.log('👁️ Hiding centerline spheres in MEASUREMENTS stage');
+          sphereTool.hideAllSpheres();
+        }
+
+        // Also hide connection lines (the yellow centerline)
+        if (sphereTool.connectionLines && sphereTool.connectionLines.length > 0) {
+          console.log('👁️ Hiding connection lines (centerline) in MEASUREMENTS stage');
+          sphereTool.connectionLines.forEach((line: any) => {
+            if (line.actor) {
+              line.actor.setVisibility(false);
+              line.actor.modified();
+            }
+          });
+
+          // Render to apply changes
+          const enabledElementsForHide = getEnabledElements();
+          enabledElementsForHide.forEach(({ viewport }) => {
+            viewport.render();
+          });
+
+          console.log('✅ Connection lines hidden');
+        }
       }
 
       // During measurements, only rotation is active
@@ -8698,7 +8935,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       console.log('🔓 Stage: Root Definition - SphereMarker active, spheres draggable');
     }
-  }, [currentStage]);
+    }, 500); // 500ms delay to ensure toolGroup is created (initializeMPRViewport has 150ms delay + setup time)
+  }, [currentStage]); // Only re-run when stage changes (props are accessed directly, not as dependencies)
 
   const handleWindowLevelChange = (window: number, level: number) => {
     try {

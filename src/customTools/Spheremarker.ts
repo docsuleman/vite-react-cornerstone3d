@@ -33,6 +33,8 @@ class SphereMarkerTool extends BaseTool {
   isDraggable: boolean = true; // Can be disabled during certain workflow stages
   forceVisible: boolean = false; // Force all spheres visible regardless of slice position (for measurements stage)
   cameraChangeListeners: Map<string, () => void> = new Map(); // Track camera change listeners
+  renderListeners: Map<string, () => void> = new Map(); // Track render event listeners for continuous clipping clearing
+  isProcessingRender: boolean = false; // Guard flag to prevent infinite render loops
   globalCameraListener: ((evt: any) => void) | null = null; // Global camera listener
   visibilityUpdatesDisabled: boolean = false; // Flag to temporarily disable visibility updates
   sphereKeeperInterval: number | null = null; // Interval to keep spheres visible
@@ -56,18 +58,54 @@ class SphereMarkerTool extends BaseTool {
   // Force all spheres visible regardless of slice position (for measurements stage)
   setForceVisible(forceVisible: boolean) {
     this.forceVisible = forceVisible;
-    console.log(`👁️ SphereMarkerTool force visible: ${forceVisible}`);
+    console.log(`🔧 CLIPPING FIX: SphereMarkerTool force visible: ${forceVisible}`);
 
-    // If forcing visible, make all spheres visible immediately
+    const enabledElements = getEnabledElements();
+
+    // If forcing visible, make all spheres visible AND add continuous render listeners
     if (forceVisible) {
-      const enabledElements = getEnabledElements();
       this.spheres.forEach(sphere => {
         sphere.actors.forEach((actor) => {
           actor.setVisibility(true);
-          actor.modified();
+
+          // CRITICAL: Clear clipping planes immediately to prevent "cut through half" appearance
+          const mapper = actor.getMapper();
+          if (mapper && typeof mapper.setClippingPlanes === 'function') {
+            mapper.setClippingPlanes([]); // Clear all clipping planes
+            console.log(`🔧 CLIPPING FIX: 🔓 Cleared clipping planes for sphere ${sphere.id}`);
+          }
+          // Don't call actor.modified() - let render listeners handle it
         });
       });
+
+      // Also clear clipping planes for connection lines (centerline)
+      this.connectionLines.forEach(line => {
+        const actor = line.actor;
+        if (actor) {
+          actor.setVisibility(true);
+
+          const mapper = actor.getMapper();
+          if (mapper && typeof mapper.setClippingPlanes === 'function') {
+            mapper.setClippingPlanes([]); // Clear all clipping planes
+            console.log(`🔧 CLIPPING FIX: 🔓 Cleared clipping planes for centerline`);
+          }
+          // Don't call actor.modified() - let render listeners handle it
+        }
+      });
+
+      // Trigger one render to apply changes
       enabledElements.forEach(({ viewport }) => viewport.render());
+      console.log(`🔧 CLIPPING FIX: ✅ Cleared clipping planes once for all spheres and centerline`);
+    } else {
+      // Remove render listeners when forceVisible is disabled
+      enabledElements.forEach(({ viewport }) => {
+        const renderListener = this.renderListeners.get(viewport.id);
+        if (renderListener) {
+          viewport.element.removeEventListener(CornerstoneEnums.Events.IMAGE_RENDERED, renderListener);
+          this.renderListeners.delete(viewport.id);
+        }
+      });
+      console.log(`🔧 CLIPPING FIX: 🚫 Removed render listeners`);
     }
   }
 
@@ -1684,16 +1722,37 @@ class SphereMarkerTool extends BaseTool {
   updateVisibilityForSingleViewport(viewport: any, viewportIndex: number) {
     if (!viewport || viewport.type !== 'orthographic') return;
 
-    // If forcing all spheres visible (measurements stage), skip slice-based visibility
+    // If forcing all spheres visible (measurements stage), make them always visible with NO clipping
     if (this.forceVisible) {
       this.spheres.forEach(sphere => {
         const actor = sphere.actors.get(viewport.id);
         if (actor) {
           actor.setVisibility(true);
-          actor.modified();
+
+          // CRITICAL: Disable clipping on the actor mapper to prevent "cut through half" appearance
+          const mapper = actor.getMapper();
+          if (mapper && typeof mapper.setClippingPlanes === 'function') {
+            mapper.setClippingPlanes([]); // Clear all clipping planes
+          }
+          // Don't call actor.modified() - render listeners handle updates
         }
       });
-      viewport.render();
+
+      // Also disable clipping on connection lines (centerline)
+      this.connectionLines.forEach(line => {
+        const actor = line.actor;
+        if (actor) {
+          actor.setVisibility(true);
+
+          const mapper = actor.getMapper();
+          if (mapper && typeof mapper.setClippingPlanes === 'function') {
+            mapper.setClippingPlanes([]); // Clear all clipping planes
+          }
+          // Don't call actor.modified() - render listeners handle updates
+        }
+      });
+
+      // Don't call viewport.render() - this is called from a camera event, avoid triggering more events
       return;
     }
 

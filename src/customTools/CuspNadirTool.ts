@@ -19,7 +19,10 @@ class CuspNadirTool extends BaseTool {
   positionUpdateCallback: ((dots: { id: string; pos: Vector3; color: string; cuspType: string }[]) => void) | null = null;
   isDraggable: boolean = true; // Can be disabled after annulus creation
   forceVisible: boolean = false; // Force all dots visible regardless of slice position (for measurements stage)
+  visibilityThresholdMultiplier: number = 1; // Multiplier for visibility threshold (default 1x, can increase for wider visibility range)
   cameraChangeListeners: Map<string, () => void> = new Map(); // Track camera change listeners
+  renderListeners: Map<string, () => void> = new Map(); // Track render event listeners for continuous clipping clearing
+  isProcessingRender: boolean = false; // Guard flag to prevent infinite render loops
 
   constructor(
     toolProps: Types.PublicToolProps = {},
@@ -55,21 +58,54 @@ class CuspNadirTool extends BaseTool {
     console.log(`🔒 CuspNadirTool draggable state: ${draggable}`);
   }
 
+  // Set visibility threshold multiplier (for wider visibility range across slices)
+  setVisibilityThresholdMultiplier(multiplier: number) {
+    this.visibilityThresholdMultiplier = multiplier;
+    console.log(`👁️ CuspNadirTool visibility threshold multiplier: ${multiplier}x`);
+
+    // Update visibility for all viewports with new threshold
+    const enabledElements = getEnabledElements();
+    enabledElements.forEach(({ viewport }, index) => {
+      this.updateVisibilityForSingleViewport(viewport, index);
+    });
+  }
+
   // Force all dots visible regardless of slice position (for measurements stage)
   setForceVisible(forceVisible: boolean) {
     this.forceVisible = forceVisible;
-    console.log(`👁️ CuspNadirTool force visible: ${forceVisible}`);
+    console.log(`🔧 CLIPPING FIX: CuspNadirTool force visible: ${forceVisible}`);
 
-    // If forcing visible, make all dots visible immediately
+    const enabledElements = getEnabledElements();
+
+    // If forcing visible, make all dots visible AND add continuous render listeners
     if (forceVisible) {
-      const enabledElements = getEnabledElements();
       this.cuspDots.forEach(dot => {
         dot.actors.forEach((actor) => {
           actor.setVisibility(true);
-          actor.modified();
+
+          // CRITICAL: Clear clipping planes immediately
+          const mapper = actor.getMapper();
+          if (mapper && typeof mapper.setClippingPlanes === 'function') {
+            mapper.setClippingPlanes([]);
+            console.log(`🔧 CLIPPING FIX: 🔓 Cleared clipping planes for cusp dot ${dot.cuspType}`);
+          }
+          // Don't call actor.modified() - let render listeners handle it
         });
       });
+
+      // Trigger one render to apply changes
       enabledElements.forEach(({ viewport }) => viewport.render());
+      console.log(`🔧 CLIPPING FIX: ✅ Cleared clipping planes once for all cusp dots`);
+    } else {
+      // Remove render listeners when forceVisible is disabled
+      enabledElements.forEach(({ viewport }) => {
+        const renderListener = this.renderListeners.get(viewport.id);
+        if (renderListener) {
+          viewport.element.removeEventListener(CornerstoneEnums.Events.IMAGE_RENDERED, renderListener);
+          this.renderListeners.delete(viewport.id);
+        }
+      });
+      console.log(`🔧 CLIPPING FIX: 🚫 Removed render listeners`);
     }
   }
 
@@ -498,16 +534,22 @@ class CuspNadirTool extends BaseTool {
   updateVisibilityForSingleViewport(viewport: any, viewportIndex: number) {
     if (!viewport || viewport.type !== 'orthographic') return;
 
-    // If forcing all dots visible (measurements stage), skip slice-based visibility
+    // If forcing all dots visible (measurements stage), make them always visible with NO clipping
     if (this.forceVisible) {
       this.cuspDots.forEach(dot => {
         const actor = dot.actors.get(viewport.id);
         if (actor) {
           actor.setVisibility(true);
-          actor.modified();
+
+          // CRITICAL: Disable clipping on the actor mapper to prevent "cut through half" appearance
+          const mapper = actor.getMapper();
+          if (mapper && typeof mapper.setClippingPlanes === 'function') {
+            mapper.setClippingPlanes([]); // Clear all clipping planes
+          }
+          // Don't call actor.modified() - render listeners handle updates
         }
       });
-      viewport.render();
+      // Don't call viewport.render() - this is called from a camera event, avoid triggering more events
       return;
     }
 
@@ -541,10 +583,12 @@ class CuspNadirTool extends BaseTool {
       console.warn('Could not get volume spacing, using default:', error);
     }
 
-    // STRICT visibility threshold - only show when crosshair is very close
-    // Cusp dots should only appear when slice plane intersects or is very near them
-    const dotRadius = this.configuration.dotRadius; // Usually 1.5mm
-    const visibilityThreshold = Math.max(dotRadius * 2, sliceSpacing * 2);
+    // Visibility threshold - can be adjusted via multiplier
+    // Default: only show when crosshair is very close (2x dot radius or 2x slice spacing)
+    // With multiplier: can show across wider range for easier visualization
+    const dotRadius = this.configuration.dotRadius; // Usually 0.8mm
+    const baseThreshold = Math.max(dotRadius * 2, sliceSpacing * 2);
+    const visibilityThreshold = baseThreshold * this.visibilityThresholdMultiplier;
 
     // For each cusp dot, check if it should be visible in THIS viewport
     this.cuspDots.forEach(dot => {

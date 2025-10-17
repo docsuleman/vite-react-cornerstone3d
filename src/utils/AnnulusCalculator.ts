@@ -9,25 +9,36 @@ export class AnnulusCalculator {
   
   /**
    * Calculate the center point of the annulus from 3 cusp points
+   * This is the EXACT geometric centroid - no approximation
    */
   static calculateAnnulusCenter(cuspPoints: AnnulusPoint[]): Vector3 {
     if (cuspPoints.length !== 3) {
       throw new Error('Exactly 3 cusp points are required to calculate annulus center');
     }
 
+    console.log(`\n🔬 ANNULUS CENTER CALCULATION (EXACT CENTROID):`);
+    console.log(`   Input: 3 cusp points`);
+    cuspPoints.forEach((p, i) => {
+      console.log(`   Cusp ${i+1} (${p.type}): [${p.position[0].toFixed(6)}, ${p.position[1].toFixed(6)}, ${p.position[2].toFixed(6)}]`);
+    });
+
     // Calculate the centroid of the 3 cusp points
+    // Centroid = (P1 + P2 + P3) / 3
     const center: Vector3 = [0, 0, 0];
-    
+
     for (const point of cuspPoints) {
       center[0] += point.position[0];
       center[1] += point.position[1];
       center[2] += point.position[2];
     }
-    
+
     center[0] /= 3;
     center[1] /= 3;
     center[2] /= 3;
-    
+
+    console.log(`   Output: Centroid [${center[0].toFixed(6)}, ${center[1].toFixed(6)}, ${center[2].toFixed(6)}]`);
+    console.log(`   ✅ This is the EXACT mathematical centroid - no error\n`);
+
     return center;
   }
 
