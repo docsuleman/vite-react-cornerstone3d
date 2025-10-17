@@ -12,42 +12,246 @@ interface SplinePoint {
 export class CenterlineGenerator {
   /**
    * Generate a smooth centerline from 3 or more root points
-   * If annularPlane is provided, creates 6mm perfectly straight segment perpendicular to annulus
+   * If annularPlane is provided, inserts ±5mm points around annulus for natural straight segment
    */
   static generateFromRootPoints(rootPoints: RootPoint[], annularPlane?: AnnularPlane): CenterlineData {
     if (rootPoints.length < 3) {
       throw new Error('At least 3 root points are required for centerline generation');
     }
 
-
     // Sort points by anatomical order: LV -> Valve -> Ascending Aorta
     const sortedPoints = this.sortRootPointsByOrder(rootPoints);
-    const positions = sortedPoints.map(p => p.position);
-
-    // Generate smooth spline through the points
-    let splinePoints = this.generateCatmullRomSpline(positions, 50);
+    let positions = sortedPoints.map(p => p.position);
 
     // [CL_DEBUG] Log before modification
-    console.log(`[CL_DEBUG] 🏗️ CenterlineGenerator: Generated ${splinePoints.length} spline points`);
+    console.log(`[CL_DEBUG] 🏗️ CenterlineGenerator: Processing ${rootPoints.length} root points`);
     console.log(`[CL_DEBUG]    Has annularPlane: ${!!annularPlane}`);
 
-    // If annular plane is provided, modify centerline to be perpendicular
+    // If annular plane is provided, INSERT ±5mm points around annulus
+    // This creates 5 control points: LV, -5mm, annulus, +5mm, ascending
+    // The 3 collinear middle points will naturally create a straight segment
     if (annularPlane) {
-      console.log(`[CL_DEBUG]    Modifying centerline with 6mm straight perpendicular segment...`);
-      splinePoints = this.modifyWithAnnulusPlane(splinePoints, sortedPoints, annularPlane);
-      console.log(`[CL_DEBUG]    ✅ Modified centerline has ${splinePoints.length} points`);
+      console.log(`[CL_DEBUG]    Inserting ±5mm points for natural 10mm straight segment...`);
 
-      // Find annulus plane marker
-      const annulusIndex = splinePoints.findIndex(p => p.isAnnulusPlane === true);
-      console.log(`[CL_DEBUG]    Annulus plane marker at index: ${annulusIndex}`);
+      // Calculate unit normal
+      const normal = annularPlane.normal;
+      const normalMagnitude = Math.sqrt(normal[0] ** 2 + normal[1] ** 2 + normal[2] ** 2);
+      const unitNormal: Vector3 = [
+        normal[0] / normalMagnitude,
+        normal[1] / normalMagnitude,
+        normal[2] / normalMagnitude
+      ];
+
+      // Create 5 control points
+      const lvPoint = positions[0]; // Original LV outflow
+      const ascendingPoint = positions[2]; // Original ascending aorta
+      const annulusCenter = annularPlane.center;
+
+      // Calculate ±5mm points PERFECTLY PARALLEL to normal vector
+      const point1: Vector3 = [
+        annulusCenter[0] + 5 * unitNormal[0],
+        annulusCenter[1] + 5 * unitNormal[1],
+        annulusCenter[2] + 5 * unitNormal[2]
+      ];
+
+      const point2: Vector3 = [
+        annulusCenter[0] - 5 * unitNormal[0],
+        annulusCenter[1] - 5 * unitNormal[1],
+        annulusCenter[2] - 5 * unitNormal[2]
+      ];
+
+      // SIMPLE LOGIC: Use distance to determine which point is upstream/downstream
+      // Point closer to LV = upstream (goes after LV)
+      // Point closer to Aorta = downstream (goes before Aorta)
+      const distPoint1ToLV = vec3.distance(point1 as vec3, lvPoint as vec3);
+      const distPoint2ToLV = vec3.distance(point2 as vec3, lvPoint as vec3);
+
+      let upstreamPoint: Vector3;
+      let downstreamPoint: Vector3;
+
+      if (distPoint1ToLV < distPoint2ToLV) {
+        // point1 is closer to LV
+        upstreamPoint = point1;
+        downstreamPoint = point2;
+        console.log(`[CL_DEBUG]    Point selection: point1 (+5*normal) is closer to LV (upstream)`);
+      } else {
+        // point2 is closer to LV
+        upstreamPoint = point2;
+        downstreamPoint = point1;
+        console.log(`[CL_DEBUG]    Point selection: point2 (-5*normal) is closer to LV (upstream)`);
+      }
+
+      // VALIDATION: Verify the 3 points are perfectly collinear along normal
+      const vec1 = vec3.subtract(vec3.create(), annulusCenter as vec3, upstreamPoint as vec3);
+      const vec2 = vec3.subtract(vec3.create(), downstreamPoint as vec3, annulusCenter as vec3);
+      vec3.normalize(vec1, vec1);
+      vec3.normalize(vec2, vec2);
+      const dotProduct = vec3.dot(vec1, vec2);
+
+      if (Math.abs(dotProduct - 1.0) < 0.000001) {
+        console.log(`[CL_DEBUG]    ✓ Validated: ±5mm points perfectly collinear along normal (dot product: ${dotProduct.toFixed(8)})`);
+      } else {
+        console.warn(`[CL_DEBUG]    ⚠ Warning: ±5mm points not perfectly collinear (dot product: ${dotProduct.toFixed(8)})`);
+      }
+
+      // Replace positions with 5 control points in CORRECT ORDER
+      // Order: LV → upstream point (closer to LV) → annulus → downstream point (closer to Aorta) → ascending aorta
+      positions = [
+        lvPoint,
+        upstreamPoint,
+        annulusCenter as Vector3,
+        downstreamPoint,
+        ascendingPoint
+      ];
+
+      console.log(`[CL_DEBUG]    ✅ Control points: [LV, upstream (closer to LV), annulus, downstream (closer to Aorta), ascending]`);
+    }
+
+    // Generate smooth spline through the control points (same method for all cases)
+    let splinePoints = this.generateCatmullRomSpline(positions, 50);
+
+    console.log(`[CL_DEBUG]    Generated ${splinePoints.length} spline points`);
+
+    // If annular plane was provided, FORCE the ±5mm segment to be PERFECTLY STRAIGHT
+    if (annularPlane) {
+      // Find the point closest to annulus center
+      let annulusIndex = -1;
+      let minDist = Infinity;
+      const annulusCenter = annularPlane.center;
+
+      for (let i = 0; i < splinePoints.length; i++) {
+        const dist = vec3.distance(splinePoints[i].position, annulusCenter as vec3);
+        if (dist < minDist) {
+          minDist = dist;
+          annulusIndex = i;
+        }
+      }
+
       if (annulusIndex >= 0) {
-        const annulusPoint = splinePoints[annulusIndex];
-        console.log(`[CL_DEBUG]    Annulus position: [${annulusPoint.position[0].toFixed(6)}, ${annulusPoint.position[1].toFixed(6)}, ${annulusPoint.position[2].toFixed(6)}]`);
+        splinePoints[annulusIndex].isAnnulusPlane = true;
+        console.log(`[CL_DEBUG]    Annulus plane marker at index: ${annulusIndex}`);
+        console.log(`[CL_DEBUG]    Annulus position: [${splinePoints[annulusIndex].position[0].toFixed(6)}, ${splinePoints[annulusIndex].position[1].toFixed(6)}, ${splinePoints[annulusIndex].position[2].toFixed(6)}]`);
+
+        // NOW FORCE PERFECT STRAIGHTNESS in the ±5mm region
+        console.log(`[CL_DEBUG]    🔧 Forcing perfect straight line in ±5mm segment...`);
+
+        const normal = annularPlane.normal;
+        const normalMag = Math.sqrt(normal[0]**2 + normal[1]**2 + normal[2]**2);
+        const unitNormal = vec3.fromValues(normal[0]/normalMag, normal[1]/normalMag, normal[2]/normalMag);
+
+        // Calculate the upstream and downstream 5mm positions
+        const upstreamPos = vec3.fromValues(
+          annulusCenter[0] + 5 * unitNormal[0],
+          annulusCenter[1] + 5 * unitNormal[1],
+          annulusCenter[2] + 5 * unitNormal[2]
+        );
+        const downstreamPos = vec3.fromValues(
+          annulusCenter[0] - 5 * unitNormal[0],
+          annulusCenter[1] - 5 * unitNormal[1],
+          annulusCenter[2] - 5 * unitNormal[2]
+        );
+
+        // Determine which is which based on distance to LV
+        const distUpstreamToStart = vec3.distance(upstreamPos, splinePoints[0].position);
+        const distDownstreamToStart = vec3.distance(downstreamPos, splinePoints[0].position);
+
+        let startPos: vec3;
+        let endPos: vec3;
+
+        if (distUpstreamToStart < distDownstreamToStart) {
+          startPos = upstreamPos;
+          endPos = downstreamPos;
+        } else {
+          startPos = downstreamPos;
+          endPos = upstreamPos;
+        }
+
+        // Determine the correct flow direction by looking at tangents OUTSIDE the ±5mm region
+        // Find a point well before the annulus to get the flow direction
+        let flowDirection: vec3 | null = null;
+        for (let i = 0; i < annulusIndex; i++) {
+          const pos = splinePoints[i].position;
+          const vecFromCenter = vec3.subtract(vec3.create(), pos, annulusCenter as vec3);
+          const distAlongNormal = vec3.dot(vecFromCenter, unitNormal);
+
+          // Find a point outside the ±5mm region (at least 7mm away)
+          if (Math.abs(distAlongNormal) > 7.0) {
+            flowDirection = vec3.clone(splinePoints[i].tangent);
+            console.log(`[CL_DEBUG]    Flow direction determined from point at index ${i} (dist: ${distAlongNormal.toFixed(2)}mm)`);
+            break;
+          }
+        }
+
+        // If we couldn't find a point before, try after
+        if (!flowDirection) {
+          for (let i = annulusIndex + 1; i < splinePoints.length; i++) {
+            const pos = splinePoints[i].position;
+            const vecFromCenter = vec3.subtract(vec3.create(), pos, annulusCenter as vec3);
+            const distAlongNormal = vec3.dot(vecFromCenter, unitNormal);
+
+            if (Math.abs(distAlongNormal) > 7.0) {
+              flowDirection = vec3.clone(splinePoints[i].tangent);
+              console.log(`[CL_DEBUG]    Flow direction determined from point at index ${i} (dist: ${distAlongNormal.toFixed(2)}mm)`);
+              break;
+            }
+          }
+        }
+
+        // Calculate the straight line tangent (from start to end)
+        const straightTangent = vec3.subtract(vec3.create(), endPos, startPos);
+        vec3.normalize(straightTangent, straightTangent);
+
+        // Ensure straight tangent points in same direction as flow
+        if (flowDirection) {
+          const dotProduct = vec3.dot(straightTangent, flowDirection);
+          if (dotProduct < 0) {
+            // Tangent is pointing backwards! Flip it and swap start/end
+            vec3.negate(straightTangent, straightTangent);
+            const temp = startPos;
+            startPos = endPos;
+            endPos = temp;
+            console.log(`[CL_DEBUG]    ⚠ Flipped straight tangent to match flow direction`);
+          }
+        }
+
+        // Find all points within the ±5mm region and REPLACE them with perfectly straight interpolation
+        let straightCount = 0;
+        for (let i = 0; i < splinePoints.length; i++) {
+          const pos = splinePoints[i].position;
+
+          // Calculate distance from annulus center along the normal
+          const vecFromCenter = vec3.subtract(vec3.create(), pos, annulusCenter as vec3);
+          const distAlongNormal = vec3.dot(vecFromCenter, unitNormal);
+
+          // Is this point within ±5mm?
+          if (Math.abs(distAlongNormal) <= 5.0) {
+            // YES - REPLACE with perfect linear interpolation
+            // Calculate t based on where we are along the straight line
+            const vecFromStart = vec3.subtract(vec3.create(), pos, startPos);
+            const totalLength = vec3.distance(endPos, startPos);
+            const distFromStart = vec3.dot(vecFromStart, straightTangent);
+            const t = Math.max(0, Math.min(1, distFromStart / totalLength));
+
+            // Perfect linear interpolation between start and end
+            const newPos = vec3.create();
+            vec3.lerp(newPos, startPos, endPos, t);
+
+            splinePoints[i].position = newPos as Vector3;
+
+            // Set tangent to match the flow direction (already corrected)
+            splinePoints[i].tangent = vec3.clone(straightTangent) as Vector3;
+
+            straightCount++;
+          }
+        }
+
+        console.log(`[CL_DEBUG]    ✓ Straightened ${straightCount} points in ±5mm segment with correct flow direction`);
       }
     }
 
     // Calculate orientations along the spline
-    const orientations = this.calculateOrientations(splinePoints);
+    // Pass annular plane info to lock orientation in the straight segment
+    const orientations = this.calculateOrientations(splinePoints, annularPlane);
 
     // Convert to the format expected by VTK ImageCPRMapper
     const centerlinePosition = new Float32Array(splinePoints.length * 3);
@@ -234,8 +438,9 @@ export class CenterlineGenerator {
   /**
    * Calculate orientation matrices along the spline using rotation-minimizing frame
    * This prevents the CPR image from flipping when adding more centerline points
+   * If annularPlane is provided, locks orientation in the ±5mm straight segment to prevent rotation
    */
-  private static calculateOrientations(splinePoints: SplinePoint[]): Float32Array[] {
+  private static calculateOrientations(splinePoints: SplinePoint[], annularPlane?: AnnularPlane): Float32Array[] {
     const orientations: Float32Array[] = [];
 
     if (splinePoints.length === 0) {
@@ -266,10 +471,135 @@ export class CenterlineGenerator {
     );
     orientations.push(new Float32Array(firstMatrix));
 
+    // If annular plane is provided, identify the ±5mm straight segment range
+    let straightSegmentStart = -1;
+    let straightSegmentEnd = -1;
+    let lockedUp: vec3 | null = null;
+    let lockedRight: vec3 | null = null;
+
+    if (annularPlane) {
+      // Find annulus index
+      const annulusIndex = splinePoints.findIndex(p => p.isAnnulusPlane === true);
+
+      if (annulusIndex >= 0) {
+        const annulusCenter = annularPlane.center;
+        const unitNormal = annularPlane.normal;
+        const normalMag = Math.sqrt(unitNormal[0]**2 + unitNormal[1]**2 + unitNormal[2]**2);
+        const normal = vec3.fromValues(unitNormal[0]/normalMag, unitNormal[1]/normalMag, unitNormal[2]/normalMag);
+
+        // Calculate ±5mm positions
+        const point1 = vec3.fromValues(
+          annulusCenter[0] + 5 * normal[0],
+          annulusCenter[1] + 5 * normal[1],
+          annulusCenter[2] + 5 * normal[2]
+        );
+        const point2 = vec3.fromValues(
+          annulusCenter[0] - 5 * normal[0],
+          annulusCenter[1] - 5 * normal[1],
+          annulusCenter[2] - 5 * normal[2]
+        );
+
+        // Determine which point is upstream (closer to start of spline)
+        // straightSegmentStart should be EARLIER in the spline (smaller index)
+        // straightSegmentEnd should be LATER in the spline (larger index)
+        let upstreamPos: vec3;
+        let downstreamPos: vec3;
+
+        // The upstream point should be closer to the beginning of the spline
+        if (annulusIndex > splinePoints.length / 2) {
+          // Annulus is in second half - compare distances from start
+          const distPoint1ToStart = vec3.distance(point1, splinePoints[0].position);
+          const distPoint2ToStart = vec3.distance(point2, splinePoints[0].position);
+          if (distPoint1ToStart < distPoint2ToStart) {
+            upstreamPos = point1;
+            downstreamPos = point2;
+          } else {
+            upstreamPos = point2;
+            downstreamPos = point1;
+          }
+        } else {
+          // Annulus is in first half - compare distances from end
+          const lastIdx = splinePoints.length - 1;
+          const distPoint1ToEnd = vec3.distance(point1, splinePoints[lastIdx].position);
+          const distPoint2ToEnd = vec3.distance(point2, splinePoints[lastIdx].position);
+          if (distPoint1ToEnd < distPoint2ToEnd) {
+            downstreamPos = point1;
+            upstreamPos = point2;
+          } else {
+            downstreamPos = point2;
+            upstreamPos = point1;
+          }
+        }
+
+        // Find indices closest to upstream and downstream positions
+        let minDistStart = Infinity;
+        let minDistEnd = Infinity;
+
+        for (let i = 0; i < splinePoints.length; i++) {
+          const distToUpstream = vec3.distance(splinePoints[i].position, upstreamPos);
+          const distToDownstream = vec3.distance(splinePoints[i].position, downstreamPos);
+
+          if (distToUpstream < minDistStart) {
+            minDistStart = distToUpstream;
+            straightSegmentStart = i;
+          }
+          if (distToDownstream < minDistEnd) {
+            minDistEnd = distToDownstream;
+            straightSegmentEnd = i;
+          }
+        }
+
+        // Ensure start < end (swap if necessary)
+        if (straightSegmentStart > straightSegmentEnd) {
+          const temp = straightSegmentStart;
+          straightSegmentStart = straightSegmentEnd;
+          straightSegmentEnd = temp;
+          console.log(`[CL_DEBUG]    Swapped start/end to ensure correct order`);
+        }
+
+        console.log(`[CL_DEBUG] 🔒 Orientation lock range: [${straightSegmentStart}, ${straightSegmentEnd}] (annulus at ${annulusIndex})`);
+      }
+    }
+
     // Use rotation-minimizing frame (parallel transport) for subsequent frames
     // This ensures smooth, flip-free transitions along the centerline
     for (let i = 1; i < splinePoints.length; i++) {
       const currTangent = vec3.clone(splinePoints[i].tangent);
+
+      // CHECK: Are we entering the straight segment? If so, lock the orientation
+      if (straightSegmentStart >= 0 && i === straightSegmentStart) {
+        lockedUp = vec3.clone(prevUp);
+        lockedRight = vec3.clone(prevRight);
+        console.log(`[CL_DEBUG] 🔒 Locked orientation at index ${i} (entering straight segment)`);
+      }
+
+      // CHECK: Are we inside the straight segment? Use locked orientation
+      if (straightSegmentStart >= 0 && straightSegmentEnd >= 0 &&
+          i >= straightSegmentStart && i <= straightSegmentEnd &&
+          lockedUp && lockedRight) {
+        // Use locked orientation - no rotation allowed in straight segment
+        const matrix = mat4.fromValues(
+          currTangent[0], currTangent[1], currTangent[2], 0,
+          lockedUp[0], lockedUp[1], lockedUp[2], 0,
+          lockedRight[0], lockedRight[1], lockedRight[2], 0,
+          splinePoints[i].position[0], splinePoints[i].position[1], splinePoints[i].position[2], 1
+        );
+        orientations.push(new Float32Array(matrix));
+
+        // Keep prevUp and prevRight as locked values
+        prevUp = lockedUp;
+        prevRight = lockedRight;
+        continue;
+      }
+
+      // CHECK: Have we exited the straight segment? Unlock orientation
+      if (straightSegmentEnd >= 0 && i === straightSegmentEnd + 1 && lockedUp && lockedRight) {
+        console.log(`[CL_DEBUG] 🔓 Unlocked orientation at index ${i} (exiting straight segment)`);
+        lockedUp = null;
+        lockedRight = null;
+      }
+
+      // NORMAL RMF CALCULATION for curved segments
       const prevTangent = vec3.clone(splinePoints[i - 1].tangent);
 
       // Calculate the rotation axis between consecutive tangents
@@ -455,69 +785,4 @@ export class CenterlineGenerator {
     return crossMag / (v1Mag * v2Mag * sumMag);
   }
 
-  /**
-   * Modify centerline to add 6mm straight segment perpendicular to annular plane
-   * This is integrated from CenterlineModifier for simplicity
-   */
-  private static modifyWithAnnulusPlane(
-    splinePoints: SplinePoint[],
-    rootPoints: RootPoint[],
-    annularPlane: AnnularPlane
-  ): SplinePoint[] {
-    // Copy logic from CenterlineModifier.modifyCenterlineWithAnnulusPlane
-    // Convert SplinePoints to simple points for processing
-    const points = splinePoints.map(p => ({ x: p.position[0], y: p.position[1], z: p.position[2] }));
-    const rootPts = rootPoints.map(p => ({ x: p.position[0], y: p.position[1], z: p.position[2], type: p.type }));
-
-    // Call the modifier logic (we'll import it)
-    const { CenterlineModifier } = require('./CenterlineModifier');
-    const modifiedPoints = CenterlineModifier.modifyCenterlineWithAnnulusPlane(rootPts, annularPlane);
-
-    // Convert back to SplinePoints
-    let cumulativeDistance = 0;
-    const result: SplinePoint[] = modifiedPoints.map((p, i) => {
-      // Calculate distance from previous point
-      if (i > 0) {
-        const prev = modifiedPoints[i - 1];
-        const dist = Math.sqrt(
-          (p.x - prev.x) ** 2 +
-          (p.y - prev.y) ** 2 +
-          (p.z - prev.z) ** 2
-        );
-        cumulativeDistance += dist;
-      }
-
-      // Calculate tangent (use finite differences)
-      let tangent: Vector3;
-      if (i === 0) {
-        // Forward difference
-        const next = modifiedPoints[i + 1];
-        tangent = [next.x - p.x, next.y - p.y, next.z - p.z];
-      } else if (i === modifiedPoints.length - 1) {
-        // Backward difference
-        const prev = modifiedPoints[i - 1];
-        tangent = [p.x - prev.x, p.y - prev.y, p.z - prev.z];
-      } else {
-        // Central difference
-        const prev = modifiedPoints[i - 1];
-        const next = modifiedPoints[i + 1];
-        tangent = [next.x - prev.x, next.y - prev.y, next.z - prev.z];
-      }
-
-      // Normalize tangent
-      const len = Math.sqrt(tangent[0] ** 2 + tangent[1] ** 2 + tangent[2] ** 2);
-      if (len > 0) {
-        tangent = [tangent[0] / len, tangent[1] / len, tangent[2] / len];
-      }
-
-      return {
-        position: [p.x, p.y, p.z] as Vector3,
-        tangent: tangent as Vector3,
-        distance: cumulativeDistance,
-        isAnnulusPlane: p.isAnnulusPlane
-      };
-    });
-
-    return result;
-  }
 }

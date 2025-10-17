@@ -1561,8 +1561,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       // Generate TEMPORARY centerline from root points (WITHOUT annular plane)
       // This is ONLY for initial viewport positioning BEFORE cusp dots are placed
-      // Once 3 cusp dots are placed, TAVIApp will generate the CORRECT centerline
-      // WITH annular plane modification, which will replace this temporary one
+      // Once 3 cusp dots are placed, TAVIApp will regenerate with ±5mm control points
+      // inserted around annulus for a natural 10mm straight perpendicular segment
       // CRITICAL: existingSpheres already have proper types from state.rootPoints
       // Just need to convert to RootPoint format with proper type field
       const centerlineData = CenterlineGenerator.generateFromRootPoints(

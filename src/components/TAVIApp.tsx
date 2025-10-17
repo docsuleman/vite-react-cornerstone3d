@@ -953,7 +953,8 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
 
                   actions.updateMeasurement({ annulus: annulusMeasurements });
 
-                  // [CL_DEBUG] Regenerate centerline WITH annular plane to add 6mm straight segment
+                  // [CL_DEBUG] Regenerate centerline WITH annular plane
+                  // This inserts ±5mm control points around annulus for natural 10mm straight segment
                   console.log(`[CL_DEBUG] 🔄 Regenerating centerline with annular plane...`);
                   const { CenterlineGenerator } = await import('../utils/CenterlineGenerator');
                   const centerlineData = CenterlineGenerator.generateFromRootPoints(state.rootPoints, annularPlane);
