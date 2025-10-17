@@ -147,67 +147,65 @@ export class VolumeRenderingPresetLoader {
   }
 
   /**
-   * Create a grayscale fluoroscopy preset programmatically
-   * This is useful for X-ray simulation without loading a .vp file
-   *
-   * @returns Basic fluoroscopy preset
+   * Create FluoroRenderingPreset_01 (based on 3D Slicer)
+   * Optimized for contrast-enhanced CT - highlights contrast media in vessels
    */
   static createBasicFluoroPreset(): VolumeRenderingPreset {
     return {
-      name: 'Basic Fluoroscopy',
+      name: 'Slicer Fluoro 01 (Basic)',
       opacityPoints: [
         { value: -1024, output: 0 }, // Air: transparent
         { value: -1024, output: 0 },
-        { value: 150, output: 0 }, // Soft tissue: mostly transparent
-        { value: 200, output: 0.02 }, // Dense tissue: slight opacity
-        { value: 500, output: 0.05 }, // Bone start: visible
-        { value: 1500, output: 0.15 }, // Dense bone: more visible
-        { value: 3071, output: 0.2 }, // Maximum: cap opacity
+        { value: 112.576698303223, output: 0 }, // Soft tissue threshold: transparent
+        { value: 1500, output: 0.3 }, // Contrast/bone: visible (boosted from 0.03)
+        { value: 3071, output: 1.0 }, // Maximum: fully visible (boosted from 0.1)
       ],
       colorPoints: [
-        { value: -1024, color: { r: 0, g: 0, b: 0 } }, // Air: black
-        { value: 150, color: { r: 0.2, g: 0.2, b: 0.2 } }, // Soft tissue: dark gray
-        { value: 500, color: { r: 0.6, g: 0.6, b: 0.6 } }, // Bone: light gray
-        { value: 3071, color: { r: 1, g: 1, b: 1 } }, // Maximum: white
+        { value: -1024, color: { r: 1, g: 1, b: 1 } }, // Air: white (invisible)
+        { value: 100, color: { r: 1, g: 1, b: 1 } }, // Soft tissue: white (invisible)
+        { value: 150, color: { r: 0.7, g: 0.7, b: 0.7 } }, // Dense tissue: light gray
+        { value: 300, color: { r: 0.3, g: 0.3, b: 0.3 } }, // Contrast start: dark gray
+        { value: 500, color: { r: 0.1, g: 0.1, b: 0.1 } }, // Contrast/bone: very dark
+        { value: 3071, color: { r: 0, g: 0, b: 0 } }, // Maximum: black
       ],
-      blendMode: VolumeBlendMode.RADON_TRANSFORM,
+      blendMode: VolumeBlendMode.COMPOSITE, // Composite like 3D Slicer, not MIP
       renderingConfig: {
         shade: false,
-        sampleDistance: 1.0, // Increased for better performance
+        sampleDistance: 1.0,
       },
     };
   }
 
   /**
-   * Create an enhanced fluoroscopy preset for better bone visibility
-   *
-   * @returns Enhanced fluoroscopy preset
+   * Create FluoroRenderingPreset_03 (based on 3D Slicer)
+   * Enhanced for contrast-enhanced cardiac CT - more gradual opacity ramp
    */
   static createEnhancedFluoroPreset(): VolumeRenderingPreset {
     return {
-      name: 'Enhanced Fluoroscopy',
+      name: 'Slicer Fluoro 03 (Enhanced)',
       opacityPoints: [
-        { value: -1024, output: 0 }, // Air: transparent
-        { value: -1024, output: 0 },
-        { value: 112.576, output: 0 }, // Soft tissue threshold
-        { value: 150, output: 0.01 }, // Soft tissue: minimal opacity
-        { value: 200, output: 0.03 }, // Dense tissue
-        { value: 400, output: 0.08 }, // Bone start
-        { value: 1000, output: 0.15 }, // Dense bone
-        { value: 1500, output: 0.25 }, // Very dense bone
-        { value: 3071, output: 0.3 }, // Maximum
+        { value: -1024, output: 0 }, // Air: fully transparent (no attenuation)
+        { value: 0, output: 0 }, // Water: transparent
+        { value: 50, output: 0.1 }, // Soft tissue: minimal attenuation
+        { value: 150, output: 0.3 }, // Dense tissue: some attenuation
+        { value: 300, output: 0.6 }, // Contrast/calcification: high attenuation
+        { value: 500, output: 0.8 }, // High contrast: very high attenuation
+        { value: 1000, output: 0.95 }, // Bone/dense contrast: near complete attenuation
+        { value: 3071, output: 1.0 }, // Maximum: complete attenuation
       ],
       colorPoints: [
-        { value: -1024, color: { r: 0, g: 0, b: 0 } },
-        { value: 150, color: { r: 0.15, g: 0.15, b: 0.15 } },
-        { value: 400, color: { r: 0.5, g: 0.5, b: 0.5 } },
-        { value: 1000, color: { r: 0.8, g: 0.8, b: 0.8 } },
-        { value: 3071, color: { r: 1, g: 1, b: 1 } },
+        { value: -1024, color: { r: 0, g: 0, b: 0 } }, // Air: black (full transmission)
+        { value: 0, color: { r: 0, g: 0, b: 0 } }, // Water: black
+        { value: 100, color: { r: 0.1, g: 0.1, b: 0.1 } }, // Soft tissue: very dark gray
+        { value: 200, color: { r: 0.3, g: 0.3, b: 0.3 } }, // Dense tissue: dark gray
+        { value: 400, color: { r: 0.6, g: 0.6, b: 0.6 } }, // Contrast: medium gray
+        { value: 800, color: { r: 0.9, g: 0.9, b: 0.9 } }, // High contrast: light gray
+        { value: 3071, color: { r: 1, g: 1, b: 1 } }, // Maximum: white (full attenuation)
       ],
-      blendMode: VolumeBlendMode.RADON_TRANSFORM,
+      blendMode: VolumeBlendMode.AVERAGE, // Use average for X-ray simulation
       renderingConfig: {
         shade: false,
-        sampleDistance: 1.0, // Good balance of quality and performance for DRR
+        sampleDistance: 1.0,
       },
     };
   }

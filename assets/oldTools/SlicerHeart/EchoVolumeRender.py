@@ -400,7 +400,7 @@ class EchoVolumeRenderLogic(ScriptedLoadableModuleLogic):
 
     # Make sure GPU volume rendering is used
     if not volumeRenderingDisplayNode.IsA("vtkMRMLGPURayCastVolumeRenderingDisplayNode"):
-      gpuVolumeRenderingDisplayNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLGPURayCastVolumeRenderingDisplayNode")
+      gpuVolumeRenderingDisplayNode = slicer.mrmlScene.AddNewNodeByClass("mak ")
       roiNode = volumeRenderingDisplayNode.GetROINodeID()
       gpuVolumeRenderingDisplayNode.SetAndObserveROINodeID(roiNode)
       gpuVolumeRenderingDisplayNode.SetAndObserveVolumePropertyNodeID(volumeRenderingDisplayNode.GetVolumePropertyNodeID())

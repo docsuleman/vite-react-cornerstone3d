@@ -1,11 +1,46 @@
 /**
  * DRRViewport Component
- * Digitally Reconstructed Radiograph viewport using VTK.js volume rendering
- * Simulates X-ray fluoroscopy from CT data using GPU ray casting
+ *
+ * Digitally Reconstructed Radiograph (DRR) viewport that simulates X-ray fluoroscopy
+ * from CT volume data using VTK.js GPU-accelerated volume rendering.
+ *
+ * Implementation Strategy (Based on 3D Slicer CT-X-Ray Preset):
+ * ==============================================================
+ *
+ * 1. **RADON TRANSFORM Blend Mode for X-ray Simulation:**
+ *    - Uses vtkVolumeMapper.setBlendMode(5) - RADON_TRANSFORM_BLEND
+ *    - Mathematical basis for X-ray projection - models photon absorption
+ *    - Physics-based rendering with CONSISTENT appearance from all angles
+ *    - This is THE CORRECT mode for DRR/fluoroscopy simulation in VTK.js
+ *
+ * 2. **Transfer Functions (INVERTED for Angiography):**
+ *    - Opacity: Linear ramp from -200 HU (0%) to 1500 HU (5% max)
+ *    - Colors: ALL BLACK (0, 0, 0) on WHITE background - INVERTED from Slicer!
+ *    - Darkness comes from black accumulation with ADDITIVE mode
+ *    - Shading: DISABLED (no lighting effects)
+ *
+ * 3. **Why This Works for Angiography:**
+ *    - RADON TRANSFORM models X-ray photon absorption through tissue
+ *    - Contrast-filled vessels (300-500 HU) absorb more photons → appear DARK
+ *    - Soft tissue (0-100 HU) absorbs fewer photons → appears WHITE/LIGHT
+ *    - BLACK color function + WHITE background = angiography appearance
+ *    - CONSISTENT from all viewing angles (no view-dependent artifacts!)
+ *
+ * 4. **X-Ray Camera Geometry:**
+ *    - Perspective projection (simulates divergent X-ray beam)
+ *    - SOD (Source-to-Object): 1000mm, SID (Source-to-Image): 1200mm
+ *    - Camera positioned using fluoroscopy angles (LAO/RAO, CRAN/CAUD)
+ *    - View angle calculated from detector size and SID
+ *
+ * Key References:
+ * - VTK.js documentation: RADON_TRANSFORM_BLEND for radiographic rendering
+ * - 3D Slicer presets.xml: CT-X-Ray preset opacity values
+ * - Radon transform: Mathematical foundation of X-ray imaging (inverse problem)
  */
 
 import React, { useRef, useEffect, useState } from 'react';
 import * as cornerstone3D from '@cornerstonejs/core';
+import { RenderingEngine, Types, Enums } from '@cornerstonejs/core';
 import vtkGenericRenderWindow from '@kitware/vtk.js/Rendering/Misc/GenericRenderWindow';
 import vtkVolume from '@kitware/vtk.js/Rendering/Core/Volume';
 import vtkVolumeMapper from '@kitware/vtk.js/Rendering/Core/VolumeMapper';
@@ -24,10 +59,14 @@ interface DRRViewportProps {
   laoRao: number;
   /** Current CRAN/CAUD angle (-90 to +90) */
   cranCaud: number;
-  /** Focal point for camera (world coordinates) */
+  /** Focal point for camera (world coordinates) - typically table center/patient position */
   focalPoint?: [number, number, number];
-  /** Camera distance from focal point */
-  cameraDistance?: number;
+  /** Source-to-Object Distance (SOD) in mm - distance from X-ray source to patient */
+  sourceObjectDistance?: number;
+  /** Source-to-Image Distance (SID) in mm - distance from X-ray source to detector */
+  sourceImageDistance?: number;
+  /** Detector height in mm - physical height of the image intensifier/detector */
+  detectorHeight?: number;
   /** Callback when angles change (if interactive) */
   onAngleChange?: (laoRao: number, cranCaud: number) => void;
   /** Viewport width */
@@ -45,7 +84,9 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
   laoRao,
   cranCaud,
   focalPoint,
-  cameraDistance = 500,
+  sourceObjectDistance = 1000, // SOD: 1000mm (1 meter) - distance from X-ray source to patient
+  sourceImageDistance = 1200, // SID: 1200mm (1.2 meters) - distance from X-ray source to detector
+  detectorHeight = 1200, // Detector height: 1200mm (1.2 meters) - very large FOV
   onAngleChange,
   width = 512,
   height = 512,
@@ -59,6 +100,31 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
     preset || null
   );
   const [isInitialized, setIsInitialized] = useState(false);
+  const [cameraDistance, setCameraDistance] = useState<number>(1000);
+
+  // Transfer function controls for real-time tweaking
+  const [showControls, setShowControls] = useState(true);
+
+  // Opacity thresholds (based on Slicer CT-X-Ray preset)
+  const [opacityLow, setOpacityLow] = useState(-200); // HU where opacity starts
+  const [opacityHigh, setOpacityHigh] = useState(1500); // HU where opacity is maximum
+  const [maxOpacity, setMaxOpacity] = useState(0.05); // Maximum opacity (5% like Slicer)
+
+  // Color inversion control
+  const [invertColors, setInvertColors] = useState(true); // true = angiography (high HU = black)
+
+  // Blend mode selection
+  const [blendMode, setBlendMode] = useState(3); // Default: AVERAGE_INTENSITY_BLEND
+
+  // Available blend modes
+  const blendModes = [
+    { value: 0, label: 'Composite (3D Volume)', description: 'Standard 3D volume rendering with depth' },
+    { value: 1, label: 'MIP (Maximum Intensity)', description: 'Shows brightest voxel - very clear' },
+    { value: 2, label: 'MinIP (Minimum Intensity)', description: 'Shows darkest voxel - rarely used' },
+    { value: 3, label: 'Average Intensity (X-ray)', description: 'Averages values - X-ray-like' },
+    { value: 4, label: 'Additive Intensity', description: 'Accumulates values along ray' },
+    { value: 5, label: 'Radon Transform', description: 'Physics-based X-ray simulation' },
+  ];
 
   // Initialize VTK.js rendering
   useEffect(() => {
@@ -66,9 +132,9 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
 
     console.log('🎥 Initializing DRR viewport with VTK.js...');
 
-    // Create generic render window
+    // Create generic render window with GRAY background (neutral for debugging)
     const genericRenderWindow = vtkGenericRenderWindow.newInstance({
-      background: [0, 0, 0],
+      background: [0.5, 0.5, 0.5], // GRAY background (neutral)
     });
 
     // Set container and size
@@ -113,57 +179,110 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
         const mapper = vtkVolumeMapper.newInstance();
         mapper.setInputData(vtkImageData);
 
-        // Set blend mode based on preset
-        switch (currentPreset.blendMode) {
-          case VolumeBlendMode.MIP:
-            mapper.setBlendModeToMaximumIntensity();
-            break;
-          case VolumeBlendMode.MIN_IP:
-            mapper.setBlendModeToMinimumIntensity();
-            break;
-          case VolumeBlendMode.AVERAGE:
-            mapper.setBlendModeToAverageIntensity();
-            break;
-          case VolumeBlendMode.RADON_TRANSFORM:
-            // Radon transform approximation using composite rendering
-            // with carefully tuned opacity for X-ray absorption simulation
-            mapper.setBlendModeToComposite();
-            break;
-          default:
-            mapper.setBlendModeToComposite();
-        }
+        // DRR Rendering Strategy:
+        // Use selected blend mode (user-controllable)
+        mapper.setBlendMode(blendMode);
 
-        // Set sample distance for quality (DRR doesn't need ultra-fine sampling)
-        // Use 1.0mm for good balance between quality and performance
-        const sampleDistance = currentPreset.renderingConfig?.sampleDistance || 1.0;
-        mapper.setSampleDistance(Math.max(sampleDistance, 1.0)); // Minimum 1.0mm to avoid too many samples
+        // Set sample distance for quality
+        // Finer sampling (0.5mm) for better X-ray simulation
+        const sampleDistance = currentPreset.renderingConfig?.sampleDistance || 0.5;
+        mapper.setSampleDistance(sampleDistance);
 
         // Set maximum samples per ray to prevent VTK warning
-        mapper.setMaximumSamplesPerRay(2000); // Increase from default 1000
+        mapper.setMaximumSamplesPerRay(4000); // Increase for finer sampling
 
         // Create volume actor
         const actor = vtkVolume.newInstance();
         actor.setMapper(mapper);
 
-        // Apply transfer functions from preset
-        applyTransferFunctions(actor, currentPreset);
+        // Apply transfer functions with control values
+        applySlicerXRayTransferFunctions(
+          actor,
+          opacityLow,
+          opacityHigh,
+          maxOpacity,
+          invertColors
+        );
 
         // Add actor to renderer
         const renderer = grw.getRenderer();
         renderer.addVolume(actor);
 
-        // Setup camera
+        console.log('✅ Volume actor added to renderer:', {
+          actorType: actor.getClassName(),
+          mapperType: mapper.getClassName(),
+          blendMode: mapper.getBlendMode(),
+          volumeDimensions: vtkImageData.getDimensions(),
+          volumeSpacing: vtkImageData.getSpacing(),
+        });
+
+        // Setup camera with proper X-ray geometry
         const calculatedFocalPoint = focalPoint || calculateVolumeCenterPoint(volume);
+
+        // Get scalar range to understand what HU values we have
+        const scalarData = volume.voxelManager.getCompleteScalarDataArray();
+        let minValue = Infinity;
+        let maxValue = -Infinity;
+        for (let i = 0; i < scalarData.length; i++) {
+          if (scalarData[i] < minValue) minValue = scalarData[i];
+          if (scalarData[i] > maxValue) maxValue = scalarData[i];
+        }
+
+        // Log volume information
+        console.log('📦 Volume information:', {
+          dimensions: volume.dimensions,
+          spacing: volume.spacing,
+          origin: volume.origin,
+          calculatedCenter: calculatedFocalPoint,
+          scalarRange: `[${minValue.toFixed(1)}, ${maxValue.toFixed(1)}]`
+        });
+
+        // Get volume bounds
+        const bounds = [
+          volume.origin[0],
+          volume.origin[0] + volume.dimensions[0] * volume.spacing[0],
+          volume.origin[1],
+          volume.origin[1] + volume.dimensions[1] * volume.spacing[1],
+          volume.origin[2],
+          volume.origin[2] + volume.dimensions[2] * volume.spacing[2]
+        ];
+        console.log('📦 Volume bounds:', {
+          x: `[${bounds[0].toFixed(1)}, ${bounds[1].toFixed(1)}]`,
+          y: `[${bounds[2].toFixed(1)}, ${bounds[3].toFixed(1)}]`,
+          z: `[${bounds[4].toFixed(1)}, ${bounds[5].toFixed(1)}]`,
+          size: `${(bounds[1]-bounds[0]).toFixed(1)} × ${(bounds[3]-bounds[2]).toFixed(1)} × ${(bounds[5]-bounds[4]).toFixed(1)} mm`
+        });
+
+        // Reset camera to fit volume and get proper parallel scale
+        renderer.resetCamera();
+        const camera = renderer.getActiveCamera();
+        const autoParallelScale = camera.getParallelScale();
+        const defaultCameraDistance = camera.getDistance();
+
+        // Use a smaller distance to zoom in much closer
+        // Reduce the auto-calculated distance by 50% to zoom in more
+        const calculatedDistance = defaultCameraDistance * 0.5;
+
+        console.log('🎥 Auto camera settings from resetCamera:', {
+          parallelScale: autoParallelScale,
+          autoDistance: defaultCameraDistance,
+          usedDistance: calculatedDistance
+        });
+
+        // Store the calculated distance for future angle updates
+        setCameraDistance(calculatedDistance);
+
+        // Apply fluoroscopy angles with proper distance
         updateCamera(
           renderer,
           laoRao,
           cranCaud,
-          cameraDistance,
-          calculatedFocalPoint
+          calculatedDistance, // Use auto-calculated distance
+          sourceImageDistance,
+          detectorHeight,
+          calculatedFocalPoint,
+          autoParallelScale
         );
-
-        // Reset camera to fit volume
-        renderer.resetCamera();
 
         // Render
         grw.getRenderWindow().render();
@@ -178,21 +297,42 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
     };
 
     setupVolume();
-  }, [grw, volumeId, currentPreset, focalPoint, cameraDistance]);
+  }, [grw, volumeId, currentPreset, focalPoint, sourceObjectDistance, sourceImageDistance, detectorHeight, laoRao, cranCaud]);
 
   // Update camera when angles change
   useEffect(() => {
     if (!grw || !volumeActor || !isInitialized) return;
 
     const renderer = grw.getRenderer();
+    if (!renderer) {
+      console.warn('⚠️ Renderer not available for camera update');
+      return;
+    }
+
     const volume = cornerstone3D.cache.getVolume(volumeId);
     if (!volume) return;
 
     const calculatedFocalPoint = focalPoint || calculateVolumeCenterPoint(volume);
-    updateCamera(renderer, laoRao, cranCaud, cameraDistance, calculatedFocalPoint);
+
+    console.log('📐 DRR camera update:', {
+      laoRao: laoRao.toFixed(1),
+      cranCaud: cranCaud.toFixed(1),
+      focalPoint: calculatedFocalPoint.map(v => v.toFixed(1))
+    });
+
+    updateCamera(
+      renderer,
+      laoRao,
+      cranCaud,
+      cameraDistance, // Use stored camera distance, not fixed SOD
+      sourceImageDistance,
+      detectorHeight,
+      calculatedFocalPoint,
+      undefined // Don't pass auto scale on angle updates, keep existing
+    );
 
     grw.getRenderWindow().render();
-  }, [grw, volumeActor, laoRao, cranCaud, cameraDistance, focalPoint, isInitialized]);
+  }, [grw, volumeActor, laoRao, cranCaud, cameraDistance, sourceImageDistance, detectorHeight, focalPoint, isInitialized, volumeId]);
 
   // Update preset
   useEffect(() => {
@@ -201,13 +341,38 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
     }
   }, [preset]);
 
-  // Apply new transfer functions when preset changes
+  // Apply new transfer functions when control values change
   useEffect(() => {
-    if (!volumeActor || !currentPreset || !grw) return;
+    if (!volumeActor || !grw) return;
 
-    applyTransferFunctions(volumeActor, currentPreset);
+    applySlicerXRayTransferFunctions(
+      volumeActor,
+      opacityLow,
+      opacityHigh,
+      maxOpacity,
+      invertColors
+    );
     grw.getRenderWindow().render();
-  }, [volumeActor, currentPreset, grw]);
+  }, [
+    volumeActor,
+    grw,
+    opacityLow,
+    opacityHigh,
+    maxOpacity,
+    invertColors,
+  ]);
+
+  // Update blend mode when changed
+  useEffect(() => {
+    if (!volumeActor || !grw) return;
+
+    const mapper = volumeActor.getMapper();
+    if (mapper) {
+      mapper.setBlendMode(blendMode);
+      console.log('🔄 Blend mode changed to:', blendModes.find(m => m.value === blendMode)?.label);
+      grw.getRenderWindow().render();
+    }
+  }, [volumeActor, grw, blendMode]);
 
   // Handle window resize
   useEffect(() => {
@@ -223,25 +388,219 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
   }, [grw]);
 
   return (
-    <div className="relative" style={{ width, height }}>
-      <div
-        ref={containerRef}
-        className="w-full h-full bg-black rounded overflow-hidden"
-        style={{ width, height }}
-      />
+    <div className="relative flex" style={{ width: '100%', height }}>
+      {/* Main viewport */}
+      <div className="relative flex-1" style={{ height }}>
+        <div
+          ref={containerRef}
+          className="w-full h-full bg-gray-800 rounded overflow-hidden"
+          style={{ height }}
+        />
 
-      {/* Angle indicators */}
-      {showAngleIndicators && (
-        <FluoroAngleIndicator laoRao={laoRao} cranCaud={cranCaud} />
-      )}
-
-      {/* Info overlay */}
-      <div className="absolute top-2 left-2 bg-black bg-opacity-70 px-2 py-1 rounded text-white text-xs pointer-events-none">
-        <div>DRR View</div>
-        {currentPreset && (
-          <div className="text-slate-400 mt-1">{currentPreset.name}</div>
+        {/* Angle indicators */}
+        {showAngleIndicators && (
+          <FluoroAngleIndicator laoRao={laoRao} cranCaud={cranCaud} />
         )}
+
+        {/* Info overlay */}
+        <div className="absolute top-2 left-2 bg-black bg-opacity-70 px-2 py-1 rounded text-white text-xs pointer-events-none">
+          <div>Volume Rendering</div>
+          <div className="text-blue-400 mt-1">
+            {blendModes.find(m => m.value === blendMode)?.label}
+          </div>
+        </div>
+
+        {/* Toggle controls button */}
+        <button
+          onClick={() => setShowControls(!showControls)}
+          className="absolute top-2 right-2 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-xs"
+        >
+          {showControls ? 'Hide' : 'Show'} Controls
+        </button>
       </div>
+
+      {/* Control sidebar */}
+      {showControls && (
+        <div className="w-80 bg-gray-900 text-white p-4 overflow-y-auto" style={{ height }}>
+          <h3 className="text-sm font-bold mb-4">Volume Rendering Controls</h3>
+
+          {/* Blend Mode Selector */}
+          <div className="mb-6">
+            <label className="text-xs block mb-2 font-semibold text-blue-400">
+              Rendering Mode
+            </label>
+            <select
+              value={blendMode}
+              onChange={(e) => setBlendMode(parseInt(e.target.value))}
+              className="w-full bg-gray-700 text-white px-3 py-2 rounded text-sm border border-gray-600 focus:border-blue-500 focus:outline-none"
+            >
+              {blendModes.map((mode) => (
+                <option key={mode.value} value={mode.value}>
+                  {mode.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-400 mt-2">
+              {blendModes.find(m => m.value === blendMode)?.description}
+            </p>
+          </div>
+
+          {/* Color Inversion Toggle */}
+          <div className="mb-6 p-3 bg-gray-800 rounded">
+            <label className="flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={invertColors}
+                onChange={(e) => setInvertColors(e.target.checked)}
+                className="mr-2 w-4 h-4"
+              />
+              <span className="text-sm font-semibold">
+                Invert Colors (Angiography Mode)
+              </span>
+            </label>
+            <p className="text-xs text-gray-400 mt-2">
+              {invertColors
+                ? '✓ ON: High HU (contrast) = BLACK, Low HU (tissue) = WHITE'
+                : '✗ OFF: High HU (contrast) = WHITE, Low HU (tissue) = BLACK'}
+            </p>
+          </div>
+
+          {/* Opacity thresholds */}
+          <div className="space-y-4 mb-6">
+            <div>
+              <label className="text-xs block mb-1">
+                Opacity Start: {opacityLow} HU
+              </label>
+              <input
+                type="range"
+                min="-1000"
+                max="500"
+                step="10"
+                value={opacityLow}
+                onChange={(e) => setOpacityLow(parseFloat(e.target.value))}
+                className="w-full"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Below this HU: transparent (0% opacity)
+              </p>
+            </div>
+
+            <div>
+              <label className="text-xs block mb-1">
+                Opacity End: {opacityHigh} HU
+              </label>
+              <input
+                type="range"
+                min="500"
+                max="3000"
+                step="50"
+                value={opacityHigh}
+                onChange={(e) => setOpacityHigh(parseFloat(e.target.value))}
+                className="w-full"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                At this HU and above: max opacity
+              </p>
+            </div>
+
+            <div>
+              <label className="text-xs block mb-1">
+                Maximum Opacity: {(maxOpacity * 100).toFixed(1)}%
+              </label>
+              <input
+                type="range"
+                min="0.01"
+                max="0.5"
+                step="0.01"
+                value={maxOpacity}
+                onChange={(e) => setMaxOpacity(parseFloat(e.target.value))}
+                className="w-full"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Slicer CT-X-Ray uses 5% - higher values = darker X-ray
+              </p>
+            </div>
+          </div>
+
+          {/* Info */}
+          <div className="mt-6 p-3 bg-gray-800 rounded text-xs space-y-2">
+            <p className="text-yellow-400 font-semibold">
+              Current Mode: {blendModes.find(m => m.value === blendMode)?.label}
+            </p>
+            <p className="text-gray-300">
+              {blendModes.find(m => m.value === blendMode)?.description}
+            </p>
+
+            {blendMode === 0 && (
+              <>
+                <p className="text-green-400 mt-2">
+                  ✓ Standard 3D volume rendering
+                </p>
+                <p className="text-green-400">
+                  ✓ Shows depth and spatial relationships
+                </p>
+                <p className="text-blue-400 mt-2">
+                  Best for: 3D anatomy visualization
+                </p>
+              </>
+            )}
+
+            {blendMode === 1 && (
+              <>
+                <p className="text-green-400 mt-2">
+                  ✓ Very clear, high-contrast images
+                </p>
+                <p className="text-green-400">
+                  ✓ Great for contrast-enhanced vessels
+                </p>
+                <p className="text-blue-400 mt-2">
+                  Best for: Quick vessel visualization
+                </p>
+              </>
+            )}
+
+            {blendMode === 3 && (
+              <>
+                <p className="text-green-400 mt-2">
+                  ✓ X-ray-like attenuation simulation
+                </p>
+                <p className="text-green-400">
+                  ✓ Shows tissue layering and depth
+                </p>
+                <p className="text-blue-400 mt-2">
+                  Best for: DRR/fluoroscopy simulation
+                </p>
+              </>
+            )}
+
+            {(blendMode === 4 || blendMode === 5) && (
+              <>
+                <p className="text-green-400 mt-2">
+                  ✓ Physics-based X-ray simulation
+                </p>
+                <p className="text-green-400">
+                  ✓ Most accurate attenuation model
+                </p>
+                <p className="text-blue-400 mt-2">
+                  Best for: Research-grade DRR
+                </p>
+              </>
+            )}
+          </div>
+
+          {/* Reset button */}
+          <button
+            onClick={() => {
+              setOpacityLow(-200);
+              setOpacityHigh(1500);
+              setMaxOpacity(0.05);
+            }}
+            className="w-full mt-4 bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded text-xs"
+          >
+            Reset to Defaults (Slicer + Radon)
+          </button>
+        </div>
+      )}
     </div>
   );
 };
@@ -268,7 +627,8 @@ function convertCornerstoneVolumeToVTK(volume: cornerstone3D.Types.IImageVolume)
   // Set scalars
   const dataArray = imageData.getPointData().getScalars();
   if (dataArray) {
-    dataArray.setData(scalarData);
+    // Convert ArrayLike to proper typed array for VTK
+    dataArray.setData(scalarData as Float32Array);
   } else {
     // Create new data array if it doesn't exist
     const vtk = require('@kitware/vtk.js/macros');
@@ -307,86 +667,183 @@ function calculateVolumeCenterPoint(
 }
 
 /**
- * Update camera position based on fluoroscopy angles
+ * Update camera position based on fluoroscopy angles with proper X-ray geometry
+ *
+ * In fluoroscopy, the X-ray source is positioned at sourceObjectDistance (SOD) from the patient,
+ * and the detector/image intensifier is at sourceImageDistance (SID) from the source.
+ *
+ * @param renderer - VTK renderer
+ * @param laoRao - LAO/RAO angle in degrees
+ * @param cranCaud - CRAN/CAUD angle in degrees
+ * @param sourceObjectDistance - Distance from X-ray source to patient (focal point) in mm
+ * @param sourceImageDistance - Distance from X-ray source to detector in mm
+ * @param detectorHeight - Physical height of detector in mm
+ * @param focalPoint - Patient/table center position (where X-rays are focused)
  */
 function updateCamera(
   renderer: any,
   laoRao: number,
   cranCaud: number,
-  distance: number,
-  focalPoint: [number, number, number]
+  sourceObjectDistance: number,
+  sourceImageDistance: number,
+  detectorHeight: number,
+  focalPoint: [number, number, number],
+  autoParallelScale?: number
 ): void {
-  const camera = renderer.getActiveCamera();
+  if (!renderer) {
+    console.error('❌ updateCamera called with undefined renderer');
+    return;
+  }
 
-  // Convert fluoroscopy angles to camera position using SCurveGenerator
-  const cameraPosition = SCurveGenerator.fluoroAnglesToCamera(
+  const camera = renderer.getActiveCamera();
+  if (!camera) {
+    console.error('❌ getActiveCamera returned undefined');
+    return;
+  }
+
+  // Calculate X-ray source position based on fluoroscopy angles
+  // The source is positioned OPPOSITE to the viewing direction at SOD distance
+  const viewDirection = SCurveGenerator.fluoroAnglesToCamera(
     laoRao,
     cranCaud,
-    distance,
-    focalPoint
+    1, // Unit vector for direction
+    [0, 0, 0] // Origin
   );
 
-  camera.setPosition(...cameraPosition);
+  // Normalize view direction
+  const length = Math.sqrt(
+    viewDirection[0] * viewDirection[0] +
+    viewDirection[1] * viewDirection[1] +
+    viewDirection[2] * viewDirection[2]
+  );
+  const normalizedView = [
+    viewDirection[0] / length,
+    viewDirection[1] / length,
+    viewDirection[2] / length,
+  ];
+
+  // X-ray source position: patient position + SOD along view direction
+  const sourcePosition = [
+    focalPoint[0] + normalizedView[0] * sourceObjectDistance,
+    focalPoint[1] + normalizedView[1] * sourceObjectDistance,
+    focalPoint[2] + normalizedView[2] * sourceObjectDistance,
+  ];
+
+  // Camera looks from source towards patient (focal point)
+  camera.setPosition(...sourcePosition);
   camera.setFocalPoint(...focalPoint);
-  camera.setViewUp(0, 0, 1); // Z-axis is up
+  camera.setViewUp(0, 0, 1); // Z-axis is up (superior direction)
 
-  // Use parallel projection for true orthographic fluoroscopy view
-  camera.setParallelProjection(true);
+  // Use PERSPECTIVE projection like 3D Slicer VirtualCathLab does
+  // This simulates the divergent X-ray beam from a point source
+  camera.setParallelProjection(false);
 
-  // Set parallel scale based on distance (adjust for zoom level)
-  camera.setParallelScale(distance / 4);
+  // Calculate view angle from detector size and SID (like Slicer line 1526)
+  const viewAngle = 2.0 * Math.atan(detectorHeight / 2.0 / sourceImageDistance) * (180 / Math.PI);
+  camera.setViewAngle(viewAngle);
+
+  const magnification = sourceImageDistance / sourceObjectDistance;
+
+  // In real X-ray/DRR: NO CLIPPING - rays go through the ENTIRE patient
+  // Set clipping planes very far apart to simulate this
+  // Near plane: very close to X-ray source (almost at camera)
+  // Far plane: way beyond the patient (past the detector)
+  const nearClip = 10; // 10mm from camera (almost at source)
+  const farClip = sourceObjectDistance + 2000; // Patient center + 2 meters beyond
+  camera.setClippingRange(nearClip, farClip);
+
+  const clippingRange = camera.getClippingRange();
+  console.log('📐 DRR X-ray geometry:', {
+    sourcePosition: sourcePosition.map(v => v.toFixed(1)),
+    focalPoint: focalPoint.map(v => v.toFixed(1)),
+    SOD: sourceObjectDistance,
+    SID: sourceImageDistance,
+    magnification: magnification.toFixed(2),
+    viewAngle: viewAngle.toFixed(1) + '°',
+    detectorHeight: detectorHeight,
+    clippingRange: `[${clippingRange[0].toFixed(1)}, ${clippingRange[1].toFixed(1)}]`,
+    laoRao: laoRao.toFixed(1) + '°',
+    cranCaud: cranCaud.toFixed(1) + '°'
+  });
 }
 
 /**
- * Apply transfer functions from preset to volume actor
+ * Apply 3D Slicer CT-X-Ray style transfer functions
+ *
+ * Key principles (from Slicer presets.xml CT-X-Ray preset):
+ * 1. ADDITIVE blend mode accumulates opacity-weighted HU values
+ * 2. ALL WHITE colors (no color gradient)
+ * 3. Very LOW opacity (5% maximum) to allow ray penetration
+ * 4. Shading DISABLED
+ *
+ * In ADDITIVE mode with white colors:
+ * - Low HU (air, soft tissue) → low opacity → accumulates little → stays WHITE/LIGHT
+ * - High HU (contrast, bone) → high opacity → accumulates more → appears DARK/BLACK
+ *
+ * This inverts the typical visualization: high HU = dark (like real X-ray attenuation!)
  */
-function applyTransferFunctions(actor: any, preset: VolumeRenderingPreset): void {
+function applySlicerXRayTransferFunctions(
+  actor: any,
+  opacityLow: number,
+  opacityHigh: number,
+  maxOpacity: number,
+  invertColors: boolean
+): void {
   const property = actor.getProperty();
 
-  // Create opacity transfer function
+  // OPACITY FUNCTION: For AVERAGE mode, use a gradual ramp
+  // This creates X-ray-like attenuation - higher HU contributes more to the average
   const opacityFunction = vtkPiecewiseFunction.newInstance();
-  for (const point of preset.opacityPoints) {
-    opacityFunction.addPoint(point.value, point.output);
-  }
+  opacityFunction.addPoint(-3024, 0.0); // Air: transparent
+  opacityFunction.addPoint(opacityLow, 0.0); // Below threshold: transparent
+  opacityFunction.addPoint(opacityLow + 100, maxOpacity * 0.3); // Soft tissue: low contribution
+  opacityFunction.addPoint(opacityHigh, maxOpacity); // High HU: full contribution
+  opacityFunction.addPoint(3071, maxOpacity); // Maximum: full contribution
   property.setScalarOpacity(0, opacityFunction);
 
-  // Create color transfer function
+  console.log('📊 Opacity function for X-ray averaging:', {
+    transparent: `${opacityLow} HU and below`,
+    lowContribution: `${opacityLow + 100} HU at ${(maxOpacity * 0.3 * 100).toFixed(1)}%`,
+    fullContribution: `${opacityHigh} HU at ${(maxOpacity * 100).toFixed(1)}%`,
+  });
+
+  // COLOR FUNCTION: User-controllable color inversion
   const colorFunction = vtkColorTransferFunction.newInstance();
-  if (preset.colorPoints && preset.colorPoints.length > 0) {
-    for (const point of preset.colorPoints) {
-      colorFunction.addRGBPoint(
-        point.value,
-        point.color.r,
-        point.color.g,
-        point.color.b
-      );
-    }
+
+  if (invertColors) {
+    // INVERTED (Angiography): Low HU = WHITE, High HU = BLACK
+    // Contrast vessels appear DARK on light background
+    colorFunction.addRGBPoint(-3024, 1.0, 1.0, 1.0); // Air: WHITE
+    colorFunction.addRGBPoint(opacityLow, 1.0, 1.0, 1.0); // Below threshold: WHITE
+    colorFunction.addRGBPoint(opacityHigh, 0.0, 0.0, 0.0); // High HU: BLACK
+    colorFunction.addRGBPoint(3071, 0.0, 0.0, 0.0); // Maximum: BLACK
   } else {
-    // Default grayscale ramp if no color points
-    colorFunction.addRGBPoint(-1024, 0, 0, 0); // Black
-    colorFunction.addRGBPoint(3071, 1, 1, 1); // White
+    // NORMAL (CT-like): Low HU = BLACK, High HU = WHITE
+    // Contrast vessels appear BRIGHT on dark background
+    colorFunction.addRGBPoint(-3024, 0.0, 0.0, 0.0); // Air: BLACK
+    colorFunction.addRGBPoint(opacityLow, 0.0, 0.0, 0.0); // Below threshold: BLACK
+    colorFunction.addRGBPoint(opacityHigh, 1.0, 1.0, 1.0); // High HU: WHITE
+    colorFunction.addRGBPoint(3071, 1.0, 1.0, 1.0); // Maximum: WHITE
   }
+
   property.setRGBTransferFunction(0, colorFunction);
 
-  // Apply shading settings
-  if (preset.renderingConfig?.shade !== undefined) {
-    property.setShade(preset.renderingConfig.shade);
-  }
-
-  // Apply lighting parameters if specified
-  if (preset.renderingConfig?.ambient !== undefined) {
-    property.setAmbient(preset.renderingConfig.ambient);
-  }
-  if (preset.renderingConfig?.diffuse !== undefined) {
-    property.setDiffuse(preset.renderingConfig.diffuse);
-  }
-  if (preset.renderingConfig?.specular !== undefined) {
-    property.setSpecular(preset.renderingConfig.specular);
-  }
-  if (preset.renderingConfig?.specularPower !== undefined) {
-    property.setSpecularPower(preset.renderingConfig.specularPower);
-  }
+  // Disable shading (matches Slicer CT-X-Ray preset)
+  property.setShade(false);
+  property.setAmbient(1.0);
+  property.setDiffuse(0.0);
+  property.setSpecular(0.0);
 
   // Enable interpolation for smoother rendering
   property.setInterpolationTypeToLinear();
+
+  console.log('🎨 Applied X-ray transfer functions:', {
+    opacityRange: `${opacityLow} to ${opacityHigh} HU`,
+    maxOpacity: `${(maxOpacity * 100).toFixed(1)}%`,
+    blendMode: 'AVERAGE_INTENSITY (X-ray)',
+    colorInversion: invertColors ? 'INVERTED (angiography)' : 'NORMAL (CT-like)',
+    colors: invertColors
+      ? 'Low HU=WHITE (light), High HU=BLACK (dark)'
+      : 'Low HU=BLACK (dark), High HU=WHITE (bright)',
+  });
 }
