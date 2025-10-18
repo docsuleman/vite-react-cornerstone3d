@@ -167,17 +167,20 @@ export class CenterlineGenerator {
         }
 
         // Determine the correct flow direction by looking at tangents OUTSIDE the ±5mm region
-        // Find a point well before the annulus to get the flow direction
+        // SIMPLER: Just use the tangent direction from the point BEFORE entering the straight segment
         let flowDirection: vec3 | null = null;
-        for (let i = 0; i < annulusIndex; i++) {
+
+        // Find the last point BEFORE the straight segment starts
+        for (let i = annulusIndex - 1; i >= 0; i--) {
           const pos = splinePoints[i].position;
           const vecFromCenter = vec3.subtract(vec3.create(), pos, annulusCenter as vec3);
           const distAlongNormal = vec3.dot(vecFromCenter, unitNormal);
 
-          // Find a point outside the ±5mm region (at least 7mm away)
-          if (Math.abs(distAlongNormal) > 7.0) {
+          // Find a point outside the ±5mm region
+          if (Math.abs(distAlongNormal) > 5.5) {
             flowDirection = vec3.clone(splinePoints[i].tangent);
-            console.log(`[CL_DEBUG]    Flow direction determined from point at index ${i} (dist: ${distAlongNormal.toFixed(2)}mm)`);
+            console.log(`[CL_DEBUG]    Flow direction from upstream point at index ${i} (dist: ${distAlongNormal.toFixed(2)}mm)`);
+            console.log(`[CL_DEBUG]    Upstream tangent: [${flowDirection[0].toFixed(6)}, ${flowDirection[1].toFixed(6)}, ${flowDirection[2].toFixed(6)}]`);
             break;
           }
         }
@@ -201,51 +204,86 @@ export class CenterlineGenerator {
         const straightTangent = vec3.subtract(vec3.create(), endPos, startPos);
         vec3.normalize(straightTangent, straightTangent);
 
+        console.log(`[CL_DEBUG]    Initial straight tangent: [${straightTangent[0].toFixed(6)}, ${straightTangent[1].toFixed(6)}, ${straightTangent[2].toFixed(6)}]`);
+
         // Ensure straight tangent points in same direction as flow
         if (flowDirection) {
           const dotProduct = vec3.dot(straightTangent, flowDirection);
+          console.log(`[CL_DEBUG]    Dot product (straight · flow): ${dotProduct.toFixed(6)}`);
+
           if (dotProduct < 0) {
             // Tangent is pointing backwards! Flip it and swap start/end
             vec3.negate(straightTangent, straightTangent);
             const temp = startPos;
             startPos = endPos;
             endPos = temp;
-            console.log(`[CL_DEBUG]    ⚠ Flipped straight tangent to match flow direction`);
+            console.log(`[CL_DEBUG]    ⚠ FLIPPED straight tangent to match flow direction`);
+            console.log(`[CL_DEBUG]    New straight tangent: [${straightTangent[0].toFixed(6)}, ${straightTangent[1].toFixed(6)}, ${straightTangent[2].toFixed(6)}]`);
+          } else {
+            console.log(`[CL_DEBUG]    ✓ Straight tangent already matches flow direction`);
           }
         }
 
-        // Find all points within the ±5mm region and REPLACE them with perfectly straight interpolation
-        let straightCount = 0;
+        // Find all points within the ±5mm region and REPLACE POSITIONS
+        // CRITICAL: First identify which points are in the region, then reposition them IN ORDER
+        const pointsInRegion: number[] = [];
+
         for (let i = 0; i < splinePoints.length; i++) {
           const pos = splinePoints[i].position;
-
-          // Calculate distance from annulus center along the normal
           const vecFromCenter = vec3.subtract(vec3.create(), pos, annulusCenter as vec3);
           const distAlongNormal = vec3.dot(vecFromCenter, unitNormal);
 
-          // Is this point within ±5mm?
           if (Math.abs(distAlongNormal) <= 5.0) {
-            // YES - REPLACE with perfect linear interpolation
-            // Calculate t based on where we are along the straight line
-            const vecFromStart = vec3.subtract(vec3.create(), pos, startPos);
-            const totalLength = vec3.distance(endPos, startPos);
-            const distFromStart = vec3.dot(vecFromStart, straightTangent);
-            const t = Math.max(0, Math.min(1, distFromStart / totalLength));
-
-            // Perfect linear interpolation between start and end
-            const newPos = vec3.create();
-            vec3.lerp(newPos, startPos, endPos, t);
-
-            splinePoints[i].position = newPos as Vector3;
-
-            // Set tangent to match the flow direction (already corrected)
-            splinePoints[i].tangent = vec3.clone(straightTangent) as Vector3;
-
-            straightCount++;
+            pointsInRegion.push(i);
           }
         }
 
-        console.log(`[CL_DEBUG]    ✓ Straightened ${straightCount} points in ±5mm segment with correct flow direction`);
+        console.log(`[CL_DEBUG]    Found ${pointsInRegion.length} points in ±5mm region: indices ${pointsInRegion[0]} to ${pointsInRegion[pointsInRegion.length-1]}`);
+
+        // Now reposition them IN ORDER along the straight line
+        let tangentFixCount = 0;
+        const totalLength = vec3.distance(endPos, startPos);
+
+        for (let j = 0; j < pointsInRegion.length; j++) {
+          const i = pointsInRegion[j];
+
+          // Calculate t based on position IN THE SEQUENCE (not original position!)
+          // This guarantees monotonic ordering
+          const t = j / (pointsInRegion.length - 1);
+
+          // Perfect linear interpolation between start and end
+          const newPos = vec3.create();
+          vec3.lerp(newPos, startPos, endPos, t);
+
+          splinePoints[i].position = newPos as Vector3;
+
+          // Calculate new distance for verification
+          const vecFromCenter = vec3.subtract(vec3.create(), newPos, annulusCenter as vec3);
+          const distAlongNormal = vec3.dot(vecFromCenter, unitNormal);
+
+          // CRITICAL FIX: In the central ±1mm region, force tangent to be exactly along normal
+          if (Math.abs(distAlongNormal) <= 1.0) {
+            splinePoints[i].tangent = vec3.clone(straightTangent) as Vector3;
+            tangentFixCount++;
+          }
+        }
+
+        console.log(`[CL_DEBUG]    ✓ Straightened ${pointsInRegion.length} point positions`);
+        console.log(`[CL_DEBUG]    ✓ Fixed ${tangentFixCount} tangents in central ±1mm region`);
+
+        // DEBUG: Log points near annulus to check for reversal
+        console.log(`[CL_DEBUG] 📍 Logging centerline points near annulus (±2mm):`);
+        for (let i = 0; i < splinePoints.length; i++) {
+          const pos = splinePoints[i].position;
+          const tangent = splinePoints[i].tangent;
+          const vecFromCenter = vec3.subtract(vec3.create(), pos, annulusCenter as vec3);
+          const distAlongNormal = vec3.dot(vecFromCenter, unitNormal);
+
+          if (Math.abs(distAlongNormal) <= 2.0) {
+            const isAnnulus = splinePoints[i].isAnnulusPlane ? ' [ANNULUS]' : '';
+            console.log(`[CL_DEBUG]   [${i}] dist:${distAlongNormal.toFixed(3)}mm pos:[${pos[0].toFixed(2)}, ${pos[1].toFixed(2)}, ${pos[2].toFixed(2)}] tangent:[${tangent[0].toFixed(3)}, ${tangent[1].toFixed(3)}, ${tangent[2].toFixed(3)}]${isAnnulus}`);
+          }
+        }
       }
     }
 

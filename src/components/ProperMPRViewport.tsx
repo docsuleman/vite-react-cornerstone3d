@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import createImageIdsAndCacheMetaData from '../lib/createImageIdsAndCacheMetaData';
 import valveSTLPath from '../assets/Hybrid-Auxetic-v4_open.STL?url';
+import evolutValveSTLPath from '../assets/evolut.stl?url';
 import {
   RenderingEngine,
   Enums,
@@ -773,6 +774,19 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const [valveVisible, setValveVisible] = useState(false); // Toggle for virtual valve visibility
   const [selectedValve, setSelectedValve] = useState('Hybrid-Auxetic-v4_open'); // Selected valve model name
   const [valveRotation, setValveRotation] = useState({ x: 0, y: 0, z: 0 }); // Valve rotation angles in degrees
+
+  // Valve models mapping
+  const valveModels = {
+    'Hybrid-Auxetic-v4_open': {
+      name: 'Hybrid Auxetic v4 (Open)',
+      path: valveSTLPath
+    },
+    'Evolut': {
+      name: 'Evolut',
+      path: evolutValveSTLPath
+    }
+  };
+
   const [sCurveAnnulusPoints, setSCurveAnnulusPoints] = useState<any>(null); // Store annulus points to keep S-curve stable
   const [sCurveStableAngles, setSCurveStableAngles] = useState<{ laoRao: number; cranCaud: number } | null>(null); // Store angles to prevent unmounting
   const [rootDefinition3DAngles, setRootDefinition3DAngles] = useState<{ laoRao: number; cranCaud: number }>({ laoRao: 0, cranCaud: 0 }); // Track 3D view angles for ROOT_DEFINITION stage
@@ -2976,6 +2990,13 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     }
   }, [valveVisible]);
 
+  // Effect to update valve when selected model changes
+  useEffect(() => {
+    if (valveVisible && cuspDotsRef.current && cuspDotsRef.current.length === 3) {
+      loadAndDisplayValve();
+    }
+  }, [selectedValve]);
+
   // Effect to update valve when manual rotation changes
   useEffect(() => {
     if (valveVisible && cuspDotsRef.current && cuspDotsRef.current.length === 3) {
@@ -3061,8 +3082,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
   // Helper function to load and display the virtual valve STL model
   const loadAndDisplayValve = async () => {
+    console.log('[VALVE] loadAndDisplayValve called');
+    console.log('[VALVE] cuspDotsRef.current:', cuspDotsRef.current);
+    console.log('[VALVE] valveVisible:', valveVisible);
 
     if (!cuspDotsRef.current || cuspDotsRef.current.length < 3) {
+      console.log('[VALVE] Early return - not enough cusp dots');
       return;
     }
 
@@ -3077,9 +3102,10 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     }
 
     try {
-      // Load STL file
+      // Load STL file using selected valve model
       const reader = vtkSTLReader.newInstance();
-      const response = await fetch(valveSTLPath);
+      const selectedValvePath = valveModels[selectedValve as keyof typeof valveModels]?.path || valveSTLPath;
+      const response = await fetch(selectedValvePath);
       const arrayBuffer = await response.arrayBuffer();
       reader.parseAsArrayBuffer(arrayBuffer);
 
@@ -3128,11 +3154,62 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       // The annular plane is already calculated correctly in adjustToAnnularPlane and stored in workflow
       let normalizedNormal: number[];
 
+      console.log('[VALVE DEBUG] annularPlane:', annularPlane);
+      console.log('[VALVE DEBUG] centerlineDataProp:', centerlineDataProp);
+      console.log('[VALVE DEBUG] centerlineDataRef.current:', centerlineDataRef.current);
+
+      // Use centerlineData from ref (most up-to-date) or prop as fallback
+      const centerlineData = centerlineDataRef.current || centerlineDataProp;
+      console.log('[VALVE DEBUG] centerlineData (chosen):', centerlineData);
+      console.log('[VALVE DEBUG] centerlineData?.annulusPlaneIndex:', centerlineData?.annulusPlaneIndex);
+
       if (annularPlane && annularPlane.normal) {
-        // Use the annular plane normal from workflow state - this is already correctly oriented
-        const normal = annularPlane.normal;
-        const length = Math.sqrt(normal[0]**2 + normal[1]**2 + normal[2]**2);
-        normalizedNormal = [normal[0]/length, normal[1]/length, normal[2]/length];
+        // CRITICAL: Use CENTERLINE TANGENT instead of annular plane normal
+        // The annular plane normal might be tilted ~5° from the actual flow direction
+        // Get the centerline tangent at the annulus position for perfect alignment
+        console.log('[VALVE DEBUG] Checking centerline availability...');
+        if (centerlineData && centerlineData.annulusPlaneIndex !== undefined && centerlineData.annulusPlaneIndex >= 0) {
+          console.log('[VALVE DEBUG] ✓ Centerline data available, using tangent');
+          const annulusIndex = centerlineData.annulusPlaneIndex;
+
+          // Extract tangent from orientation matrix at annulus
+          // Orientation matrix is 4x4, first column is the tangent (forward direction)
+          const orientationOffset = annulusIndex * 16;
+          const centerlineTangent = [
+            centerlineData.orientation[orientationOffset + 0],
+            centerlineData.orientation[orientationOffset + 1],
+            centerlineData.orientation[orientationOffset + 2]
+          ];
+
+          const tangentLength = Math.sqrt(centerlineTangent[0]**2 + centerlineTangent[1]**2 + centerlineTangent[2]**2);
+          normalizedNormal = [
+            centerlineTangent[0] / tangentLength,
+            centerlineTangent[1] / tangentLength,
+            centerlineTangent[2] / tangentLength
+          ];
+
+          // Compare with annular plane normal
+          const annularNormal = annularPlane.normal;
+          const annularLength = Math.sqrt(annularNormal[0]**2 + annularNormal[1]**2 + annularNormal[2]**2);
+          const normalizedAnnularNormal = [annularNormal[0]/annularLength, annularNormal[1]/annularLength, annularNormal[2]/annularLength];
+
+          const dotProduct = normalizedNormal[0] * normalizedAnnularNormal[0] +
+                            normalizedNormal[1] * normalizedAnnularNormal[1] +
+                            normalizedNormal[2] * normalizedAnnularNormal[2];
+          const angleDiff = Math.acos(Math.max(-1, Math.min(1, dotProduct))) * 180 / Math.PI;
+
+          console.log('[VALVE DEBUG] Using centerline tangent instead of annular plane normal');
+          console.log('[VALVE DEBUG] Centerline tangent:', normalizedNormal);
+          console.log('[VALVE DEBUG] Annular plane normal:', normalizedAnnularNormal);
+          console.log('[VALVE DEBUG] Angle difference:', angleDiff.toFixed(2), 'degrees');
+
+        } else {
+          // Fallback to annular plane normal if centerline not available
+          console.log('[VALVE DEBUG] ⚠ Centerline not available, using annular plane normal (may have ~5° tilt)');
+          const normal = annularPlane.normal;
+          const length = Math.sqrt(normal[0]**2 + normal[1]**2 + normal[2]**2);
+          normalizedNormal = [normal[0]/length, normal[1]/length, normal[2]/length];
+        }
 
       } else {
         // Fallback: calculate from cusp dots (should not happen)
@@ -3196,15 +3273,22 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
         // Create an orthonormal basis aligned with the target direction
         // Map valve STL's Z-axis (BLUE arrow) to centerline direction
-        const targetZ = normalizedNormal;
+        // INVERTED: Negate the normal to flip valve direction 180 degrees
+        const targetZ = [-normalizedNormal[0], -normalizedNormal[1], -normalizedNormal[2]];
 
-        // Find perpendicular vectors
+        console.log('[VALVE DEBUG] targetZ (inverted normal):', targetZ, `[${targetZ[0].toFixed(6)}, ${targetZ[1].toFixed(6)}, ${targetZ[2].toFixed(6)}]`);
+        console.log('[VALVE DEBUG] Original normal:', normalizedNormal, `[${normalizedNormal[0].toFixed(6)}, ${normalizedNormal[1].toFixed(6)}, ${normalizedNormal[2].toFixed(6)}]`);
+        console.log('[VALVE DEBUG] Cusp points:', `p1:[${p1[0].toFixed(2)}, ${p1[1].toFixed(2)}, ${p1[2].toFixed(2)}]`,
+                                                    `p2:[${p2[0].toFixed(2)}, ${p2[1].toFixed(2)}, ${p2[2].toFixed(2)}]`,
+                                                    `p3:[${p3[0].toFixed(2)}, ${p3[1].toFixed(2)}, ${p3[2].toFixed(2)}]`);
+
+        // Find perpendicular vectors using arbitrary reference
         let tempVec = [0, 1, 0];
         if (Math.abs(targetZ[1]) > 0.9) {
           tempVec = [0, 0, 1];
         }
 
-        // X-axis: cross product
+        // X-axis: cross product of Z and tempVec
         let targetX_temp = [
           targetZ[1] * tempVec[2] - targetZ[2] * tempVec[1],
           targetZ[2] * tempVec[0] - targetZ[0] * tempVec[2],
@@ -3213,7 +3297,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         const xLength = Math.sqrt(targetX_temp[0]**2 + targetX_temp[1]**2 + targetX_temp[2]**2);
         targetX_temp = [targetX_temp[0]/xLength, targetX_temp[1]/xLength, targetX_temp[2]/xLength];
 
-        // Y-axis: cross product
+        // Y-axis: cross product of Z and X to complete right-handed system
         const targetY = [
           targetZ[1] * targetX_temp[2] - targetZ[2] * targetX_temp[1],
           targetZ[2] * targetX_temp[0] - targetZ[0] * targetX_temp[2],
@@ -3221,6 +3305,20 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         ];
 
         const targetX = targetX_temp;
+
+        console.log('[VALVE DEBUG] targetX:', targetX, `[${targetX[0].toFixed(6)}, ${targetX[1].toFixed(6)}, ${targetX[2].toFixed(6)}]`);
+        console.log('[VALVE DEBUG] targetY:', targetY, `[${targetY[0].toFixed(6)}, ${targetY[1].toFixed(6)}, ${targetY[2].toFixed(6)}]`);
+
+        // Verify orthonormality
+        const dotXY = targetX[0]*targetY[0] + targetX[1]*targetY[1] + targetX[2]*targetY[2];
+        const dotXZ = targetX[0]*targetZ[0] + targetX[1]*targetZ[1] + targetX[2]*targetZ[2];
+        const dotYZ = targetY[0]*targetZ[0] + targetY[1]*targetZ[1] + targetY[2]*targetZ[2];
+        console.log('[VALVE DEBUG] Orthogonality check - X·Y:', dotXY, 'X·Z:', dotXZ, 'Y·Z:', dotYZ);
+
+        const lenX = Math.sqrt(targetX[0]**2 + targetX[1]**2 + targetX[2]**2);
+        const lenY = Math.sqrt(targetY[0]**2 + targetY[1]**2 + targetY[2]**2);
+        const lenZ = Math.sqrt(targetZ[0]**2 + targetZ[1]**2 + targetZ[2]**2);
+        console.log('[VALVE DEBUG] Normality check - |X|:', lenX, '|Y|:', lenY, '|Z|:', lenZ);
 
         // Build 4x4 transformation matrix with BOTH rotation AND translation
         // IMPORTANT: Map valve's Z-axis (longitudinal) to centerline
@@ -10251,8 +10349,20 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                   </label>
                   {valveVisible && (
                     <div className="mt-2 pt-2 border-t border-slate-600 space-y-2">
-                      <div className="text-[10px] text-slate-400">
-                        Model: {selectedValve}
+                      {/* Valve Model Selector */}
+                      <div className="space-y-1">
+                        <label className="text-[10px] text-slate-300 font-semibold">Valve Model</label>
+                        <select
+                          value={selectedValve}
+                          onChange={(e) => setSelectedValve(e.target.value)}
+                          className="w-full px-2 py-1 bg-slate-700 text-white text-[10px] rounded border border-slate-600 cursor-pointer hover:bg-slate-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        >
+                          {Object.entries(valveModels).map(([key, model]) => (
+                            <option key={key} value={key}>
+                              {model.name}
+                            </option>
+                          ))}
+                        </select>
                       </div>
 
                       {/* Rotation Controls */}
