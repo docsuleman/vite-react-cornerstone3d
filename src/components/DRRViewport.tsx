@@ -47,6 +47,9 @@ import vtkVolumeMapper from '@kitware/vtk.js/Rendering/Core/VolumeMapper';
 import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction';
 import vtkPiecewiseFunction from '@kitware/vtk.js/Common/DataModel/PiecewiseFunction';
 import vtkImageData from '@kitware/vtk.js/Common/DataModel/ImageData';
+import vtkSTLReader from '@kitware/vtk.js/IO/Geometry/STLReader';
+import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
+import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
 import { VolumeRenderingPreset, VolumeBlendMode } from '../types/VolumeRenderingTypes';
 import { VolumeRenderingPresetLoader } from '../utils/VolumeRenderingPresetLoader';
 import { SCurveGenerator } from '../utils/SCurveGenerator';
@@ -99,10 +102,17 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
   height = 512,
   preset,
   showAngleIndicators = true,
+  valveVisible = false,
+  valveSTLPath,
+  valveDepth = 0,
+  annulusCenter,
+  annulusNormal,
+  valveRotation = { x: 0, y: 0, z: 0 },
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [grw, setGrw] = useState<any>(null);
   const [volumeActor, setVolumeActor] = useState<any>(null);
+  const [valveActor, setValveActor] = useState<any>(null);
   const [currentPreset, setCurrentPreset] = useState<VolumeRenderingPreset | null>(
     preset || null
   );
@@ -356,6 +366,191 @@ export const DRRViewport: React.FC<DRRViewportProps> = ({
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, [grw]);
+
+  // Load and render valve STL
+  useEffect(() => {
+    if (!grw || !isInitialized) return;
+
+    const renderer = grw.getRenderer();
+    if (!renderer) return;
+
+    // Remove existing valve actor if any
+    if (valveActor) {
+      renderer.removeActor(valveActor);
+      setValveActor(null);
+    }
+
+    // Only render valve if visible and all required props are provided
+    if (!valveVisible || !valveSTLPath || !annulusCenter || !annulusNormal) {
+      grw.getRenderWindow().render();
+      return;
+    }
+
+    const loadValve = async () => {
+      try {
+        // Load STL file
+        const reader = vtkSTLReader.newInstance();
+        const response = await fetch(valveSTLPath);
+        const arrayBuffer = await response.arrayBuffer();
+        reader.parseAsArrayBuffer(arrayBuffer);
+
+        // Get polydata and bounds
+        const polyData = reader.getOutputData();
+        const originalBounds = polyData.getBounds();
+
+        // Calculate valve positioning (same logic as ProperMPRViewport)
+        // Build orthonormal basis aligned with annulus normal
+        const targetZ = [-annulusNormal[0], -annulusNormal[1], -annulusNormal[2]];
+
+        // Find perpendicular vectors
+        let tempVec = [0, 1, 0];
+        if (Math.abs(targetZ[1]) > 0.9) {
+          tempVec = [0, 0, 1];
+        }
+
+        // X-axis: cross product of Z and tempVec
+        let targetX = [
+          targetZ[1] * tempVec[2] - targetZ[2] * tempVec[1],
+          targetZ[2] * tempVec[0] - targetZ[0] * tempVec[2],
+          targetZ[0] * tempVec[1] - targetZ[1] * tempVec[0]
+        ];
+        const xLength = Math.sqrt(targetX[0]**2 + targetX[1]**2 + targetX[2]**2);
+        targetX = [targetX[0]/xLength, targetX[1]/xLength, targetX[2]/xLength];
+
+        // Y-axis: cross product of Z and X
+        const targetY = [
+          targetZ[1] * targetX[2] - targetZ[2] * targetX[1],
+          targetZ[2] * targetX[0] - targetZ[0] * targetX[2],
+          targetZ[0] * targetX[1] - targetZ[1] * targetX[0]
+        ];
+
+        // Apply manual rotation if specified
+        let finalX = [...targetX];
+        let finalY = [...targetY];
+        let finalZ = [...targetZ];
+
+        if (valveRotation.x !== 0 || valveRotation.y !== 0 || valveRotation.z !== 0) {
+          const rx = valveRotation.x * Math.PI / 180;
+          const ry = valveRotation.y * Math.PI / 180;
+          const rz = valveRotation.z * Math.PI / 180;
+
+          const cosX = Math.cos(rx), sinX = Math.sin(rx);
+          const cosY = Math.cos(ry), sinY = Math.sin(ry);
+          const cosZ = Math.cos(rz), sinZ = Math.sin(rz);
+
+          const Rx = [
+            [1, 0, 0],
+            [0, cosX, -sinX],
+            [0, sinX, cosX]
+          ];
+
+          const Ry = [
+            [cosY, 0, sinY],
+            [0, 1, 0],
+            [-sinY, 0, cosY]
+          ];
+
+          const Rz = [
+            [cosZ, -sinZ, 0],
+            [sinZ, cosZ, 0],
+            [0, 0, 1]
+          ];
+
+          const multiplyMatrices = (A: number[][], B: number[][]) => {
+            const result = [[0,0,0], [0,0,0], [0,0,0]];
+            for (let i = 0; i < 3; i++) {
+              for (let j = 0; j < 3; j++) {
+                result[i][j] = A[i][0] * B[0][j] + A[i][1] * B[1][j] + A[i][2] * B[2][j];
+              }
+            }
+            return result;
+          };
+
+          const multiplyMatrixVector = (M: number[][], v: number[]) => {
+            return [
+              M[0][0] * v[0] + M[0][1] * v[1] + M[0][2] * v[2],
+              M[1][0] * v[0] + M[1][1] * v[1] + M[1][2] * v[2],
+              M[2][0] * v[0] + M[2][1] * v[1] + M[2][2] * v[2]
+            ];
+          };
+
+          const R_temp = multiplyMatrices(Ry, Rx);
+          const R = multiplyMatrices(Rz, R_temp);
+
+          finalX = multiplyMatrixVector(R, targetX);
+          finalY = multiplyMatrixVector(R, targetY);
+          finalZ = multiplyMatrixVector(R, targetZ);
+        }
+
+        // Calculate translation (valve base at annulus + depth offset)
+        const valveCenterX = (originalBounds[0] + originalBounds[1]) / 2;
+        const valveCenterY = (originalBounds[2] + originalBounds[3]) / 2;
+        const valveBaseZ = originalBounds[4]; // Base of valve
+
+        const depthOffset = [
+          -annulusNormal[0] * valveDepth,
+          -annulusNormal[1] * valveDepth,
+          -annulusNormal[2] * valveDepth
+        ];
+
+        const targetPosition = [
+          annulusCenter[0] + depthOffset[0],
+          annulusCenter[1] + depthOffset[1],
+          annulusCenter[2] + depthOffset[2]
+        ];
+
+        const localOffset = [
+          finalX[0] * (-valveCenterX) + finalY[0] * (-valveCenterY) + finalZ[0] * (-valveBaseZ),
+          finalX[1] * (-valveCenterX) + finalY[1] * (-valveCenterY) + finalZ[1] * (-valveBaseZ),
+          finalX[2] * (-valveCenterX) + finalY[2] * (-valveCenterY) + finalZ[2] * (-valveBaseZ)
+        ];
+
+        const translation = [
+          targetPosition[0] + localOffset[0],
+          targetPosition[1] + localOffset[1],
+          targetPosition[2] + localOffset[2]
+        ];
+
+        // Build transformation matrix
+        const userMatrix = [
+          finalX[0], finalY[0], finalZ[0], 0,
+          finalX[1], finalY[1], finalZ[1], 0,
+          finalX[2], finalY[2], finalZ[2], 0,
+          translation[0], translation[1], translation[2], 1
+        ];
+
+        // Create mapper and actor
+        const mapper = vtkMapper.newInstance();
+        mapper.setInputConnection(reader.getOutputPort());
+
+        const actor = vtkActor.newInstance();
+        actor.setMapper(mapper);
+        actor.setUserMatrix(userMatrix);
+
+        // Set material properties for DRR view (dark, semi-transparent)
+        actor.getProperty().setLighting(true);
+        actor.getProperty().setColor(0.2, 0.2, 0.2); // Dark gray for X-ray visibility
+        actor.getProperty().setOpacity(0.7); // Semi-transparent
+        actor.getProperty().setAmbient(0.5);
+        actor.getProperty().setDiffuse(0.5);
+        actor.getProperty().setSpecular(0.3);
+        actor.getProperty().setSpecularPower(20);
+
+        // Add actor to renderer
+        renderer.addActor(actor);
+        setValveActor(actor);
+
+        // Render
+        grw.getRenderWindow().render();
+
+        console.log('[DRR VALVE] Valve rendered successfully');
+      } catch (error) {
+        console.error('[DRR VALVE] Error loading valve:', error);
+      }
+    };
+
+    loadValve();
+  }, [grw, isInitialized, valveVisible, valveSTLPath, annulusCenter, annulusNormal, valveDepth, valveRotation]);
 
   return (
     <div className="relative flex" style={{ width: '100%', height }}>

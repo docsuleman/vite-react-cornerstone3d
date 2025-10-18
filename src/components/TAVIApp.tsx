@@ -66,6 +66,7 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
   const [valveSize, setValveSize] = useState('26');
   const [valveDepth, setValveDepth] = useState(0);
   const [valveRotation, setValveRotation] = useState({ x: 0, y: 0, z: 0 });
+  const [valvePositionOffset, setValvePositionOffset] = useState<[number, number, number]>([0, 0, 0]);
 
   // Valve models mapping
   const valveModels = {
@@ -746,6 +747,89 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
                     <span>+15mm (above)</span>
                   </div>
                 </div>
+
+                {/* Position Controls */}
+                <div className="space-y-2 pt-3 border-t border-slate-700">
+                  <div className="flex justify-between items-center mb-2">
+                    <label className="text-[10px] text-slate-400 font-semibold uppercase tracking-wide">Manual Position</label>
+                    <button
+                      onClick={() => setValvePositionOffset([0, 0, 0])}
+                      className="text-[9px] text-blue-400 hover:text-blue-300 underline"
+                    >
+                      Reset
+                    </button>
+                  </div>
+                  <div className="text-[9px] text-slate-300 bg-slate-900/50 rounded p-2">
+                    <div>Click and drag valve to reposition</div>
+                    <div className="text-slate-500 mt-1">
+                      Offset: [{valvePositionOffset[0].toFixed(1)}, {valvePositionOffset[1].toFixed(1)}, {valvePositionOffset[2].toFixed(1)}] mm
+                    </div>
+                  </div>
+                </div>
+
+                {/* Rotation Controls */}
+                <div className="space-y-2 pt-3 border-t border-slate-700">
+                  <div className="flex justify-between items-center mb-2">
+                    <label className="text-[10px] text-slate-400 font-semibold uppercase tracking-wide">Manual Rotation</label>
+                    <button
+                      onClick={() => setValveRotation({ x: 0, y: 0, z: 0 })}
+                      className="text-[9px] text-blue-400 hover:text-blue-300 underline"
+                    >
+                      Reset
+                    </button>
+                  </div>
+
+                  {/* X-axis rotation */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] text-red-400 font-semibold">X-axis (Pitch)</span>
+                      <span className="text-[9px] text-slate-400 font-mono">{valveRotation.x}°</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="-180"
+                      max="180"
+                      step="5"
+                      value={valveRotation.x}
+                      onChange={(e) => setValveRotation({ ...valveRotation, x: parseInt(e.target.value) })}
+                      className="w-full h-1.5 bg-slate-600 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Y-axis rotation */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] text-green-400 font-semibold">Y-axis (Roll)</span>
+                      <span className="text-[9px] text-slate-400 font-mono">{valveRotation.y}°</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="-180"
+                      max="180"
+                      step="5"
+                      value={valveRotation.y}
+                      onChange={(e) => setValveRotation({ ...valveRotation, y: parseInt(e.target.value) })}
+                      className="w-full h-1.5 bg-slate-600 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Z-axis rotation */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] text-blue-400 font-semibold">Z-axis (Yaw)</span>
+                      <span className="text-[9px] text-slate-400 font-mono">{valveRotation.z}°</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="-180"
+                      max="180"
+                      step="5"
+                      value={valveRotation.z}
+                      onChange={(e) => setValveRotation({ ...valveRotation, z: parseInt(e.target.value) })}
+                      className="w-full h-1.5 bg-slate-600 rounded-lg appearance-none cursor-pointer"
+                    />
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -773,7 +857,7 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
                     <img
                       src={rootImage}
                       alt="Aortic Root"
-                      className="w-full h-auto rounded"
+                      className="max-w-40 max-h-40 object-contain rounded mx-auto"
                     />
                   </div>
                 </div>
@@ -794,7 +878,7 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
                     <img
                       src={valveImage}
                       alt="Aortic Valve"
-                      className="w-full h-auto rounded"
+                      className="max-w-40 max-h-40 object-contain rounded mx-auto"
                     />
                   </div>
                 </div>
@@ -910,6 +994,8 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             valveSize={valveSize}
             valveDepth={valveDepth}
             valveRotation={valveRotation}
+            valvePositionOffset={valvePositionOffset}
+            onValvePositionOffsetChange={setValvePositionOffset}
             onWorkflowStepSelect={(stepId) => {
               const targetStep = workflowSteps.find(step => step.id === stepId);
               if (targetStep) {

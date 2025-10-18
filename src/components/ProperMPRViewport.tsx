@@ -53,6 +53,7 @@ import vtkSTLReader from '@kitware/vtk.js/IO/Geometry/STLReader';
 import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
 import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
 import vtkCylinderSource from '@kitware/vtk.js/Filters/Sources/CylinderSource';
+import vtkSphereSource from '@kitware/vtk.js/Filters/Sources/SphereSource';
 import vtkVolume from '@kitware/vtk.js/Rendering/Core/Volume';
 import vtkVolumeMapper from '@kitware/vtk.js/Rendering/Core/VolumeMapper';
 import vtkColorTransferFunction from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction';
@@ -149,6 +150,8 @@ interface ProperMPRViewportProps {
   valveSize?: string;
   valveDepth?: number;
   valveRotation?: { x: number; y: number; z: number };
+  valvePositionOffset?: [number, number, number];
+  onValvePositionOffsetChange?: (offset: [number, number, number]) => void;
 }
 
 const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
@@ -180,7 +183,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   selectedValve = 'Hybrid-Auxetic-v4_open',
   valveSize = '26',
   valveDepth = 0,
-  valveRotation = { x: 0, y: 0, z: 0 }
+  valveRotation = { x: 0, y: 0, z: 0 },
+  valvePositionOffset = [0, 0, 0],
+  onValvePositionOffsetChange
 }) => {
   const elementRefs = {
     axial: useRef(null),
@@ -837,6 +842,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const cprAnnulusRatioRef = useRef<number | undefined>(undefined); // Store annulus position ratio for reference line
   const cprActorsRef = useRef<{ actor: any; mapper: any; viewportId: string; config: any }[]>([]); // Store CPR actors and mappers when in CPR mode
   const valveActorsRef = useRef<{ actor: any; mapper: any; viewportId: string; clipPlane: any }[]>([]); // Store valve actors and clipping planes
+  const valveGizmoActorsRef = useRef<{ centerSphere: any; viewportId: string }[]>([]); // Store valve interaction gizmo actors (center sphere only)
   const initialViewUpRef = useRef<Types.Point3 | null>(null); // Store initial viewUp from first centerline alignment (ANNULUS_DEFINITION)
   const firstAdjustmentDoneRef = useRef<boolean>(false); // Track whether first adjustment has been completed (prevent re-running on tool change)
   const lockedAxialCameraRef = useRef<{ position: Types.Point3; viewUp: Types.Point3; parallelScale: number } | null>(null); // Store locked camera orientation for annular plane
@@ -3006,12 +3012,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     }
   }, [selectedValve]);
 
-  // Effect to update valve when manual rotation or depth changes
+  // Effect to update valve when manual rotation, depth, or position offset changes
   useEffect(() => {
     if (valveVisible && cuspDotsRef.current && cuspDotsRef.current.length === 3) {
       loadAndDisplayValve();
     }
-  }, [valveRotation, valveDepth]);
+  }, [valveRotation, valveDepth, valvePositionOffset]);
 
   // Effect to update valve clipping when camera changes
   useEffect(() => {
@@ -3078,6 +3084,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     const renderingEngine = renderingEngineRef.current;
     if (!renderingEngine) return;
 
+    // Remove valve actors
     valveActorsRef.current.forEach(({ viewportId }) => {
       const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
       if (viewport) {
@@ -3086,8 +3093,209 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       }
     });
 
+    // Remove gizmo actors (center sphere only)
+    valveGizmoActorsRef.current.forEach(({ centerSphere, viewportId }) => {
+      const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
+      if (viewport) {
+        viewport.removeActors([`valveGizmoCenterSphere_${viewportId}`]);
+      }
+    });
+
     valveActorsRef.current = [];
+    valveGizmoActorsRef.current = [];
     renderingEngine.renderViewports(['axial', 'sagittal', 'coronal']);
+  };
+
+  // Helper function to create visual interaction gizmo (center sphere only for dragging)
+  const createValveGizmo = (
+    renderingEngine: any,
+    viewportIds: string[],
+    annulusCenter: [number, number, number]
+  ) => {
+    const sphereRadius = 3; // 3mm radius sphere for center point
+
+    viewportIds.forEach((viewportId) => {
+      const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
+      if (!viewport) return;
+
+      // Create center sphere for dragging
+      const sphereSource = vtkSphereSource.newInstance();
+      sphereSource.setRadius(sphereRadius);
+      sphereSource.setThetaResolution(32);
+      sphereSource.setPhiResolution(32);
+
+      const sphereMapper = vtkMapper.newInstance();
+      sphereMapper.setInputConnection(sphereSource.getOutputPort());
+
+      const sphereActor = vtkActor.newInstance();
+      sphereActor.setMapper(sphereMapper);
+      sphereActor.getProperty().setColor(1.0, 0.5, 0.0); // Orange color
+      sphereActor.getProperty().setOpacity(0.9);
+
+      // Position sphere at annulus center (with position offset)
+      const spherePosition: [number, number, number] = [
+        annulusCenter[0] + valvePositionOffset[0],
+        annulusCenter[1] + valvePositionOffset[1],
+        annulusCenter[2] + valvePositionOffset[2]
+      ];
+      sphereActor.setPosition(...spherePosition);
+
+      // Add sphere actor to viewport
+      viewport.addActor({ uid: `valveGizmoCenterSphere_${viewportId}`, actor: sphereActor });
+
+      // Store reference
+      valveGizmoActorsRef.current.push({
+        centerSphere: sphereActor,
+        viewportId
+      });
+    });
+
+    renderingEngine.renderViewports(viewportIds);
+  };
+
+  // Helper function to enable valve dragging functionality using gizmo
+  const enableValveDragging = (
+    renderingEngine: any,
+    viewportIds: string[],
+    gizmoActorsRef: any,
+    onPositionChange: (offset: [number, number, number]) => void,
+    annulusCenter: [number, number, number]
+  ) => {
+    let isDragging = false;
+    let dragStartWorld: [number, number, number] | null = null;
+    let dragStartOffset: [number, number, number] = [0, 0, 0];
+    let activeViewportId: string | null = null;
+
+    viewportIds.forEach((viewportId) => {
+      const element = document.getElementById(viewportId);
+      if (!element) return;
+
+      const handleMouseDown = (event: MouseEvent) => {
+        const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
+        if (!viewport) return;
+
+        // Get canvas coordinates
+        const rect = element.getBoundingClientRect();
+        const canvasPos = {
+          x: event.clientX - rect.left,
+          y: event.clientY - rect.top
+        };
+
+        // Convert to world coordinates
+        const worldPos = viewport.canvasToWorld([canvasPos.x, canvasPos.y]);
+
+        // Find gizmo for this viewport
+        const gizmo = gizmoActorsRef.current.find((g: any) => g.viewportId === viewportId);
+        if (!gizmo) return;
+
+        // Check if clicking near center sphere (within 5mm radius)
+        const spherePosition = gizmo.centerSphere.getPosition();
+        const distanceToSphere = Math.sqrt(
+          (worldPos[0] - spherePosition[0])**2 +
+          (worldPos[1] - spherePosition[1])**2 +
+          (worldPos[2] - spherePosition[2])**2
+        );
+
+        if (distanceToSphere < 10) { // Within 10mm of center sphere
+          isDragging = true;
+          dragStartWorld = worldPos as [number, number, number];
+          dragStartOffset = [...valvePositionOffset];
+          activeViewportId = viewportId;
+          element.style.cursor = 'grabbing';
+          event.stopPropagation();
+          console.log('[VALVE DRAG] Started dragging center sphere');
+        }
+      };
+
+      const handleMouseMove = (event: MouseEvent) => {
+        if (!isDragging || !dragStartWorld || activeViewportId !== viewportId) {
+          // Check if hovering over center sphere to change cursor
+          if (!isDragging) {
+            const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
+            if (!viewport) return;
+
+            const rect = element.getBoundingClientRect();
+            const canvasPos = {
+              x: event.clientX - rect.left,
+              y: event.clientY - rect.top
+            };
+
+            const worldPos = viewport.canvasToWorld([canvasPos.x, canvasPos.y]);
+            const gizmo = gizmoActorsRef.current.find((g: any) => g.viewportId === viewportId);
+
+            if (gizmo) {
+              const spherePosition = gizmo.centerSphere.getPosition();
+              const distanceToSphere = Math.sqrt(
+                (worldPos[0] - spherePosition[0])**2 +
+                (worldPos[1] - spherePosition[1])**2 +
+                (worldPos[2] - spherePosition[2])**2
+              );
+
+              element.style.cursor = distanceToSphere < 10 ? 'grab' : 'default';
+            }
+          }
+          return;
+        }
+
+        const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
+        if (!viewport) return;
+
+        // Get current world position
+        const rect = element.getBoundingClientRect();
+        const canvasPos = {
+          x: event.clientX - rect.left,
+          y: event.clientY - rect.top
+        };
+
+        const currentWorld = viewport.canvasToWorld([canvasPos.x, canvasPos.y]);
+
+        // Calculate world space delta
+        const deltaWorld: [number, number, number] = [
+          currentWorld[0] - dragStartWorld[0],
+          currentWorld[1] - dragStartWorld[1],
+          currentWorld[2] - dragStartWorld[2]
+        ];
+
+        // Update position offset
+        const newOffset: [number, number, number] = [
+          dragStartOffset[0] + deltaWorld[0],
+          dragStartOffset[1] + deltaWorld[1],
+          dragStartOffset[2] + deltaWorld[2]
+        ];
+
+        onPositionChange(newOffset);
+
+        // Update center sphere position immediately for visual feedback
+        const gizmo = gizmoActorsRef.current.find((g: any) => g.viewportId === viewportId);
+        if (gizmo) {
+          const newPos: [number, number, number] = [
+            annulusCenter[0] + newOffset[0],
+            annulusCenter[1] + newOffset[1],
+            annulusCenter[2] + newOffset[2]
+          ];
+          gizmo.centerSphere.setPosition(...newPos);
+          renderingEngine.renderViewports([viewportId]);
+        }
+
+        event.stopPropagation();
+      };
+
+      const handleMouseUp = (event: MouseEvent) => {
+        if (isDragging) {
+          isDragging = false;
+          dragStartWorld = null;
+          activeViewportId = null;
+          element.style.cursor = 'default';
+          event.stopPropagation();
+          console.log('[VALVE DRAG] Ended dragging');
+        }
+      };
+
+      // Add event listeners
+      element.addEventListener('mousedown', handleMouseDown);
+      element.addEventListener('mousemove', handleMouseMove);
+      element.addEventListener('mouseup', handleMouseUp);
+    });
   };
 
   // Helper function to load and display the virtual valve STL model
@@ -3424,10 +3632,11 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           -normalizedNormal[2] * valveDepth
         ];
 
+        // Include manual position offset from dragging
         const targetPosition = [
-          annulusCenter[0] + depthOffset[0],
-          annulusCenter[1] + depthOffset[1],
-          annulusCenter[2] + depthOffset[2]
+          annulusCenter[0] + depthOffset[0] + valvePositionOffset[0],
+          annulusCenter[1] + depthOffset[1] + valvePositionOffset[1],
+          annulusCenter[2] + depthOffset[2] + valvePositionOffset[2]
         ];
 
         // Translation = desired position - rotated position
@@ -3528,6 +3737,14 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           viewportId: viewportId,
           clipPlane: null // Clipping planes are managed by mapper now
         });
+      }
+
+      // Create visual interaction gizmo (center sphere only)
+      createValveGizmo(renderingEngine, viewportIds, annulusCenter);
+
+      // Add drag interaction to valve gizmo
+      if (onValvePositionOffsetChange) {
+        enableValveDragging(renderingEngine, viewportIds, valveGizmoActorsRef, onValvePositionOffsetChange, annulusCenter);
       }
 
       // Render all viewports
@@ -10229,6 +10446,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                               width={400}
                               height={400}
                               showAngleIndicators={true}
+                              valveVisible={valveVisible}
+                              valveSTLPath={valveModels[selectedValve as keyof typeof valveModels]?.path}
+                              valveDepth={valveDepth}
+                              annulusCenter={annularPlane?.center}
+                              annulusNormal={annularPlane?.normal}
+                              valveRotation={valveRotation}
                             />
                           </div>
                         ) : (

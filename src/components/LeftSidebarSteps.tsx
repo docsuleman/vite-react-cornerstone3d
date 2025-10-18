@@ -1,6 +1,11 @@
 import React from 'react';
-import { FaUser, FaStethoscope, FaCog, FaRuler, FaFileAlt, FaCheck, FaLock } from 'react-icons/fa';
+import { FaCheck } from 'react-icons/fa';
 import { WorkflowStage } from '../types/WorkflowTypes';
+import patientIcon from '../assets/patient-icon\'.png';
+import rootIcon from '../assets/root-icon.png';
+import valveIcon from '../assets/valve-transparent-icon.png';
+import measurementIcon from '../assets/measure-icon.png';
+import reportIcon from '../assets/sideview-human.png';
 
 interface LeftSidebarStepsProps {
   currentStage: WorkflowStage;
@@ -22,11 +27,11 @@ const LeftSidebarSteps: React.FC<LeftSidebarStepsProps> = ({
   canAdvanceToStage
 }) => {
   const stages = [
-    { stage: WorkflowStage.PATIENT_SELECTION, icon: FaUser, label: '1' },
-    { stage: WorkflowStage.ROOT_DEFINITION, icon: FaStethoscope, label: '2' },
-    { stage: WorkflowStage.ANNULUS_DEFINITION, icon: FaCog, label: '3' },
-    { stage: WorkflowStage.MEASUREMENTS, icon: FaRuler, label: '4' },
-    { stage: WorkflowStage.REPORT, icon: FaFileAlt, label: '5' },
+    { stage: WorkflowStage.PATIENT_SELECTION, iconSrc: patientIcon, label: '1' },
+    { stage: WorkflowStage.ROOT_DEFINITION, iconSrc: rootIcon, label: '2' },
+    { stage: WorkflowStage.ANNULUS_DEFINITION, iconSrc: valveIcon, label: '3' },
+    { stage: WorkflowStage.MEASUREMENTS, iconSrc: measurementIcon, label: '4' },
+    { stage: WorkflowStage.REPORT, iconSrc: reportIcon, label: '5' },
   ];
 
   const getStageStatus = (stage: WorkflowStage) => {
@@ -53,7 +58,7 @@ const LeftSidebarSteps: React.FC<LeftSidebarStepsProps> = ({
 
   return (
     <div className="w-20 bg-slate-900 border-r border-slate-700 flex flex-col items-center py-4 gap-4">
-      {stages.map(({ stage, icon: Icon, label }) => {
+      {stages.map(({ stage, iconSrc, label }) => {
         const status = getStageStatus(stage);
         const colors = getStageColors(status);
         const isClickable = status !== 'locked';
@@ -70,13 +75,18 @@ const LeftSidebarSteps: React.FC<LeftSidebarStepsProps> = ({
               {label}
             </div>
 
-            {/* Icon or status indicator */}
-            {status === 'completed' ? (
-              <FaCheck className="text-xl" />
-            ) : status === 'locked' ? (
-              <FaLock className="text-sm" />
-            ) : (
-              <Icon className="text-xl" />
+            {/* Icon */}
+            <img
+              src={iconSrc}
+              alt={stage}
+              className="max-w-6 max-h-6 object-contain"
+            />
+
+            {/* Completion checkmark badge on top-right */}
+            {status === 'completed' && (
+              <div className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-green-500 border-2 border-slate-900 flex items-center justify-center">
+                <FaCheck className="text-white text-[10px]" />
+              </div>
             )}
 
             {/* Current stage indicator */}
