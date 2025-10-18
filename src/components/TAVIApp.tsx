@@ -3,6 +3,8 @@ import { FaUser, FaStethoscope, FaEye, FaRuler, FaCog, FaChevronRight, FaCheck, 
 import appIcon from '../assets/app-icon.png';
 import rootImage from '../assets/root.png';
 import valveImage from '../assets/valve-transparent.png';
+import valveSTLPath from '../assets/Hybrid-Auxetic-v4_open.STL?url';
+import evolutValveSTLPath from '../assets/evolut.stl?url';
 import PatientSearch from './PatientSearch';
 import LeftSidebarSteps from './LeftSidebarSteps';
 import MultiPhaseModal from './MultiPhaseModal';
@@ -57,6 +59,27 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
     laoRao: 0,
     cranCaud: 0,
   });
+
+  // Virtual Valve state management
+  const [valveVisible, setValveVisible] = useState(false);
+  const [selectedValve, setSelectedValve] = useState('Hybrid-Auxetic-v4_open');
+  const [valveSize, setValveSize] = useState('26');
+  const [valveDepth, setValveDepth] = useState(0);
+  const [valveRotation, setValveRotation] = useState({ x: 0, y: 0, z: 0 });
+
+  // Valve models mapping
+  const valveModels = {
+    'Hybrid-Auxetic-v4_open': {
+      name: 'Hybrid Auxetic v4',
+      path: valveSTLPath,
+      sizes: ['23', '26', '29']
+    },
+    'Evolut': {
+      name: 'Evolut',
+      path: evolutValveSTLPath,
+      sizes: ['23', '26', '29', '34']
+    }
+  };
 
   useEffect(() => {
     // Initialize the workflow with patient selection
@@ -642,7 +665,92 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
         </div>
       )}
 
+      {/* Virtual Valve Panel - Only show in MEASUREMENTS stage with 3 cusp points */}
+      {state.currentStage === WorkflowStage.MEASUREMENTS && state.annulusPoints && state.annulusPoints.length === 3 && (
+        <div className="px-3 py-3 border-b border-slate-700 flex-shrink-0">
+          <div className="bg-slate-800 rounded-lg p-3">
+            <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Virtual Valve</h4>
 
+            {/* Show Valve Toggle */}
+            <label className="flex items-center gap-2 text-white text-xs cursor-pointer mb-3">
+              <input
+                type="checkbox"
+                checked={valveVisible}
+                onChange={(e) => setValveVisible(e.target.checked)}
+                className="w-4 h-4 cursor-pointer"
+              />
+              <span className="font-medium">Show Valve</span>
+            </label>
+
+            {valveVisible && (
+              <div className="space-y-3">
+                {/* Valve Model Selector */}
+                <div className="space-y-1">
+                  <label className="text-[10px] text-slate-400 font-semibold uppercase tracking-wide">Valve Model</label>
+                  <select
+                    value={selectedValve}
+                    onChange={(e) => {
+                      setSelectedValve(e.target.value);
+                      // Reset size to first available size for new model
+                      const newModel = valveModels[e.target.value as keyof typeof valveModels];
+                      if (newModel && newModel.sizes.length > 0) {
+                        setValveSize(newModel.sizes[0]);
+                      }
+                    }}
+                    className="w-full px-3 py-2 bg-slate-700 text-white text-sm rounded border border-slate-600 cursor-pointer hover:bg-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    {Object.entries(valveModels).map(([key, model]) => (
+                      <option key={key} value={key}>
+                        {model.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Valve Size Selector */}
+                <div className="space-y-1">
+                  <label className="text-[10px] text-slate-400 font-semibold uppercase tracking-wide">Valve Size</label>
+                  <select
+                    value={valveSize}
+                    onChange={(e) => setValveSize(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-700 text-white text-sm rounded border border-slate-600 cursor-pointer hover:bg-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    {valveModels[selectedValve as keyof typeof valveModels]?.sizes.map((size) => (
+                      <option key={size} value={size}>
+                        {size} mm
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Valve Depth Control */}
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center">
+                    <label className="text-[10px] text-slate-400 font-semibold uppercase tracking-wide">Implantation Depth</label>
+                    <span className="text-xs text-white font-mono bg-slate-700 px-2 py-0.5 rounded">
+                      {valveDepth > 0 ? '+' : ''}{valveDepth}mm
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="-15"
+                    max="15"
+                    step="0.5"
+                    value={valveDepth}
+                    onChange={(e) => setValveDepth(parseFloat(e.target.value))}
+                    className="w-full h-2 bg-slate-600 rounded-lg appearance-none cursor-pointer slider-thumb"
+                  />
+                  <div className="flex justify-between text-[9px] text-slate-500">
+                    <span>-15mm (below)</span>
+                    <span>Annulus</span>
+                    <span>+15mm (above)</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Tools Section - Replace with Measurement Workflow Panel for MEASUREMENTS stage */}
       {state.currentStage === WorkflowStage.MEASUREMENTS ? (
@@ -797,6 +905,11 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             sCurveAngles={state.currentStage === WorkflowStage.MEASUREMENTS ? current3DAngles : undefined}
             onSCurveAngleChange={state.currentStage === WorkflowStage.MEASUREMENTS ? setCurrent3DAngles : undefined}
             annulusPoints={state.annulusPoints}
+            valveVisible={valveVisible}
+            selectedValve={selectedValve}
+            valveSize={valveSize}
+            valveDepth={valveDepth}
+            valveRotation={valveRotation}
             onWorkflowStepSelect={(stepId) => {
               const targetStep = workflowSteps.find(step => step.id === stepId);
               if (targetStep) {

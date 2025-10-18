@@ -241,7 +241,7 @@ export class CenterlineGenerator {
         console.log(`[CL_DEBUG]    Found ${pointsInRegion.length} points in ±5mm region: indices ${pointsInRegion[0]} to ${pointsInRegion[pointsInRegion.length-1]}`);
 
         // Now reposition them IN ORDER along the straight line
-        let tangentFixCount = 0;
+        // AND force ALL tangents in the ±5mm region to be the straight tangent
         const totalLength = vec3.distance(endPos, startPos);
 
         for (let j = 0; j < pointsInRegion.length; j++) {
@@ -257,31 +257,110 @@ export class CenterlineGenerator {
 
           splinePoints[i].position = newPos as Vector3;
 
-          // Calculate new distance for verification
-          const vecFromCenter = vec3.subtract(vec3.create(), newPos, annulusCenter as vec3);
-          const distAlongNormal = vec3.dot(vecFromCenter, unitNormal);
-
-          // CRITICAL FIX: In the central ±1mm region, force tangent to be exactly along normal
-          if (Math.abs(distAlongNormal) <= 1.0) {
-            splinePoints[i].tangent = vec3.clone(straightTangent) as Vector3;
-            tangentFixCount++;
-          }
+          // CRITICAL FIX: Force ALL tangents in the entire ±5mm region to be the straight tangent
+          // This prevents wild tangent variations in the transition zones
+          splinePoints[i].tangent = vec3.clone(straightTangent) as Vector3;
         }
 
         console.log(`[CL_DEBUG]    ✓ Straightened ${pointsInRegion.length} point positions`);
-        console.log(`[CL_DEBUG]    ✓ Fixed ${tangentFixCount} tangents in central ±1mm region`);
+        console.log(`[CL_DEBUG]    ✓ Fixed ${pointsInRegion.length} tangents in entire ±5mm region`);
 
-        // DEBUG: Log points near annulus to check for reversal
-        console.log(`[CL_DEBUG] 📍 Logging centerline points near annulus (±2mm):`);
+        // CRITICAL: Smooth tangents at ±5mm boundaries using GRADIENT approach
+        // Smooth 3 points on each side of the boundary for smooth transition
+        if (pointsInRegion.length >= 2) {
+          const firstIdx = pointsInRegion[0];
+          const lastIdx = pointsInRegion[pointsInRegion.length - 1];
+
+          // UPSTREAM BOUNDARY: Smooth 3 points before entering straight segment
+          // Create gradient from curved → straight
+          const numTransitionPoints = 3;
+          for (let offset = 0; offset < numTransitionPoints; offset++) {
+            const idx = firstIdx - (numTransitionPoints - 1 - offset);
+            if (idx >= 0 && idx < splinePoints.length) {
+              const prevTangent = idx > 0 ? splinePoints[idx - 1].tangent : straightTangent;
+              const weight = (offset + 1) / (numTransitionPoints + 1); // 0.25, 0.5, 0.75
+
+              // Weighted blend: more curved at start, more straight as we approach boundary
+              const blendedTangent = vec3.create();
+              vec3.scale(blendedTangent, prevTangent, 1 - weight);
+              vec3.scaleAndAdd(blendedTangent, blendedTangent, straightTangent, weight);
+              vec3.normalize(blendedTangent, blendedTangent);
+
+              splinePoints[idx].tangent = blendedTangent as Vector3;
+              console.log(`[CL_DEBUG]    ✓ Smoothed upstream tangent at index ${idx} (weight: ${weight.toFixed(2)})`);
+            }
+          }
+
+          // Also smooth the first point IN the region
+          if (firstIdx >= 0 && firstIdx < splinePoints.length) {
+            const prevTangent = firstIdx > 0 ? splinePoints[firstIdx - 1].tangent : straightTangent;
+            const blendedTangent = vec3.create();
+            vec3.add(blendedTangent, prevTangent, straightTangent);
+            vec3.normalize(blendedTangent, blendedTangent);
+            splinePoints[firstIdx].tangent = blendedTangent as Vector3;
+            console.log(`[CL_DEBUG]    ✓ Smoothed first boundary at index ${firstIdx}`);
+          }
+
+          // DOWNSTREAM BOUNDARY: Smooth 3 points after exiting straight segment
+          // Create gradient from straight → curved
+          for (let offset = 1; offset <= numTransitionPoints; offset++) {
+            const idx = lastIdx + offset;
+            if (idx >= 0 && idx < splinePoints.length) {
+              const nextTangent = idx < splinePoints.length - 1 ? splinePoints[idx + 1].tangent : straightTangent;
+              const weight = 1 - (offset / (numTransitionPoints + 1)); // 0.75, 0.5, 0.25
+
+              // Weighted blend: more straight at start, more curved as we move away
+              const blendedTangent = vec3.create();
+              vec3.scale(blendedTangent, straightTangent, weight);
+              vec3.scaleAndAdd(blendedTangent, blendedTangent, nextTangent, 1 - weight);
+              vec3.normalize(blendedTangent, blendedTangent);
+
+              splinePoints[idx].tangent = blendedTangent as Vector3;
+              console.log(`[CL_DEBUG]    ✓ Smoothed downstream tangent at index ${idx} (weight: ${weight.toFixed(2)})`);
+            }
+          }
+
+          // Also smooth the last point IN the region
+          if (lastIdx >= 0 && lastIdx < splinePoints.length) {
+            const nextTangent = lastIdx < splinePoints.length - 1 ? splinePoints[lastIdx + 1].tangent : straightTangent;
+            const blendedTangent = vec3.create();
+            vec3.add(blendedTangent, straightTangent, nextTangent);
+            vec3.normalize(blendedTangent, blendedTangent);
+            splinePoints[lastIdx].tangent = blendedTangent as Vector3;
+            console.log(`[CL_DEBUG]    ✓ Smoothed last boundary at index ${lastIdx}`);
+          }
+        }
+
+        // DEBUG: ULTRA FINE-GRAINED logging - ALL points from -6mm to +6mm with 0.1mm precision
+        console.log(`[CL_DEBUG] 📍 ULTRA FINE-GRAINED logging - ALL points from -6mm to +6mm:`);
+
+        const firstIdx = pointsInRegion[0];
+        const lastIdx = pointsInRegion[pointsInRegion.length - 1];
+
+        console.log(`[CL_DEBUG] 📍 COMPLETE LISTING - indices around boundaries:`);
         for (let i = 0; i < splinePoints.length; i++) {
           const pos = splinePoints[i].position;
           const tangent = splinePoints[i].tangent;
           const vecFromCenter = vec3.subtract(vec3.create(), pos, annulusCenter as vec3);
           const distAlongNormal = vec3.dot(vecFromCenter, unitNormal);
 
-          if (Math.abs(distAlongNormal) <= 2.0) {
+          // Only log points within -6mm to +6mm range
+          if (Math.abs(distAlongNormal) <= 6.0) {
+            const isFirstBoundary = i === firstIdx ? ' [FIRST_BOUNDARY]' : '';
+            const isLastBoundary = i === lastIdx ? ' [LAST_BOUNDARY]' : '';
+            const inRegion = pointsInRegion.includes(i) ? ' [IN_REGION]' : ' [OUTSIDE]';
             const isAnnulus = splinePoints[i].isAnnulusPlane ? ' [ANNULUS]' : '';
-            console.log(`[CL_DEBUG]   [${i}] dist:${distAlongNormal.toFixed(3)}mm pos:[${pos[0].toFixed(2)}, ${pos[1].toFixed(2)}, ${pos[2].toFixed(2)}] tangent:[${tangent[0].toFixed(3)}, ${tangent[1].toFixed(3)}, ${tangent[2].toFixed(3)}]${isAnnulus}`);
+
+            // Calculate tangent change from previous point
+            let tangentChange = '';
+            if (i > 0 && Math.abs(distAlongNormal) <= 6.0) {
+              const prevTangent = splinePoints[i - 1].tangent;
+              const dotProduct = vec3.dot(tangent, prevTangent);
+              const angleDeg = Math.acos(Math.max(-1, Math.min(1, dotProduct))) * 180 / Math.PI;
+              tangentChange = ` ΔAngle:${angleDeg.toFixed(2)}°`;
+            }
+
+            console.log(`[CL_DEBUG]   [${i.toString().padStart(2)}] dist:${distAlongNormal.toFixed(3).padStart(7)}mm tangent:[${tangent[0].toFixed(3)}, ${tangent[1].toFixed(3)}, ${tangent[2].toFixed(3)}]${inRegion}${isFirstBoundary}${isLastBoundary}${isAnnulus}${tangentChange}`);
           }
         }
       }
@@ -510,12 +589,14 @@ export class CenterlineGenerator {
     orientations.push(new Float32Array(firstMatrix));
 
     // If annular plane is provided, identify the ±5mm straight segment range
+    // DISABLED: Orientation locking can cause flips at boundaries
+    // Instead, rely on smooth tangents + RMF for smooth orientations
     let straightSegmentStart = -1;
     let straightSegmentEnd = -1;
     let lockedUp: vec3 | null = null;
     let lockedRight: vec3 | null = null;
 
-    if (annularPlane) {
+    if (false && annularPlane) { // DISABLED
       // Find annulus index
       const annulusIndex = splinePoints.findIndex(p => p.isAnnulusPlane === true);
 
@@ -596,8 +677,13 @@ export class CenterlineGenerator {
         }
 
         console.log(`[CL_DEBUG] 🔒 Orientation lock range: [${straightSegmentStart}, ${straightSegmentEnd}] (annulus at ${annulusIndex})`);
+
+        // DEBUG: Log the locked orientation vectors
+        console.log(`[CL_DEBUG] 📐 Locked orientation will be set at index ${straightSegmentStart}:`);
       }
     }
+
+    console.log(`[CL_DEBUG] 🔄 Using RMF (Rotation-Minimizing Frame) for all orientations - NO LOCKING`);
 
     // Use rotation-minimizing frame (parallel transport) for subsequent frames
     // This ensures smooth, flip-free transitions along the centerline

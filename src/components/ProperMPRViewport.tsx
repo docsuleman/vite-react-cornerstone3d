@@ -52,7 +52,6 @@ import vtkXMLPolyDataReader from '@kitware/vtk.js/IO/XML/XMLPolyDataReader';
 import vtkSTLReader from '@kitware/vtk.js/IO/Geometry/STLReader';
 import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
 import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
-import vtkArrowSource from '@kitware/vtk.js/Filters/Sources/ArrowSource';
 import vtkCylinderSource from '@kitware/vtk.js/Filters/Sources/CylinderSource';
 import vtkVolume from '@kitware/vtk.js/Rendering/Core/Volume';
 import vtkVolumeMapper from '@kitware/vtk.js/Rendering/Core/VolumeMapper';
@@ -144,6 +143,12 @@ interface ProperMPRViewportProps {
   onSCurveAngleChange?: (laoRao: number, cranCaud: number) => void;
   // Annulus points for S-curve generation
   annulusPoints?: any[];
+  // Virtual Valve configuration (passed from TAVIApp)
+  valveVisible?: boolean;
+  selectedValve?: string;
+  valveSize?: string;
+  valveDepth?: number;
+  valveRotation?: { x: number; y: number; z: number };
 }
 
 const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
@@ -170,7 +175,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   onWorkflowStepSelect,
   sCurveAngles,
   onSCurveAngleChange,
-  annulusPoints
+  annulusPoints,
+  valveVisible = false,
+  selectedValve = 'Hybrid-Auxetic-v4_open',
+  valveSize = '26',
+  valveDepth = 0,
+  valveRotation = { x: 0, y: 0, z: 0 }
 }) => {
   const elementRefs = {
     axial: useRef(null),
@@ -771,19 +781,18 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const [isPreloading, setIsPreloading] = useState(false); // Track if we're in preloading mode
   const [cprActorsReady, setCprActorsReady] = useState(false); // Track when CPR actors are set up
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(false); // Toggle for auto-scroll in measurements
-  const [valveVisible, setValveVisible] = useState(false); // Toggle for virtual valve visibility
-  const [selectedValve, setSelectedValve] = useState('Hybrid-Auxetic-v4_open'); // Selected valve model name
-  const [valveRotation, setValveRotation] = useState({ x: 0, y: 0, z: 0 }); // Valve rotation angles in degrees
 
-  // Valve models mapping
+  // Valve models mapping (kept here for STL path lookup)
   const valveModels = {
     'Hybrid-Auxetic-v4_open': {
-      name: 'Hybrid Auxetic v4 (Open)',
-      path: valveSTLPath
+      name: 'Hybrid Auxetic v4',
+      path: valveSTLPath,
+      sizes: ['23', '26', '29']
     },
     'Evolut': {
       name: 'Evolut',
-      path: evolutValveSTLPath
+      path: evolutValveSTLPath,
+      sizes: ['23', '26', '29', '34']
     }
   };
 
@@ -2997,12 +3006,12 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     }
   }, [selectedValve]);
 
-  // Effect to update valve when manual rotation changes
+  // Effect to update valve when manual rotation or depth changes
   useEffect(() => {
     if (valveVisible && cuspDotsRef.current && cuspDotsRef.current.length === 3) {
       loadAndDisplayValve();
     }
-  }, [valveRotation]);
+  }, [valveRotation, valveDepth]);
 
   // Effect to update valve clipping when camera changes
   useEffect(() => {
@@ -3051,7 +3060,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       // Add updated clipping plane at current slice position
       if (renderMode === 'mpr' || renderMode === 'cpr') {
         const clipPlane = vtkPlane.newInstance();
+
         // Normal pointing towards camera - clips what's in front, shows what's behind
+        // Same behavior for all viewports
         clipPlane.setNormal(viewPlaneNormal[0], viewPlaneNormal[1], viewPlaneNormal[2]);
         clipPlane.setOrigin(focalPoint[0], focalPoint[1], focalPoint[2]);
         mapper.addClippingPlane(clipPlane);
@@ -3071,8 +3082,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       const viewport = renderingEngine.getViewport(viewportId) as Types.IVolumeViewport;
       if (viewport) {
         const actorUID = `valveActor_${viewportId}`;
-        const arrowUID = `centerlineArrow_${viewportId}`;
-        viewport.removeActors([actorUID, arrowUID]);
+        viewport.removeActors([actorUID]);
       }
     });
 
@@ -3144,10 +3154,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       // CRITICAL: The valve's bottom (Z=0) should sit on the annular plane
       // The valve's longitudinal axis should extend along the centerline (annular plane normal)
       let userMatrix: number[] | null = null;
-      let arrowActor: any = null; // For visualizing centerline direction
-      let xAxisArrow: any = null; // Red arrow for valve X-axis
-      let yAxisArrow: any = null; // Yellow arrow for valve Y-axis
-      let zAxisArrow: any = null; // Blue arrow for valve Z-axis
 
       // CRITICAL: Use the annular plane normal from workflow state (calculated in TAVIApp)
       // This is the EXACT perpendicular to the annular plane from the 3 cusp dots
@@ -3409,12 +3415,26 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           finalX[2] * baseCenterInSTL[0] + finalY[2] * baseCenterInSTL[1] + finalZ[2] * baseCenterInSTL[2]
         ];
 
-        // The base center should be at annulus center
+        // The base center should be at annulus center + depth offset
+        // Depth offset: negative = below annulus (toward LV), positive = above annulus (toward aorta)
+        // Offset along the inverted normal direction (valve Z-axis points toward LV)
+        const depthOffset = [
+          -normalizedNormal[0] * valveDepth,
+          -normalizedNormal[1] * valveDepth,
+          -normalizedNormal[2] * valveDepth
+        ];
+
+        const targetPosition = [
+          annulusCenter[0] + depthOffset[0],
+          annulusCenter[1] + depthOffset[1],
+          annulusCenter[2] + depthOffset[2]
+        ];
+
         // Translation = desired position - rotated position
         const translation = [
-          annulusCenter[0] - rotatedBaseCenter[0],
-          annulusCenter[1] - rotatedBaseCenter[1],
-          annulusCenter[2] - rotatedBaseCenter[2]
+          targetPosition[0] - rotatedBaseCenter[0],
+          targetPosition[1] - rotatedBaseCenter[1],
+          targetPosition[2] - rotatedBaseCenter[2]
         ];
 
         // VTK uses COLUMN-MAJOR format (transposed from typical row-major)
@@ -3425,96 +3445,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           finalX[2], finalY[2], finalZ[2], 0,
           translation[0], translation[1], translation[2], 1
         ];
-
-
-        // Create GREEN arrow showing the centerline direction (annular plane normal)
-        const centerlineArrowLength = 80; // 80mm long
-        const centerlineArrowSource = vtkArrowSource.newInstance({
-          tipResolution: 20,
-          shaftResolution: 20,
-          tipRadius: 0.1,
-          tipLength: 0.2,
-          shaftRadius: 0.05
-        });
-
-        const centerlineArrowMapper = vtkMapper.newInstance();
-        centerlineArrowMapper.setInputConnection(centerlineArrowSource.getOutputPort());
-
-        arrowActor = vtkActor.newInstance();
-        arrowActor.setMapper(centerlineArrowMapper);
-        arrowActor.getProperty().setColor(0.0, 1.0, 0.0); // BRIGHT GREEN
-        arrowActor.getProperty().setOpacity(1.0);
-        arrowActor.getProperty().setLighting(false);
-
-        // Position arrow at annulus center, pointing along centerline
-        arrowActor.setPosition(annulusCenter[0], annulusCenter[1], annulusCenter[2]);
-        arrowActor.setScale(centerlineArrowLength, centerlineArrowLength, centerlineArrowLength);
-
-        // Orient arrow along centerline direction
-        const arrowDirection = [1, 0, 0];
-        const rotationAxis = [
-          arrowDirection[1] * normalizedNormal[2] - arrowDirection[2] * normalizedNormal[1],
-          arrowDirection[2] * normalizedNormal[0] - arrowDirection[0] * normalizedNormal[2],
-          arrowDirection[0] * normalizedNormal[1] - arrowDirection[1] * normalizedNormal[0]
-        ];
-        const axisLength = Math.sqrt(rotationAxis[0]**2 + rotationAxis[1]**2 + rotationAxis[2]**2);
-
-        if (axisLength > 0.001) {
-          const dotProduct = arrowDirection[0] * normalizedNormal[0] + arrowDirection[1] * normalizedNormal[1] + arrowDirection[2] * normalizedNormal[2];
-          const angle = Math.acos(Math.max(-1, Math.min(1, dotProduct))) * (180 / Math.PI);
-          const normalizedAxis = [rotationAxis[0]/axisLength, rotationAxis[1]/axisLength, rotationAxis[2]/axisLength];
-          arrowActor.rotateWXYZ(angle, normalizedAxis[0], normalizedAxis[1], normalizedAxis[2]);
-        }
-
-
-        // NOW add THREE RGB arrows showing valve's local X, Y, Z axes
-        const axisArrowLength = 50; // 50mm long (shorter than centerline)
-
-        // Helper function to create an arrow
-        const createAxisArrow = (direction: number[], color: [number, number, number]) => {
-          const source = vtkArrowSource.newInstance({
-            tipResolution: 20,
-            shaftResolution: 20,
-            tipRadius: 0.08,
-            tipLength: 0.25,
-            shaftRadius: 0.03
-          });
-
-          const mapper = vtkMapper.newInstance();
-          mapper.setInputConnection(source.getOutputPort());
-
-          const actor = vtkActor.newInstance();
-          actor.setMapper(mapper);
-          actor.getProperty().setColor(color[0], color[1], color[2]);
-          actor.getProperty().setOpacity(0.9);
-          actor.getProperty().setLighting(false);
-
-          actor.setPosition(annulusCenter[0], annulusCenter[1], annulusCenter[2]);
-          actor.setScale(axisArrowLength, axisArrowLength, axisArrowLength);
-
-          // Orient arrow
-          const defaultDir = [1, 0, 0];
-          const rotAxis = [
-            defaultDir[1] * direction[2] - defaultDir[2] * direction[1],
-            defaultDir[2] * direction[0] - defaultDir[0] * direction[2],
-            defaultDir[0] * direction[1] - defaultDir[1] * direction[0]
-          ];
-          const axLen = Math.sqrt(rotAxis[0]**2 + rotAxis[1]**2 + rotAxis[2]**2);
-
-          if (axLen > 0.001) {
-            const dot = defaultDir[0] * direction[0] + defaultDir[1] * direction[1] + defaultDir[2] * direction[2];
-            const ang = Math.acos(Math.max(-1, Math.min(1, dot))) * (180 / Math.PI);
-            const normAxis = [rotAxis[0]/axLen, rotAxis[1]/axLen, rotAxis[2]/axLen];
-            actor.rotateWXYZ(ang, normAxis[0], normAxis[1], normAxis[2]);
-          }
-
-          return actor;
-        };
-
-        // Create three valve axis arrows (assign to outer scope variables)
-        xAxisArrow = createAxisArrow(finalX, [1.0, 0.0, 0.0]); // RED for X
-        yAxisArrow = createAxisArrow(finalY, [1.0, 1.0, 0.0]); // YELLOW for Y (not green - that's centerline)
-        zAxisArrow = createAxisArrow(finalZ, [0.0, 0.0, 1.0]); // BLUE for Z
 
         } else {
         }
@@ -3535,11 +3465,16 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         // Create actor for this viewport
         const viewportActor = vtkActor.newInstance();
         viewportActor.setMapper(viewportMapper);
-        viewportActor.getProperty().setColor(1.0, 0.0, 0.0); // BRIGHT RED
-        viewportActor.getProperty().setOpacity(1.0); // Fully opaque
-        viewportActor.getProperty().setAmbient(0.6);
-        viewportActor.getProperty().setDiffuse(0.8);
-        viewportActor.getProperty().setSpecular(0.3);
+
+        // Enable lighting and set material properties for realistic shading
+        viewportActor.getProperty().setLighting(true);
+        viewportActor.getProperty().setColor(1.0, 0.8, 0.6); // Warm beige/tan color
+        viewportActor.getProperty().setOpacity(0.85); // Slightly transparent
+        viewportActor.getProperty().setAmbient(0.3); // Reduced ambient for better shadows
+        viewportActor.getProperty().setDiffuse(0.7); // Strong diffuse for good shading
+        viewportActor.getProperty().setSpecular(0.4); // Moderate specular highlights
+        viewportActor.getProperty().setSpecularPower(30); // Shininess
+        viewportActor.getProperty().setInterpolationToPhong(); // Smooth shading
 
         // Apply transformation matrix (rotation + translation combined)
         // This positions valve base at annulus and aligns it with centerline
@@ -3585,23 +3520,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         // Add valve actor to viewport
         const actorUID = `valveActor_${viewportId}`;
         viewport.addActor({ uid: actorUID, actor: viewportActor });
-
-        // Add centerline direction arrow to viewport (GREEN - shows annular plane normal)
-        if (arrowActor) {
-          const arrowUID = `centerlineArrow_${viewportId}`;
-          viewport.addActor({ uid: arrowUID, actor: arrowActor });
-        }
-
-        // Add valve axis arrows to viewport (RED, YELLOW, BLUE - show valve's X, Y, Z)
-        if (xAxisArrow) {
-          viewport.addActor({ uid: `valveXAxis_${viewportId}`, actor: xAxisArrow });
-        }
-        if (yAxisArrow) {
-          viewport.addActor({ uid: `valveYAxis_${viewportId}`, actor: yAxisArrow });
-        }
-        if (zAxisArrow) {
-          viewport.addActor({ uid: `valveZAxis_${viewportId}`, actor: zAxisArrow });
-        }
 
         // Store reference for cleanup and updates
         valveActorsRef.current.push({
@@ -10331,99 +10249,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                       </div>
                     )}
                   </div>
-                </div>
-              )}
-
-              {/* Virtual Valve Controls - Only show in MEASUREMENTS stage with 3 cusp dots */}
-              {currentStage === WorkflowStage.MEASUREMENTS && cuspDotsRef.current && cuspDotsRef.current.length === 3 && (
-                <div className="absolute top-2 left-2 z-20 bg-slate-800/90 backdrop-blur-sm border border-slate-600 rounded-lg p-2 shadow-lg">
-                  <div className="text-white text-xs font-semibold mb-2">Virtual Valve</div>
-                  <label className="flex items-center gap-2 text-white text-xs cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={valveVisible}
-                      onChange={(e) => setValveVisible(e.target.checked)}
-                      className="w-4 h-4 cursor-pointer"
-                    />
-                    <span>Show Valve</span>
-                  </label>
-                  {valveVisible && (
-                    <div className="mt-2 pt-2 border-t border-slate-600 space-y-2">
-                      {/* Valve Model Selector */}
-                      <div className="space-y-1">
-                        <label className="text-[10px] text-slate-300 font-semibold">Valve Model</label>
-                        <select
-                          value={selectedValve}
-                          onChange={(e) => setSelectedValve(e.target.value)}
-                          className="w-full px-2 py-1 bg-slate-700 text-white text-[10px] rounded border border-slate-600 cursor-pointer hover:bg-slate-600 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                        >
-                          {Object.entries(valveModels).map(([key, model]) => (
-                            <option key={key} value={key}>
-                              {model.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      {/* Rotation Controls */}
-                      <div className="space-y-1">
-                        <div className="text-[10px] text-slate-300 font-semibold">Manual Rotation (deg)</div>
-
-                        {/* X-axis rotation */}
-                        <div className="flex items-center gap-2">
-                          <span className="text-[9px] text-red-400 w-6">X:</span>
-                          <input
-                            type="range"
-                            min="-180"
-                            max="180"
-                            step="5"
-                            value={valveRotation.x}
-                            onChange={(e) => setValveRotation({ ...valveRotation, x: parseInt(e.target.value) })}
-                            className="flex-1 h-1 bg-slate-600 rounded-lg appearance-none cursor-pointer slider-thumb"
-                          />
-                          <span className="text-[9px] text-slate-400 w-8 text-right">{valveRotation.x}°</span>
-                        </div>
-
-                        {/* Y-axis rotation */}
-                        <div className="flex items-center gap-2">
-                          <span className="text-[9px] text-green-400 w-6">Y:</span>
-                          <input
-                            type="range"
-                            min="-180"
-                            max="180"
-                            step="5"
-                            value={valveRotation.y}
-                            onChange={(e) => setValveRotation({ ...valveRotation, y: parseInt(e.target.value) })}
-                            className="flex-1 h-1 bg-slate-600 rounded-lg appearance-none cursor-pointer slider-thumb"
-                          />
-                          <span className="text-[9px] text-slate-400 w-8 text-right">{valveRotation.y}°</span>
-                        </div>
-
-                        {/* Z-axis rotation */}
-                        <div className="flex items-center gap-2">
-                          <span className="text-[9px] text-blue-400 w-6">Z:</span>
-                          <input
-                            type="range"
-                            min="-180"
-                            max="180"
-                            step="5"
-                            value={valveRotation.z}
-                            onChange={(e) => setValveRotation({ ...valveRotation, z: parseInt(e.target.value) })}
-                            className="flex-1 h-1 bg-slate-600 rounded-lg appearance-none cursor-pointer slider-thumb"
-                          />
-                          <span className="text-[9px] text-slate-400 w-8 text-right">{valveRotation.z}°</span>
-                        </div>
-
-                        {/* Reset button */}
-                        <button
-                          onClick={() => setValveRotation({ x: 0, y: 0, z: 0 })}
-                          className="w-full mt-1 px-2 py-1 bg-slate-700 hover:bg-slate-600 text-white text-[9px] rounded"
-                        >
-                          Reset Rotation
-                        </button>
-                      </div>
-                    </div>
-                  )}
                 </div>
               )}
 

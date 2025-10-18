@@ -77,6 +77,13 @@ interface DRRViewportProps {
   preset?: VolumeRenderingPreset;
   /** Show angle indicators */
   showAngleIndicators?: boolean;
+  /** Virtual valve configuration */
+  valveVisible?: boolean;
+  valveSTLPath?: string;
+  valveDepth?: number;
+  annulusCenter?: [number, number, number];
+  annulusNormal?: [number, number, number];
+  valveRotation?: { x: number; y: number; z: number };
 }
 
 export const DRRViewport: React.FC<DRRViewportProps> = ({
