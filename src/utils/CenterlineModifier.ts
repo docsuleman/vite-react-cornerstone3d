@@ -6,7 +6,8 @@ export interface ModifiedCenterlinePoint {
   y: number;
   z: number;
   isAnnulusPlane?: boolean; // Mark the annulus plane location
-  distanceFromStart?: number;
+  distanceFromStart?: number; // Arc length from start of centerline (mm)
+  distanceFromAnnulus?: number; // Distance from annulus plane (mm, negative=towards LV, positive=towards aorta)
 }
 
 /**
@@ -92,7 +93,7 @@ export class CenterlineModifier {
     // SEGMENT 1: LV Outflow → (Annulus - 5mm)
     // Use Catmull-Rom spline for SMOOTH curve, not linear interpolation
     // ============================================================
-    const segment1Points = 40; // Number of points in first segment
+    const segment1Points = 200; // CRITICAL: High density for smooth 0.1mm scrolling
 
     // Create control points for Catmull-Rom: p0, p1 (start), p2 (end), p3
     // p0: virtual point before LV outflow (extrapolated)
@@ -109,11 +110,15 @@ export class CenterlineModifier {
     };
     const segment1_p1 = lvOutflowPoint;
     const segment1_p2 = pointMinus5mm;
-    // p3: point slightly beyond -5mm (towards annulus center)
+    // p3: CRITICAL - Calculate to ensure tangent at p2 (junction) aligns with unitNormal
+    // For Catmull-Rom, tangent at p2 ∝ (p3 - p1) / 2
+    // We want this tangent to equal unitNormal direction
+    // Therefore: p3 = p1 + k * unitNormal (where k is scaled appropriately)
+    const segment1Length = this.calculateDistance(segment1_p1, segment1_p2);
     const segment1_p3 = {
-      x: pointMinus5mm.x + unitNormal[0] * 1.0, // 1mm towards annulus
-      y: pointMinus5mm.y + unitNormal[1] * 1.0,
-      z: pointMinus5mm.z + unitNormal[2] * 1.0
+      x: segment1_p1.x + unitNormal[0] * segment1Length * 0.5, // Scale based on segment length
+      y: segment1_p1.y + unitNormal[1] * segment1Length * 0.5,
+      z: segment1_p1.z + unitNormal[2] * segment1Length * 0.5
     };
 
     for (let i = 0; i <= segment1Points; i++) {
@@ -139,7 +144,7 @@ export class CenterlineModifier {
     // PERFECTLY STRAIGHT - 10mm segment along normal
     // ============================================================
     const segment2Length = 10.0; // Exactly 10mm
-    const segment2Points = 10; // Add points for smooth scrolling
+    const segment2Points = 100; // CRITICAL: 100 points = 0.1mm spacing to match scroll step
 
 
     // Add intermediate points (excluding first point which is already added)
@@ -164,7 +169,7 @@ export class CenterlineModifier {
     // SEGMENT 3: (Annulus + 5mm) → Ascending Aorta
     // Use Catmull-Rom spline for SMOOTH curve, not linear interpolation
     // ============================================================
-    const segment3Points = 60; // Number of points in third segment
+    const segment3Points = 300; // CRITICAL: High density for smooth 0.1mm scrolling
 
     // Calculate end point along perpendicular direction
     const segment3Length = originalDistance - 5; // Remaining distance (was -3, now -5)
@@ -175,11 +180,14 @@ export class CenterlineModifier {
     };
 
     // Create control points for Catmull-Rom: p0, p1 (start), p2 (end), p3
-    // p0: point slightly before +5mm (from annulus center)
+    // p0: CRITICAL - Calculate to ensure tangent at p1 (junction) aligns with unitNormal
+    // For Catmull-Rom, tangent at p1 ∝ (p2 - p0) / 2
+    // We want this tangent to equal unitNormal direction
+    // Therefore: p0 = p2 - k * unitNormal (where k is scaled appropriately)
     const segment3_p0 = {
-      x: pointPlus5mm.x - unitNormal[0] * 1.0, // 1mm back towards annulus
-      y: pointPlus5mm.y - unitNormal[1] * 1.0,
-      z: pointPlus5mm.z - unitNormal[2] * 1.0
+      x: segment3EndPoint.x - unitNormal[0] * segment3Length * 0.5, // Scale based on segment length
+      y: segment3EndPoint.y - unitNormal[1] * segment3Length * 0.5,
+      z: segment3EndPoint.z - unitNormal[2] * segment3Length * 0.5
     };
     const segment3_p1 = pointPlus5mm;
     const segment3_p2 = segment3EndPoint;
@@ -298,6 +306,25 @@ export class CenterlineModifier {
       // Verify ±5mm points haven't moved
       const dist1 = this.calculateDistance(minus5mmPoint, annulusPoint);
       const dist2 = this.calculateDistance(annulusPoint, plus5mmPoint);
+    }
+
+    // DIAGNOSTIC: Check for distanceFromStart discontinuities
+    console.log('=== Centerline Distance Validation ===');
+    const annulusDistance = modifiedCenterline[annulusPlaneIndex]?.distanceFromStart || 0;
+    console.log(`Total centerline points: ${modifiedCenterline.length}`);
+    console.log(`Annulus plane index: ${annulusPlaneIndex}, distance: ${annulusDistance.toFixed(2)}mm`);
+    console.log(`Junction 1 (-5mm) index: ${junctionPoint1Index}, distance: ${modifiedCenterline[junctionPoint1Index]?.distanceFromStart?.toFixed(2)}mm`);
+    console.log(`Junction 2 (+5mm) index: ${junctionPoint2Index}, distance: ${modifiedCenterline[junctionPoint2Index]?.distanceFromStart?.toFixed(2)}mm`);
+
+    // Check distances relative to annulus
+    for (let i = 0; i < modifiedCenterline.length; i++) {
+      const distFromAnnulus = (modifiedCenterline[i].distanceFromStart || 0) - annulusDistance;
+      modifiedCenterline[i].distanceFromAnnulus = distFromAnnulus; // Add this for easier access
+
+      // Log every 10th point for sampling
+      if (i % 10 === 0 || Math.abs(distFromAnnulus) < 6) {
+        console.log(`  Point ${i}: distFromStart=${modifiedCenterline[i].distanceFromStart?.toFixed(2)}mm, distFromAnnulus=${distFromAnnulus.toFixed(2)}mm`);
+      }
     }
 
     return modifiedCenterline;

@@ -1,6 +1,6 @@
 {
-  "workflowVersion": "1.0",
-  "workflowName": "Full TAVI Workflow",
+  "workflowVersion": "3.0",
+  "workflowName": "ABC Bicuspid Sizing",
   "measurements": [
     {
       "id": "annulus",
@@ -23,34 +23,44 @@
       "autoLabel": "LVOT"
     },
     {
-      "id": "sov-l",
-      "name": "SOV Left",
+      "id": "icd-4mm",
+      "name": "ICD 4mm",
       "type": "line",
       "section": "axial",
-      "level": "dynamic",
-      "offsetCalculation": "annulusArea < 400 ? 8 : (annulusArea < 500 ? 10 : 12)",
+      "level": "relative",
+      "offsetFromAnnulus": 4,
       "required": true,
-      "autoLabel": "SOV-L"
+      "autoLabel": "ICD 4mm"
     },
     {
-      "id": "sov-r",
-      "name": "SOV Right",
+      "id": "icd-8mm",
+      "name": "ICD 8mm",
       "type": "line",
       "section": "axial",
-      "level": "dynamic",
-      "offsetCalculation": "annulusArea < 400 ? 8 : (annulusArea < 500 ? 10 : 12)",
+      "level": "relative",
+      "offsetFromAnnulus": 8,
       "required": true,
-      "autoLabel": "SOV-R"
+      "autoLabel": "ICD 8mm"
     },
     {
-      "id": "sov-n",
-      "name": "SOV Non-Coronary",
+      "id": "sov-8mm",
+      "name": "SOV 8mm",
+      "type": "line",
+      "section": "axial",
+      "level": "relative",
+      "offsetFromAnnulus": 8,
+      "required": true,
+      "autoLabel": "SOV 8mm"
+    },
+    {
+      "id": "sov-raphe",
+      "name": "SOV Raphe",
       "type": "line",
       "section": "axial",
       "level": "dynamic",
-      "offsetCalculation": "annulusArea < 400 ? 8 : (annulusArea < 500 ? 10 : 12)",
+      "offsetCalculation": "annulusArea < 400 ? 7 : (annulusArea < 500 ? 10 : 12)",
       "required": true,
-      "autoLabel": "SOV-N"
+      "autoLabel": "SOV Raphe"
     },
     {
       "id": "stj",

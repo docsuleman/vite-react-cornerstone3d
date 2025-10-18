@@ -987,7 +987,13 @@ class FixedCrosshairTool extends BaseTool {
         // Calculate rotation delta
         const oldRotation = FixedCrosshairTool.globalRotationAngle;
         const rawNewRotation = currentAngle - this.dragStartAngle;
-        const rawDeltaAngle = rawNewRotation - oldRotation;
+        let rawDeltaAngle = rawNewRotation - oldRotation;
+
+        // CRITICAL: Normalize angle difference to [-π, +π] to prevent 360° wrap-around jumps
+        // When angle crosses from +π to -π (or vice versa), atan2 jumps from +3.14 to -3.14
+        // This causes rawDeltaAngle to be ~6.28 instead of the actual small rotation
+        while (rawDeltaAngle > Math.PI) rawDeltaAngle -= 2 * Math.PI;
+        while (rawDeltaAngle < -Math.PI) rawDeltaAngle += 2 * Math.PI;
 
         // Apply smoothing: blend between old and new rotation
         const smoothedDeltaAngle = rawDeltaAngle * this.rotationSmoothingFactor;
@@ -1305,7 +1311,13 @@ class FixedCrosshairTool extends BaseTool {
     // Calculate rotation delta
     const oldRotation = FixedCrosshairTool.globalRotationAngle;
     const rawNewRotation = currentAngle - this.dragStartAngle;
-    const rawDeltaAngle = rawNewRotation - oldRotation;
+    let rawDeltaAngle = rawNewRotation - oldRotation;
+
+    // CRITICAL: Normalize angle difference to [-π, +π] to prevent 360° wrap-around jumps
+    // When angle crosses from +π to -π (or vice versa), atan2 jumps from +3.14 to -3.14
+    // This causes rawDeltaAngle to be ~6.28 instead of the actual small rotation
+    while (rawDeltaAngle > Math.PI) rawDeltaAngle -= 2 * Math.PI;
+    while (rawDeltaAngle < -Math.PI) rawDeltaAngle += 2 * Math.PI;
 
     // Apply smoothing: blend between old and new rotation
     const smoothedDeltaAngle = rawDeltaAngle * this.rotationSmoothingFactor;

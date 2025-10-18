@@ -8,6 +8,7 @@ import evolutValveSTLPath from '../assets/evolut.stl?url';
 import PatientSearch from './PatientSearch';
 import LeftSidebarSteps from './LeftSidebarSteps';
 import MultiPhaseModal from './MultiPhaseModal';
+import SettingsPage from './SettingsPage';
 // import HybridCPRViewport from './HybridCPRViewport'; // Disabled - ImageCPRMapper not suitable for data extraction
 import CornerstoneCPRViewport from './CornerstoneCPRViewport';
 import TriViewCPRViewport from './TriViewCPRViewport'; // Pure VTK.js CPR with working rotation
@@ -25,11 +26,15 @@ import createImageIdsAndCacheMetaData from '../lib/createImageIdsAndCacheMetaDat
 
 interface TAVIAppProps {
   // Props for integrating with existing Cornerstone3D setup
+  onLogout?: () => void;
+  onChangePassword?: (currentPassword: string, newPassword: string) => Promise<void>;
+  currentUserEmail?: string;
 }
 
-const TAVIApp: React.FC<TAVIAppProps> = () => {
+const TAVIApp: React.FC<TAVIAppProps> = ({ onLogout, onChangePassword, currentUserEmail }) => {
   const [showPatientSearch, setShowPatientSearch] = useState(false);
   const [showReport, setShowReport] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [viewType, setViewType] = useState<'mpr' | 'cpr'>('mpr'); // Toggle between MPR and CPR views
   const [deleteWarningModal, setDeleteWarningModal] = useState<{
     visible: boolean;
@@ -53,6 +58,7 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
   const [workflowSteps, setWorkflowSteps] = useState<MeasurementStep[]>([]);
   const [currentWorkflowStep, setCurrentWorkflowStep] = useState<MeasurementStep | null>(null);
   const [reportScreenshots, setReportScreenshots] = useState<ReportScreenshot[]>([]);
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>('workflow1');
 
   // S-curve state for tracking current 3D view orientation
   const [current3DAngles, setCurrent3DAngles] = useState<{ laoRao: number; cranCaud: number }>({
@@ -100,7 +106,7 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
     if (state.currentStage === WorkflowStage.MEASUREMENTS && !state.measurementWorkflowActive) {
 
       workflowManager.reset();
-      const workflow = workflowManager.loadWorkflow();
+      const workflow = workflowManager.loadWorkflow(selectedWorkflowId); // Load selected workflow
       setWorkflowSteps(workflow.measurements);
 
       const firstStep = workflowManager.setCurrentStepIndex(0);
@@ -116,7 +122,7 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
         // when ProperMPRViewport actually activates the tool
       }
     }
-  }, [state.currentStage, state.measurementWorkflowActive, workflowManager, actions]);
+  }, [state.currentStage, state.measurementWorkflowActive, workflowManager, actions, selectedWorkflowId]);
 
   useEffect(() => {
     if (state.currentStage !== WorkflowStage.MEASUREMENTS || workflowSteps.length === 0) {
@@ -443,12 +449,14 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             </div>
           </div>
 
-          {state.patientInfo && (
-            <div className="bg-slate-700 rounded-lg px-3 py-2 text-right">
-              <div className="font-semibold text-base">{state.patientInfo.patientName || 'Unknown Patient'}</div>
-              <div className="text-slate-300 text-xs">ID: {state.patientInfo.patientID || 'Unknown ID'}</div>
-            </div>
-          )}
+          <div className="flex items-center gap-3">
+            {state.patientInfo && (
+              <div className="bg-slate-700 rounded-lg px-3 py-2 text-right">
+                <div className="font-semibold text-base">{state.patientInfo.patientName || 'Unknown Patient'}</div>
+                <div className="text-slate-300 text-xs">ID: {state.patientInfo.patientID || 'Unknown ID'}</div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -878,6 +886,51 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
                   • Right Coronary Cusp<br/>
                   • Non-Coronary Cusp
                 </p>
+
+                {/* Measurement Workflow Selector */}
+                <div className="mt-6 border-t border-slate-700 pt-4">
+                  <h4 className="text-sm font-semibold text-white mb-3">Select Measurement Workflow</h4>
+
+                  {/* Workflow Dropdown */}
+                  <select
+                    value={selectedWorkflowId}
+                    onChange={(e) => setSelectedWorkflowId(e.target.value)}
+                    className="w-full bg-slate-800 text-white border border-slate-600 rounded px-3 py-2 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    {workflowManager.getAvailableWorkflows().map((wf) => (
+                      <option key={wf.id} value={wf.id}>
+                        {wf.name} (v{wf.version})
+                      </option>
+                    ))}
+                  </select>
+
+                  {/* Preview of selected workflow */}
+                  <div className="bg-slate-800 rounded-lg p-3">
+                    <h5 className="text-xs font-semibold text-slate-300 mb-2">Preview:</h5>
+                    <div className="space-y-1.5">
+                      {(() => {
+                        const workflow = workflowManager.loadWorkflow(selectedWorkflowId);
+                        return workflow.measurements.map((step, index) => (
+                          <div
+                            key={step.id}
+                            className="bg-slate-700 rounded p-2 text-xs"
+                          >
+                            <div className="font-medium text-slate-200">
+                              {index + 1}. {step.name}
+                            </div>
+                            <div className="text-slate-400 text-[10px] mt-0.5">
+                              {step.type} • {step.section}
+                              {step.offsetFromAnnulus !== undefined && ` • ${step.offsetFromAnnulus > 0 ? '+' : ''}${step.offsetFromAnnulus}mm`}
+                            </div>
+                          </div>
+                        ));
+                      })()}
+                    </div>
+                    <div className="text-[10px] text-slate-400 mt-2">
+                      Total: {workflowManager.loadWorkflow(selectedWorkflowId).measurements.length} measurements
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
           </div>
@@ -1175,6 +1228,7 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
         completedStages={state.isStageComplete}
         onStageClick={handleStageChange}
         canAdvanceToStage={canAdvanceToStage}
+        onSettingsClick={() => setShowSettings(true)}
       />
 
       {/* Main content area: viewports + right sidebar */}
@@ -1278,6 +1332,21 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <SettingsPage
+          onClose={() => {
+            setShowSettings(false);
+            // Refresh workflows list after closing settings
+            const availableWorkflows = workflowManager.getAvailableWorkflows();
+            console.log('Refreshed workflows:', availableWorkflows);
+          }}
+          onLogout={onLogout}
+          onChangePassword={onChangePassword}
+          currentUserEmail={currentUserEmail}
+        />
       )}
     </div>
   );

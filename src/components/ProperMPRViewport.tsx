@@ -770,6 +770,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const autoScrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastAutoScrolledStepRef = useRef<string | null>(null); // Track which step we last auto-scrolled to
   const autoScrollRenderCompleteRef = useRef<boolean>(true); // Track if auto-scroll renders are complete
+  const lastTangentRef = useRef<Types.Point3 | null>(null); // Track last tangent for continuity enforcement
 
   // Track if current measurement step has been completed but not confirmed
   const [measurementReadyForConfirm, setMeasurementReadyForConfirm] = useState(false);
@@ -785,7 +786,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   const [isPlayingCine, setIsPlayingCine] = useState(false); // Cine playback state
   const [isPreloading, setIsPreloading] = useState(false); // Track if we're in preloading mode
   const [cprActorsReady, setCprActorsReady] = useState(false); // Track when CPR actors are set up
-  const [autoScrollEnabled, setAutoScrollEnabled] = useState(false); // Toggle for auto-scroll in measurements
+  const [autoScrollEnabled, setAutoScrollEnabled] = useState(true); // Toggle for auto-scroll in measurements
 
   // Valve models mapping (kept here for STL path lookup)
   const valveModels = {
@@ -994,6 +995,68 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       }
 
       centerlineDataRef.current = centerlineDataProp;
+
+      // Reset tangent continuity tracker when new centerline is loaded
+      lastTangentRef.current = null;
+
+      // DIAGNOSTIC: Check for tangent discontinuities in the centerline
+      if (numPoints > 2) {
+        let discontinuityCount = 0;
+        for (let i = 1; i < numPoints - 1; i++) {
+          const prevPos = [
+            centerlineDataProp.position[(i-1) * 3],
+            centerlineDataProp.position[(i-1) * 3 + 1],
+            centerlineDataProp.position[(i-1) * 3 + 2]
+          ];
+          const currPos = [
+            centerlineDataProp.position[i * 3],
+            centerlineDataProp.position[i * 3 + 1],
+            centerlineDataProp.position[i * 3 + 2]
+          ];
+          const nextPos = [
+            centerlineDataProp.position[(i+1) * 3],
+            centerlineDataProp.position[(i+1) * 3 + 1],
+            centerlineDataProp.position[(i+1) * 3 + 2]
+          ];
+
+          // Calculate tangents before and after this point
+          const tangentBefore = [
+            currPos[0] - prevPos[0],
+            currPos[1] - prevPos[1],
+            currPos[2] - prevPos[2]
+          ];
+          const tangentAfter = [
+            nextPos[0] - currPos[0],
+            nextPos[1] - currPos[1],
+            nextPos[2] - currPos[2]
+          ];
+
+          // Normalize
+          const lenBefore = Math.sqrt(tangentBefore[0]**2 + tangentBefore[1]**2 + tangentBefore[2]**2);
+          const lenAfter = Math.sqrt(tangentAfter[0]**2 + tangentAfter[1]**2 + tangentAfter[2]**2);
+
+          if (lenBefore > 0 && lenAfter > 0) {
+            const normBefore = [tangentBefore[0]/lenBefore, tangentBefore[1]/lenBefore, tangentBefore[2]/lenBefore];
+            const normAfter = [tangentAfter[0]/lenAfter, tangentAfter[1]/lenAfter, tangentAfter[2]/lenAfter];
+
+            // Dot product: -1 means opposite direction (180° flip)
+            const dotProduct = normBefore[0]*normAfter[0] + normBefore[1]*normAfter[1] + normBefore[2]*normAfter[2];
+
+            // Check for significant angle change (> 30 degrees)
+            const angleDeg = Math.acos(Math.max(-1, Math.min(1, dotProduct))) * 180 / Math.PI;
+
+            if (angleDeg > 30) {
+              console.warn(`⚠️ Centerline discontinuity at point ${i}/${numPoints}: angle change = ${angleDeg.toFixed(1)}°, dot = ${dotProduct.toFixed(3)}`);
+              discontinuityCount++;
+            }
+          }
+        }
+        if (discontinuityCount > 0) {
+          console.warn(`⚠️ Found ${discontinuityCount} tangent discontinuities in centerline`);
+        } else {
+          console.log(`✅ Centerline tangent continuity OK`);
+        }
+      }
 
       // [CL_DEBUG] Log centerline data receipt
 
@@ -6089,23 +6152,17 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       const renderingEngine = renderingEngineRef.current;
       if (renderingEngine) {
-        let addedCount = 0;
         viewportIds.forEach((id) => {
           // Skip if viewport doesn't exist yet
           const viewport = renderingEngine.getViewport(id);
           if (!viewport) {
-            console.warn(`⚠️ Viewport ${id} not found, skipping toolGroup binding`);
             return;
           }
           toolGroup.addViewport(id, renderingEngineId);
-          addedCount++;
         });
-        console.log(`✅ Added ${addedCount}/3 viewports to toolGroup`);
 
         // Ensure viewports render before tool activation
-        if (addedCount > 0) {
-          renderingEngine.renderViewports(viewportIds);
-        }
+        renderingEngine.renderViewports(viewportIds);
       }
 
       // Add volume3D viewport to tool group for ROOT_DEFINITION stage
@@ -6269,9 +6326,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         ToolClass.prototype.getTextLines = ToolClass.prototype._getTextLines;
       }
 
-      // 2. Axial Line Tool - Axial only, renderMode-aware
+      // 2. Length Tool - Works in all viewports (axial for area measurements, sagittal/coronal for height measurements)
       toolGroup.addToolInstance('Length', LengthTool.toolName, {
-        // Viewport filter function: only enable on axial viewport AND only show in matching renderMode
+        // Viewport filter function: enable on all viewports, only filter by renderMode
         getViewportsForAnnotation: (annotation: any, viewportIds: string[]) => {
           // Check if annotation has renderMode metadata
           const annotationRenderMode = annotation?.metadata?.renderMode;
@@ -6281,7 +6338,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
             return []; // Hide in different render mode
           }
 
-          return viewportIds.filter(id => id === 'axial');
+          // Allow Length tool in all viewports (axial, sagittal, coronal)
+          return viewportIds;
         }
       });
 
@@ -6705,6 +6763,20 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
         // Workflow auto-labeling: apply label from workflow step
         if (currentWorkflowControlled && currentStep && annotation) {
+
+          // Log annotation position for debugging
+          if (annotation?.data?.handles?.points) {
+            const points = annotation.data.handles.points;
+            console.log(`📍 Annotation created for step: ${currentStep.id}`);
+            console.log(`   Points:`, points);
+            if (renderingEngineRef.current) {
+              const axialViewport = renderingEngineRef.current.getViewport('axial') as Types.IVolumeViewport;
+              if (axialViewport) {
+                const camera = axialViewport.getCamera();
+                console.log(`   Current viewport focalPoint:`, camera.focalPoint);
+              }
+            }
+          }
 
           const workflowManager = getWorkflowManager();
           const labelData = workflowManager.getLabelForStep(currentStep);
@@ -7732,12 +7804,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
 
       if (pendingToolRef.current) {
-        console.log(`🔄 Activating pending tool: ${pendingToolRef.current}`);
-        // Add delay to ensure viewports are fully bound to toolGroup AND rendered
-        // This fixes the race condition where tool activates before viewports are ready
+        // Simple delay to ensure viewports are bound
         setTimeout(() => {
           if (pendingToolRef.current) {
-            console.log(`🔄 Executing delayed activation for: ${pendingToolRef.current}`);
             handleToolChange(pendingToolRef.current);
           }
         }, 300);
@@ -7832,13 +7901,11 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           bindings: [{ mouseButton: MouseBindings.Primary }],
         });
       } else if (toolName === 'SmoothPolygon') {
-        console.log('🎨 Activating SmoothPolygon with Primary mouse button');
         toolGroup.setToolActive('SmoothPolygon', {
           bindings: [
             { mouseButton: MouseBindings.Primary }
           ],
         });
-        console.log('🎨 SmoothPolygon activated successfully');
       } else if (toolName === 'Length') {
         toolGroup.setToolActive('Length', {
           bindings: [{ mouseButton: MouseBindings.Primary }],
@@ -7929,11 +7996,31 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       return;
     }
 
-    // Delay tool activation to ensure viewports are fully initialized and bound to toolGroup
-    // This fixes race condition where tool activates before setupTools completes
-    setTimeout(() => {
+    // Wait for both viewports to be ready AND auto-scroll to complete
+    const activateToolWhenReady = () => {
+      // Check if auto-scroll is still in progress
+      if (!autoScrollRenderCompleteRef.current) {
+        // Auto-scroll not complete yet, wait
+        setTimeout(activateToolWhenReady, 100);
+        return;
+      }
+
+      console.log(`🎯 Activating tool ${toolName} after auto-scroll complete`);
+
+      // Auto-scroll complete, activate tool
       handleToolChange(toolName);
-    }, 500);
+
+      // Force render after tool activation to ensure crosshair and tool state are synced
+      setTimeout(() => {
+        if (renderingEngineRef.current) {
+          renderingEngineRef.current.render();
+          console.log(`✅ Tool ${toolName} activated and rendered`);
+        }
+      }, 100);
+    };
+
+    // Start checking after initial delay for viewport setup
+    setTimeout(activateToolWhenReady, 500);
   }, [currentWorkflowStep, workflowControlled, maximizedViewport]);
 
   // Workflow auto-scroll: automatically scroll to the correct slice height for the current measurement step
@@ -7963,11 +8050,26 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
     // Calculate the offset from annulus based on the step configuration
     const workflowManager = getWorkflowManager();
-    const offsetMm = workflowManager.calculateSliceOffset(currentWorkflowStep, annulusArea);
+    let offsetMm = workflowManager.calculateSliceOffset(currentWorkflowStep, annulusArea);
 
+    // For longaxis measurements, always scroll to annulus (0mm offset) as reference point for height measurements
+    if (currentWorkflowStep.section === 'longaxis') {
+      offsetMm = 0;
+      console.log(`📏 Auto-scrolling to annulus for longaxis measurement: ${currentWorkflowStep.id} (height reference)`);
+    } else {
+      console.log(`🔄 Auto-scroll starting for step: ${currentWorkflowStep.id}, offset: ${offsetMm}mm, annulusArea: ${annulusArea}mm²`);
+    }
 
     // CRITICAL: Mark renders as incomplete - tool activation must wait
     autoScrollRenderCompleteRef.current = false;
+
+    // Safety timeout: Force completion after 3 seconds to prevent permanent blocking
+    const safetyTimeout = setTimeout(() => {
+      if (!autoScrollRenderCompleteRef.current) {
+        console.warn('⚠️ Auto-scroll safety timeout triggered - forcing completion');
+        autoScrollRenderCompleteRef.current = true;
+      }
+    }, 3000);
 
     // CRITICAL: Find annulus plane index from modified centerline
     // Then calculate target index based on arc length along the centerline
@@ -7986,13 +8088,16 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     }
 
     // Calculate target index by walking along centerline from annulus
-    // Positive offset = move UP (towards ascending aorta, higher indices)
-    // Negative offset = move DOWN (towards LV, lower indices)
+    // INVERTED: Flip the offset direction to match anatomical convention
+    // Positive offset = move DOWN (towards LV, lower indices)
+    // Negative offset = move UP (towards ascending aorta, higher indices)
+    const invertedOffset = -offsetMm;
+
     const numCenterlinePoints = centerlineDataRef.current!.position.length / 3;
     let targetIndex = annulusPlaneIndex;
     let accumulatedDistance = 0;
 
-    if (offsetMm > 0) {
+    if (invertedOffset > 0) {
       // Move towards ascending aorta (higher indices)
       for (let i = annulusPlaneIndex; i < numCenterlinePoints - 1; i++) {
         const p1 = getCenterlinePositionAtIndex(i);
@@ -8005,9 +8110,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           (p2[2] - p1[2]) ** 2
         );
 
-        if (accumulatedDistance + segmentLength >= Math.abs(offsetMm)) {
+        if (accumulatedDistance + segmentLength >= Math.abs(invertedOffset)) {
           // Found target - interpolate between i and i+1
-          const remainingDist = Math.abs(offsetMm) - accumulatedDistance;
+          const remainingDist = Math.abs(invertedOffset) - accumulatedDistance;
           const fraction = remainingDist / segmentLength;
           targetIndex = i + fraction;
           break;
@@ -8015,10 +8120,10 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
         accumulatedDistance += segmentLength;
       }
-      if (targetIndex === annulusPlaneIndex && offsetMm > 0) {
+      if (targetIndex === annulusPlaneIndex && invertedOffset > 0) {
         targetIndex = numCenterlinePoints - 1; // Reached end
       }
-    } else if (offsetMm < 0) {
+    } else if (invertedOffset < 0) {
       // Move towards LV (lower indices)
       for (let i = annulusPlaneIndex; i > 0; i--) {
         const p1 = getCenterlinePositionAtIndex(i);
@@ -8031,9 +8136,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           (p2[2] - p1[2]) ** 2
         );
 
-        if (accumulatedDistance + segmentLength >= Math.abs(offsetMm)) {
+        if (accumulatedDistance + segmentLength >= Math.abs(invertedOffset)) {
           // Found target - interpolate between i and i-1
-          const remainingDist = Math.abs(offsetMm) - accumulatedDistance;
+          const remainingDist = Math.abs(invertedOffset) - accumulatedDistance;
           const fraction = remainingDist / segmentLength;
           targetIndex = i - fraction;
           break;
@@ -8041,64 +8146,282 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
         accumulatedDistance += segmentLength;
       }
-      if (targetIndex === annulusPlaneIndex && offsetMm < 0) {
+      if (targetIndex === annulusPlaneIndex && invertedOffset < 0) {
         targetIndex = 0; // Reached start
       }
     }
 
     targetIndex = Math.max(0, Math.min(numCenterlinePoints - 1, targetIndex));
 
-    // Get the target position on the centerline
+    // Get the target position AND tangent on the centerline
     const targetPosition = getCenterlinePositionAtIndex(targetIndex);
-    if (!targetPosition) {
+    const targetTangent = getCenterlineTangentAtIndex(targetIndex);
+
+    if (!targetPosition || !targetTangent) {
       autoScrollRenderCompleteRef.current = true;
       return;
     }
 
+    console.log(`🔄 Auto-scrolling to centerline index ${targetIndex.toFixed(2)}`);
 
-    // Update both the crosshair position AND viewport cameras to actually scroll the slices
-    const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
-    if (toolGroup) {
-      const fixedCrosshairTool = toolGroup.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
-      if (fixedCrosshairTool) {
-        // Update crosshair position - this updates the yellow text
-        fixedCrosshairTool.setFixedPosition(targetPosition, 'mprRenderingEngine');
+    // CRITICAL: Update centerline index and position camera along centerline with correct tangent
+    // This matches the manual scrolling behavior
+    currentCenterlineIndexRef.current = targetIndex;
+    lockedFocalPointRef.current = targetPosition;
 
-        // Also update all viewport cameras to actually scroll to the new position
-        const viewportIds = ['axial', 'sagittal', 'coronal'];
-        viewportIds.forEach(viewportId => {
-          const viewport = renderingEngineRef.current!.getViewport(viewportId) as Types.IVolumeViewport;
-          if (viewport) {
-            const camera = viewport.getCamera();
-            viewport.setCamera({
-              ...camera,
-              focalPoint: targetPosition
-            });
-            viewport.render();
-          }
+    const axialViewport = renderingEngineRef.current.getViewport('axial') as Types.IVolumeViewport;
+    if (!axialViewport) {
+      autoScrollRenderCompleteRef.current = true;
+      return;
+    }
+
+    // Wrap entire camera update logic in try-catch to ensure auto-scroll always completes
+    try {
+      const camera = axialViewport.getCamera();
+      const cameraDistance = 200;
+
+      // Check if this is a longaxis measurement
+      const isLongAxisMeasurement = currentWorkflowStep.section === 'longaxis';
+
+      if (isLongAxisMeasurement) {
+        // For longaxis measurements, reset ONLY sagittal/coronal to standard orientation
+        // Keep axial aligned with centerline
+        // This allows Length tool to work properly on longaxis views
+
+        // Keep axial following centerline
+        const newCameraPos = [
+          targetPosition[0] + targetTangent[0] * cameraDistance,
+          targetPosition[1] + targetTangent[1] * cameraDistance,
+          targetPosition[2] + targetTangent[2] * cameraDistance
+        ] as Types.Point3;
+
+        let viewUp: Types.Point3;
+        const reference = Math.abs(targetTangent[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+        const cross = [
+          targetTangent[1] * reference[2] - targetTangent[2] * reference[1],
+          targetTangent[2] * reference[0] - targetTangent[0] * reference[2],
+          targetTangent[0] * reference[1] - targetTangent[1] * reference[0]
+        ];
+
+        const crossLen = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
+        if (crossLen > 0) {
+          viewUp = [cross[0] / crossLen, cross[1] / crossLen, cross[2] / crossLen] as Types.Point3;
+        } else {
+          viewUp = [0, 0, 1] as Types.Point3;
+        }
+
+        axialViewport.setCamera({
+          position: newCameraPos,
+          focalPoint: targetPosition,
+          viewUp: viewUp,
+          parallelScale: camera.parallelScale,
         });
+        axialViewport.render();
 
-        // CRITICAL: Update currentCenterlineIndexRef to the target index
-        // This ensures manual scrolling starts from the auto-scrolled position
-        currentCenterlineIndexRef.current = targetIndex;
+        // For longaxis, use EXACT same logic as manual scroll (lines 9428-9500)
+        // This is what makes annulus horizontal when you scroll manually
+        const newCamera = axialViewport.getCamera();
+        const viewPlaneNormal = newCamera.viewPlaneNormal;
+        const actualViewUp = newCamera.viewUp;
 
-        // CRITICAL: Also update lockedFocalPointRef to the new target position
-        // This prevents scrolling from jumping back to the annulus center
-        lockedFocalPointRef.current = targetPosition;
+        // Calculate actualViewRight
+        const actualViewRight = [
+          actualViewUp[1] * viewPlaneNormal[2] - actualViewUp[2] * viewPlaneNormal[1],
+          actualViewUp[2] * viewPlaneNormal[0] - actualViewUp[0] * viewPlaneNormal[2],
+          actualViewUp[0] * viewPlaneNormal[1] - actualViewUp[1] * viewPlaneNormal[0]
+        ];
 
-        // Mark this step as auto-scrolled
-        lastAutoScrolledStepRef.current = currentWorkflowStep.id;
+        const rightLen = Math.sqrt(actualViewRight[0] ** 2 + actualViewRight[1] ** 2 + actualViewRight[2] ** 2);
+        if (rightLen > 0) {
+          actualViewRight[0] /= rightLen;
+          actualViewRight[1] /= rightLen;
+          actualViewRight[2] /= rightLen;
+        }
 
-        // CRITICAL: Wait for renders to complete before logging "ready"
-        setTimeout(() => {
-          // Force another render to ensure everything is stable
-          renderingEngineRef.current?.render();
+        // Apply rotation if any (preserve user's rotation angle)
+        const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+        const fixedCrosshairTool = toolGroup?.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
+        const rotationAngle = fixedCrosshairTool?.getRotationAngle() || 0;
+        const cos = Math.cos(rotationAngle);
+        const sin = Math.sin(rotationAngle);
 
-          // Mark renders as complete - tool activation can now proceed
-          autoScrollRenderCompleteRef.current = true;
+        const rotatedViewRight = [
+          actualViewRight[0] * cos - actualViewUp[0] * sin,
+          actualViewRight[1] * cos - actualViewUp[1] * sin,
+          actualViewRight[2] * cos - actualViewUp[2] * sin
+        ];
 
-        }, 800); // Increased from 500ms to 800ms for safety
+        const rotatedViewUp = [
+          actualViewRight[0] * sin + actualViewUp[0] * cos,
+          actualViewRight[1] * sin + actualViewUp[1] * cos,
+          actualViewRight[2] * sin + actualViewUp[2] * cos
+        ];
+
+        // Update sagittal viewport (EXACT same as manual scroll)
+        const sagittalVp = renderingEngineRef.current.getViewport('sagittal') as Types.IVolumeViewport;
+        if (sagittalVp) {
+          const sagCameraPos = [
+            targetPosition[0] + rotatedViewRight[0] * cameraDistance,
+            targetPosition[1] + rotatedViewRight[1] * cameraDistance,
+            targetPosition[2] + rotatedViewRight[2] * cameraDistance
+          ] as Types.Point3;
+
+          sagittalVp.setCamera({
+            position: sagCameraPos,
+            focalPoint: targetPosition,
+            viewUp: [-viewPlaneNormal[0], -viewPlaneNormal[1], -viewPlaneNormal[2]] as Types.Point3,
+            parallelScale: sagittalVp.getCamera().parallelScale
+          });
+          sagittalVp.render();
+        }
+
+        // Update coronal viewport (EXACT same as manual scroll)
+        const coronalVp = renderingEngineRef.current.getViewport('coronal') as Types.IVolumeViewport;
+        if (coronalVp) {
+          const corCameraPos = [
+            targetPosition[0] + rotatedViewUp[0] * cameraDistance,
+            targetPosition[1] + rotatedViewUp[1] * cameraDistance,
+            targetPosition[2] + rotatedViewUp[2] * cameraDistance
+          ] as Types.Point3;
+
+          coronalVp.setCamera({
+            position: corCameraPos,
+            focalPoint: targetPosition,
+            viewUp: [-viewPlaneNormal[0], -viewPlaneNormal[1], -viewPlaneNormal[2]] as Types.Point3,
+            parallelScale: coronalVp.getCamera().parallelScale
+          });
+          coronalVp.render();
+        }
+
+        // Update fixed crosshair position (reuse toolGroup and fixedCrosshairTool from above)
+        if (fixedCrosshairTool) {
+          fixedCrosshairTool.setFixedPosition(targetPosition, 'mprRenderingEngine');
+        }
+
+        console.log('📏 Longaxis measurement: Axial follows centerline, Sagittal/Coronal oriented based on axial (annulus horizontal)');
+      } else {
+        // Axial measurements: Use centerline tangent-based rotation for all viewports
+        // Position camera along the tangent (perpendicular to axial slice)
+        const newCameraPos = [
+          targetPosition[0] + targetTangent[0] * cameraDistance,
+          targetPosition[1] + targetTangent[1] * cameraDistance,
+          targetPosition[2] + targetTangent[2] * cameraDistance
+        ] as Types.Point3;
+
+        // Calculate viewUp perpendicular to tangent
+        let viewUp: Types.Point3;
+        const reference = Math.abs(targetTangent[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+        const cross = [
+          targetTangent[1] * reference[2] - targetTangent[2] * reference[1],
+          targetTangent[2] * reference[0] - targetTangent[0] * reference[2],
+          targetTangent[0] * reference[1] - targetTangent[1] * reference[0]
+        ];
+
+        const crossLen = Math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2);
+        if (crossLen > 0) {
+          viewUp = [cross[0] / crossLen, cross[1] / crossLen, cross[2] / crossLen] as Types.Point3;
+        } else {
+          viewUp = [0, 0, 1] as Types.Point3;
+        }
+
+        // Set camera with correct tangent orientation
+        axialViewport.setCamera({
+          position: newCameraPos,
+          focalPoint: targetPosition,
+          viewUp: viewUp,
+          parallelScale: camera.parallelScale,
+        });
+        axialViewport.render();
+
+        // Update fixed crosshair position
+        const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
+        const fixedCrosshairTool = toolGroup?.getToolInstance(FixedCrosshairTool.toolName) as FixedCrosshairTool;
+        if (fixedCrosshairTool) {
+          fixedCrosshairTool.setFixedPosition(targetPosition, 'mprRenderingEngine');
+        }
+
+        // Update sagittal and coronal viewports (same logic as manual scroll)
+        const newCamera = axialViewport.getCamera();
+        const viewPlaneNormal = newCamera.viewPlaneNormal;
+        const actualViewUp = newCamera.viewUp;
+
+        const actualViewRight = [
+          actualViewUp[1] * viewPlaneNormal[2] - actualViewUp[2] * viewPlaneNormal[1],
+          actualViewUp[2] * viewPlaneNormal[0] - actualViewUp[0] * viewPlaneNormal[2],
+          actualViewUp[0] * viewPlaneNormal[1] - actualViewUp[1] * viewPlaneNormal[0]
+        ];
+
+        const rightLen = Math.sqrt(actualViewRight[0] ** 2 + actualViewRight[1] ** 2 + actualViewRight[2] ** 2);
+        if (rightLen > 0) {
+          actualViewRight[0] /= rightLen;
+          actualViewRight[1] /= rightLen;
+          actualViewRight[2] /= rightLen;
+        }
+
+        // Update sagittal viewport
+        const sagittalVp = renderingEngineRef.current.getViewport('sagittal') as Types.IVolumeViewport;
+        if (sagittalVp) {
+          const sagCam = sagittalVp.getCamera();
+          sagittalVp.setCamera({
+            ...sagCam,
+            focalPoint: targetPosition,
+          });
+          sagittalVp.render();
+        }
+
+        // Update coronal viewport
+        const coronalVp = renderingEngineRef.current.getViewport('coronal') as Types.IVolumeViewport;
+        if (coronalVp) {
+          const corCam = coronalVp.getCamera();
+          coronalVp.setCamera({
+            ...corCam,
+            focalPoint: targetPosition,
+          });
+          coronalVp.render();
+        }
       }
+    } catch (error) {
+      console.error('❌ Error during auto-scroll camera update:', error);
+      // Ensure we always complete auto-scroll even on error
+      autoScrollRenderCompleteRef.current = true;
+      return;
+    }
+
+    // Mark this step as auto-scrolled
+    lastAutoScrolledStepRef.current = currentWorkflowStep.id;
+
+    // Call completion logic
+    completeAutoScroll();
+
+    // Function to complete auto-scroll and mark as ready
+    function completeAutoScroll() {
+      // CRITICAL: Wait for renders to complete before logging "ready"
+      setTimeout(() => {
+        // Clear safety timeout
+        clearTimeout(safetyTimeout);
+
+        // Force another render to ensure everything is stable
+        renderingEngineRef.current?.render();
+
+        // Verify viewport is actually at target position
+        const axialViewport = renderingEngineRef.current?.getViewport('axial') as Types.IVolumeViewport;
+        if (axialViewport) {
+          const camera = axialViewport.getCamera();
+          const actualFocalPoint = camera.focalPoint;
+          console.log(`✅ Auto-scroll complete for step: ${currentWorkflowStep.id}`);
+          console.log(`   Target position:`, targetPosition);
+          console.log(`   Actual focalPoint:`, actualFocalPoint);
+          console.log(`   Match:`,
+            Math.abs(actualFocalPoint[0] - targetPosition[0]) < 0.1 &&
+            Math.abs(actualFocalPoint[1] - targetPosition[1]) < 0.1 &&
+            Math.abs(actualFocalPoint[2] - targetPosition[2]) < 0.1
+          );
+        }
+
+        // Mark renders as complete - tool activation can now proceed
+        autoScrollRenderCompleteRef.current = true;
+
+      }, 500); // Reduced since gradual scroll preserves event listeners
     }
   }, [currentWorkflowStep, workflowControlled, annularPlane, annulusArea, autoScrollEnabled]);
 
@@ -8633,6 +8956,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
   /**
    * Get tangent vector at a specific centerline index (direction along the path)
+   * WITH CONTINUITY ENFORCEMENT - prevents 180-degree flips
    */
   const getCenterlineTangentAtIndex = (index: number): Types.Point3 | null => {
     if (!centerlineDataRef.current || !centerlineDataRef.current.position) {
@@ -8662,7 +8986,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     ];
 
     // Tangent is direction from prev to next
-    const tangent = [
+    let tangent = [
       nextPos[0] - prevPos[0],
       nextPos[1] - prevPos[1],
       nextPos[2] - prevPos[2]
@@ -8674,11 +8998,65 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       return [0, 0, 1] as Types.Point3; // Default fallback
     }
 
-    return [
+    tangent = [
       tangent[0] / length,
       tangent[1] / length,
       tangent[2] / length
-    ] as Types.Point3;
+    ];
+
+    // CRITICAL: Enforce tangent continuity to prevent 180-degree flips
+    // Initialize reference direction from first to last point if this is the first tangent
+    if (!lastTangentRef.current && numPoints > 1) {
+      const firstPos = [
+        centerlineDataRef.current.position[0],
+        centerlineDataRef.current.position[1],
+        centerlineDataRef.current.position[2]
+      ];
+      const lastPos = [
+        centerlineDataRef.current.position[(numPoints - 1) * 3],
+        centerlineDataRef.current.position[(numPoints - 1) * 3 + 1],
+        centerlineDataRef.current.position[(numPoints - 1) * 3 + 2]
+      ];
+
+      // Reference direction: LV outflow → ascending aorta (first → last)
+      const refDirection = [
+        lastPos[0] - firstPos[0],
+        lastPos[1] - firstPos[1],
+        lastPos[2] - firstPos[2]
+      ];
+      const refLen = Math.sqrt(refDirection[0] ** 2 + refDirection[1] ** 2 + refDirection[2] ** 2);
+
+      if (refLen > 0) {
+        const refTangent = [refDirection[0] / refLen, refDirection[1] / refLen, refDirection[2] / refLen];
+
+        // Check if current tangent is opposite to reference direction
+        const dotProduct = tangent[0] * refTangent[0] + tangent[1] * refTangent[1] + tangent[2] * refTangent[2];
+
+        if (dotProduct < 0) {
+          console.warn(`⚠️ Initial tangent flip detected at index ${index.toFixed(2)}, reversing to match LV→Aorta direction`);
+          tangent = [-tangent[0], -tangent[1], -tangent[2]];
+        }
+      }
+    }
+
+    // Check if this tangent is opposite to the previous tangent (dot product < 0)
+    if (lastTangentRef.current) {
+      const dotProduct =
+        tangent[0] * lastTangentRef.current[0] +
+        tangent[1] * lastTangentRef.current[1] +
+        tangent[2] * lastTangentRef.current[2];
+
+      // If dot product is negative, tangent has flipped direction - reverse it
+      if (dotProduct < 0) {
+        console.warn(`⚠️ Tangent flip detected at index ${index.toFixed(2)}, reversing to maintain continuity`);
+        tangent = [-tangent[0], -tangent[1], -tangent[2]];
+      }
+    }
+
+    // Store this tangent for next comparison
+    lastTangentRef.current = tangent as Types.Point3;
+
+    return tangent as Types.Point3;
   };
 
   /**
@@ -10264,6 +10642,25 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     return false;
   };
 
+  // Helper function to determine if confirm button should show in this viewport
+  const shouldShowConfirmButton = (viewportId: string): boolean => {
+    if (!workflowControlled || !currentWorkflowStep || !measurementReadyForConfirm) return false;
+
+    const section = currentWorkflowStep.section;
+
+    // Axial measurements - show in axial viewport
+    if (section === MeasurementSection.AXIAL && viewportId === 'axial') {
+      return true;
+    }
+
+    // Long axis measurements - show in sagittal viewport only (not both)
+    if (section === MeasurementSection.LONGAXIS && viewportId === 'sagittal') {
+      return true;
+    }
+
+    return false;
+  };
+
   return (
     <div className="w-full h-full relative">
 
@@ -10446,11 +10843,37 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                   </>
                 )}
               </div>
-              {/* Measurement label */}
+              {/* Measurement label with pulsing animation */}
               {shouldShowMeasurementLabel('axial') && currentWorkflowStep && (
-                <div className="absolute top-2 right-2 z-10 text-white text-[10px] font-medium pointer-events-none"
+                <div className="absolute top-2 right-2 z-10 text-white text-[10px] font-medium pointer-events-none animate-pulse"
                      style={{ textShadow: '1px 1px 2px rgba(0,0,0,0.8), -1px -1px 2px rgba(0,0,0,0.8)' }}>
                   {getMeasurementLabel(currentWorkflowStep.name)}
+                </div>
+              )}
+              {/* Confirm button for this viewport */}
+              {shouldShowConfirmButton('axial') && onConfirmMeasurement && (
+                <div className="absolute bottom-4 right-4 z-50">
+                  <button
+                    onClick={() => {
+                      if (currentMeasurementData && onMeasurementComplete) {
+                        onMeasurementComplete(
+                          currentWorkflowStep.id,
+                          currentMeasurementData.annotationUID,
+                          currentMeasurementData.measuredValue
+                        );
+                      }
+                      setMeasurementReadyForConfirm(false);
+                      setCurrentMeasurementData(null);
+                      onConfirmMeasurement();
+                    }}
+                    className="flex items-center gap-3 px-6 py-4 bg-green-600 hover:bg-green-700 text-white rounded-lg shadow-2xl transition-all duration-200 hover:scale-105 border-2 border-green-400"
+                  >
+                    <FaCheck className="text-2xl" />
+                    <div className="text-left">
+                      <div className="font-bold text-lg">Confirm Measurement</div>
+                      <div className="text-xs text-green-200">Click to advance to next step</div>
+                    </div>
+                  </button>
                 </div>
               )}
               <div
@@ -10477,11 +10900,37 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                     </select>
                   )}
                 </div>
-                {/* Measurement label */}
+                {/* Measurement label with pulsing animation */}
                 {shouldShowMeasurementLabel('sagittal') && currentWorkflowStep && (
-                  <div className="absolute top-2 right-2 z-10 text-white text-[10px] font-medium pointer-events-none"
+                  <div className="absolute top-2 right-2 z-10 text-white text-[10px] font-medium pointer-events-none animate-pulse"
                        style={{ textShadow: '1px 1px 2px rgba(0,0,0,0.8), -1px -1px 2px rgba(0,0,0,0.8)' }}>
                     {getMeasurementLabel(currentWorkflowStep.name)}
+                  </div>
+                )}
+                {/* Confirm button for this viewport */}
+                {shouldShowConfirmButton('sagittal') && onConfirmMeasurement && (
+                  <div className="absolute bottom-4 right-4 z-50">
+                    <button
+                      onClick={() => {
+                        if (currentMeasurementData && onMeasurementComplete) {
+                          onMeasurementComplete(
+                            currentWorkflowStep.id,
+                            currentMeasurementData.annotationUID,
+                            currentMeasurementData.measuredValue
+                          );
+                        }
+                        setMeasurementReadyForConfirm(false);
+                        setCurrentMeasurementData(null);
+                        onConfirmMeasurement();
+                      }}
+                      className="flex items-center gap-3 px-6 py-4 bg-green-600 hover:bg-green-700 text-white rounded-lg shadow-2xl transition-all duration-200 hover:scale-105 border-2 border-green-400"
+                    >
+                      <FaCheck className="text-2xl" />
+                      <div className="text-left">
+                        <div className="font-bold text-lg">Confirm Measurement</div>
+                        <div className="text-xs text-green-200">Click to advance to next step</div>
+                      </div>
+                    </button>
                   </div>
                 )}
                 <div
@@ -10497,9 +10946,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                 <div className="absolute top-2 left-2 z-10 bg-black bg-opacity-50 text-white text-xs px-2 py-1 rounded">
                   Coronal
                 </div>
-                {/* Measurement label */}
+                {/* Measurement label with pulsing animation */}
                 {shouldShowMeasurementLabel('coronal') && currentWorkflowStep && (
-                  <div className="absolute top-2 right-2 z-10 text-white text-[10px] font-medium pointer-events-none"
+                  <div className="absolute top-2 right-2 z-10 text-white text-[10px] font-medium pointer-events-none animate-pulse"
                        style={{ textShadow: '1px 1px 2px rgba(0,0,0,0.8), -1px -1px 2px rgba(0,0,0,0.8)' }}>
                     {getMeasurementLabel(currentWorkflowStep.name)}
                   </div>
@@ -11314,36 +11763,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
             items={getViewportMenuItems(viewportContextMenu.viewportId)}
             onClose={() => setViewportContextMenu(null)}
           />
-        )}
-
-        {/* Workflow Confirmation Button - Show when measurement is complete but not confirmed */}
-        {workflowControlled && measurementReadyForConfirm && currentWorkflowStep && onConfirmMeasurement && (
-          <div className="absolute top-4 right-4 z-50">
-            <button
-              onClick={() => {
-                if (currentMeasurementData && onMeasurementComplete) {
-                  // Call the measurement complete callback with stored data
-                  onMeasurementComplete(
-                    currentWorkflowStep.id,
-                    currentMeasurementData.annotationUID,
-                    currentMeasurementData.measuredValue
-                  );
-                }
-                // Reset state
-                setMeasurementReadyForConfirm(false);
-                setCurrentMeasurementData(null);
-                // Call confirm callback to advance workflow
-                onConfirmMeasurement();
-              }}
-              className="flex items-center gap-3 px-6 py-4 bg-green-600 hover:bg-green-700 text-white rounded-lg shadow-2xl transition-all duration-200 hover:scale-105 border-2 border-green-400"
-            >
-              <FaCheck className="text-2xl" />
-              <div className="text-left">
-                <div className="font-bold text-lg">Confirm Measurement</div>
-                <div className="text-xs text-green-200">Click to advance to next step</div>
-              </div>
-            </button>
-          </div>
         )}
       </div>
     );

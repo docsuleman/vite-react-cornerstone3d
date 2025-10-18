@@ -1,0 +1,46 @@
+{
+  "workflowVersion": "2.0",
+  "workflowName": "Simplified Workflow",
+  "measurements": [
+    {
+      "id": "annulus",
+      "name": "Annular Measurement",
+      "type": "polygon",
+      "section": "axial",
+      "level": "annulus",
+      "offsetFromAnnulus": 0,
+      "required": true,
+      "autoLabel": "Annulus"
+    },
+    {
+      "id": "lvot",
+      "name": "LVOT",
+      "type": "polygon",
+      "section": "axial",
+      "level": "relative",
+      "offsetFromAnnulus": -5,
+      "required": true,
+      "autoLabel": "LVOT"
+    },
+    {
+      "id": "stj",
+      "name": "STJ Area",
+      "type": "polygon",
+      "section": "axial",
+      "level": "relative",
+      "offsetFromAnnulus": 15,
+      "required": true,
+      "autoLabel": "STJ"
+    },
+    {
+      "id": "ascending-aorta",
+      "name": "Ascending Aorta",
+      "type": "polygon",
+      "section": "axial",
+      "level": "relative",
+      "offsetFromAnnulus": 40,
+      "required": true,
+      "autoLabel": "Ascending Aorta"
+    }
+  ]
+}

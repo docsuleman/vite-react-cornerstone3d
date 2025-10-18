@@ -10,22 +10,67 @@ import {
   MeasurementLevel,
   MeasurementResult
 } from '../types/MeasurementWorkflowTypes';
-import workflowData from '../config/measurementWorkflow.json';
+import workflowData1 from '../config/measurementWorkflow.json';
+import workflowData2 from '../config/measurementWorkflow2.json';
+import workflowDataBicuspid from '../config/measurementWorkflowBicuspid.json';
 
 export class MeasurementWorkflowManager {
   private workflow: MeasurementWorkflow;
   private currentStepIndex: number = 0;
   private completedSteps: Set<string> = new Set();
+  private availableWorkflows: { [key: string]: MeasurementWorkflow } = {
+    'workflow1': workflowData1 as MeasurementWorkflow,
+    'workflow2': workflowData2 as MeasurementWorkflow,
+    'bicuspid': workflowDataBicuspid as MeasurementWorkflow,
+  };
 
   constructor() {
-    this.workflow = workflowData as MeasurementWorkflow;
+    this.workflow = workflowData1 as MeasurementWorkflow;
   }
 
   /**
    * Load workflow from JSON (already imported statically)
    */
-  public loadWorkflow(): MeasurementWorkflow {
+  public loadWorkflow(workflowId?: string): MeasurementWorkflow {
+    if (workflowId && this.availableWorkflows[workflowId]) {
+      this.workflow = this.availableWorkflows[workflowId];
+    }
     return this.workflow;
+  }
+
+  /**
+   * Get list of available workflows
+   */
+  public getAvailableWorkflows(): { id: string; name: string; version: string }[] {
+    return Object.keys(this.availableWorkflows).map(id => {
+      const workflow = this.availableWorkflows[id];
+      return {
+        id,
+        name: workflow.workflowName || 'Unknown Workflow',
+        version: workflow.workflowVersion
+      };
+    });
+  }
+
+  /**
+   * Register a new workflow dynamically (for future user-created workflows)
+   * @param id - Unique identifier for the workflow
+   * @param workflow - The workflow data object
+   */
+  public registerWorkflow(id: string, workflow: MeasurementWorkflow): void {
+    this.availableWorkflows[id] = workflow;
+  }
+
+  /**
+   * Unregister a workflow
+   * @param id - Unique identifier for the workflow to remove
+   */
+  public unregisterWorkflow(id: string): boolean {
+    if (this.availableWorkflows[id]) {
+      delete this.availableWorkflows[id];
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -127,8 +172,8 @@ export class MeasurementWorkflowManager {
       case MeasurementType.POLYGON:
         return 'SmoothPolygon';
       case MeasurementType.LINE:
-        // Use appropriate line tool based on section
-        return step.section === 'axial' ? 'Length' : 'MPRLongAxisLine';
+        // Use simple Length tool for all line measurements (axial and longaxis)
+        return 'Length';
       case MeasurementType.SPLINE:
         return 'CurvedLeafletTool';
       default:

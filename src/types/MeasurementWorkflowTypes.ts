@@ -39,6 +39,7 @@ export interface MeasurementStep {
 
 export interface MeasurementWorkflow {
   workflowVersion: string;       // Version of workflow schema
+  workflowName: string;          // Display name of the workflow
   measurements: MeasurementStep[]; // Ordered list of measurement steps
 }
 

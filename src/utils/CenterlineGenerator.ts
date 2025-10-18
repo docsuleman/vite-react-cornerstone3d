@@ -108,9 +108,11 @@ export class CenterlineGenerator {
     }
 
     // Generate smooth spline through the control points (same method for all cases)
-    let splinePoints = this.generateCatmullRomSpline(positions, 50);
+    // CRITICAL: Use high density (500 segments) to achieve 0.1mm scrolling precision
+    // With 5 control points, this gives ~125 points per segment = ~0.1mm spacing
+    let splinePoints = this.generateCatmullRomSpline(positions, 500);
 
-    console.log(`[CL_DEBUG]    Generated ${splinePoints.length} spline points`);
+    console.log(`[CL_DEBUG]    Generated ${splinePoints.length} spline points with high density for 0.1mm scroll precision`);
 
     // If annular plane was provided, FORCE the ±5mm segment to be PERFECTLY STRAIGHT
     if (annularPlane) {
@@ -265,6 +267,18 @@ export class CenterlineGenerator {
         console.log(`[CL_DEBUG]    ✓ Straightened ${pointsInRegion.length} point positions`);
         console.log(`[CL_DEBUG]    ✓ Fixed ${pointsInRegion.length} tangents in entire ±5mm region`);
 
+        // CRITICAL: Recalculate cumulative distances after modifying positions
+        // Without this, multiple points will have the same distance causing scroll jumps
+        console.log(`[CL_DEBUG]    🔄 Recalculating cumulative distances after position changes...`);
+        splinePoints[0].distance = 0;
+        for (let i = 1; i < splinePoints.length; i++) {
+          const prevPos = splinePoints[i - 1].position;
+          const currPos = splinePoints[i].position;
+          const segmentDist = vec3.distance(currPos, prevPos);
+          splinePoints[i].distance = splinePoints[i - 1].distance + segmentDist;
+        }
+        console.log(`[CL_DEBUG]    ✓ Recalculated distances for all ${splinePoints.length} points`);
+
         // CRITICAL: Smooth tangents at ±5mm boundaries using GRADIENT approach
         // Smooth 3 points on each side of the boundary for smooth transition
         if (pointsInRegion.length >= 2) {
@@ -360,7 +374,8 @@ export class CenterlineGenerator {
               tangentChange = ` ΔAngle:${angleDeg.toFixed(2)}°`;
             }
 
-            console.log(`[CL_DEBUG]   [${i.toString().padStart(2)}] dist:${distAlongNormal.toFixed(3).padStart(7)}mm tangent:[${tangent[0].toFixed(3)}, ${tangent[1].toFixed(3)}, ${tangent[2].toFixed(3)}]${inRegion}${isFirstBoundary}${isLastBoundary}${isAnnulus}${tangentChange}`);
+            const cumulativeDist = splinePoints[i].distance.toFixed(3);
+            console.log(`[CL_DEBUG]   [${i.toString().padStart(3)}] distFromAnnulus:${distAlongNormal.toFixed(3).padStart(7)}mm cumulativeDist:${cumulativeDist.padStart(8)}mm tangent:[${tangent[0].toFixed(3)}, ${tangent[1].toFixed(3)}, ${tangent[2].toFixed(3)}]${inRegion}${isFirstBoundary}${isLastBoundary}${isAnnulus}${tangentChange}`);
           }
         }
       }
