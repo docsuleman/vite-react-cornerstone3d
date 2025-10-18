@@ -996,9 +996,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       centerlineDataRef.current = centerlineDataProp;
 
       // [CL_DEBUG] Log centerline data receipt
-      console.log(`[CL_DEBUG] 📥 Centerline data received in stage: ${currentStage}`);
-      console.log(`[CL_DEBUG]    Annulus plane index: ${centerlineDataProp.annulusPlaneIndex ?? 'not set'}`);
-      console.log(`[CL_DEBUG]    Total centerline points: ${centerlineDataProp.position.length / 3}`);
 
       // CRITICAL: In ANNULUS_DEFINITION stage, use annulusPlaneIndex to position camera
       if (currentStage === WorkflowStage.ANNULUS_DEFINITION &&
@@ -1016,7 +1013,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         ] as Types.Point3;
 
         lockedFocalPointRef.current = annulusPoint;
-        console.log(`[CL_DEBUG] 🔒 [ANNULUS_DEFINITION] Locked focal point set to: [${lockedFocalPointRef.current[0].toFixed(6)}, ${lockedFocalPointRef.current[1].toFixed(6)}, ${lockedFocalPointRef.current[2].toFixed(6)}]`);
       }
 
       // CRITICAL: Force view updates when centerline changes in MEASUREMENTS stage
@@ -1471,14 +1467,10 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       return;
     }
 
-    // CRITICAL: Don't respond to external tool requests during workflow mode
-    // The workflow auto-activation will handle tool changes
-    if (workflowControlled && currentWorkflowStep) {
-      return;
-    }
-
+    // Allow manual tool changes even in workflow mode
+    // User should be able to override auto-activation
     handleToolChange(requestedTool);
-  }, [requestedTool, activeTool, workflowControlled, currentWorkflowStep]);
+  }, [requestedTool, activeTool]);
 
   // Auto-activate appropriate tool when stage changes
   useEffect(() => {
@@ -3203,7 +3195,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           activeViewportId = viewportId;
           element.style.cursor = 'grabbing';
           event.stopPropagation();
-          console.log('[VALVE DRAG] Started dragging center sphere');
         }
       };
 
@@ -3287,7 +3278,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           activeViewportId = null;
           element.style.cursor = 'default';
           event.stopPropagation();
-          console.log('[VALVE DRAG] Ended dragging');
         }
       };
 
@@ -3300,12 +3290,7 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
   // Helper function to load and display the virtual valve STL model
   const loadAndDisplayValve = async () => {
-    console.log('[VALVE] loadAndDisplayValve called');
-    console.log('[VALVE] cuspDotsRef.current:', cuspDotsRef.current);
-    console.log('[VALVE] valveVisible:', valveVisible);
-
     if (!cuspDotsRef.current || cuspDotsRef.current.length < 3) {
-      console.log('[VALVE] Early return - not enough cusp dots');
       return;
     }
 
@@ -3368,22 +3353,14 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       // The annular plane is already calculated correctly in adjustToAnnularPlane and stored in workflow
       let normalizedNormal: number[];
 
-      console.log('[VALVE DEBUG] annularPlane:', annularPlane);
-      console.log('[VALVE DEBUG] centerlineDataProp:', centerlineDataProp);
-      console.log('[VALVE DEBUG] centerlineDataRef.current:', centerlineDataRef.current);
-
       // Use centerlineData from ref (most up-to-date) or prop as fallback
       const centerlineData = centerlineDataRef.current || centerlineDataProp;
-      console.log('[VALVE DEBUG] centerlineData (chosen):', centerlineData);
-      console.log('[VALVE DEBUG] centerlineData?.annulusPlaneIndex:', centerlineData?.annulusPlaneIndex);
 
       if (annularPlane && annularPlane.normal) {
         // CRITICAL: Use CENTERLINE TANGENT instead of annular plane normal
         // The annular plane normal might be tilted ~5° from the actual flow direction
         // Get the centerline tangent at the annulus position for perfect alignment
-        console.log('[VALVE DEBUG] Checking centerline availability...');
         if (centerlineData && centerlineData.annulusPlaneIndex !== undefined && centerlineData.annulusPlaneIndex >= 0) {
-          console.log('[VALVE DEBUG] ✓ Centerline data available, using tangent');
           const annulusIndex = centerlineData.annulusPlaneIndex;
 
           // Extract tangent from orientation matrix at annulus
@@ -3412,14 +3389,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
                             normalizedNormal[2] * normalizedAnnularNormal[2];
           const angleDiff = Math.acos(Math.max(-1, Math.min(1, dotProduct))) * 180 / Math.PI;
 
-          console.log('[VALVE DEBUG] Using centerline tangent instead of annular plane normal');
-          console.log('[VALVE DEBUG] Centerline tangent:', normalizedNormal);
-          console.log('[VALVE DEBUG] Annular plane normal:', normalizedAnnularNormal);
-          console.log('[VALVE DEBUG] Angle difference:', angleDiff.toFixed(2), 'degrees');
-
         } else {
           // Fallback to annular plane normal if centerline not available
-          console.log('[VALVE DEBUG] ⚠ Centerline not available, using annular plane normal (may have ~5° tilt)');
           const normal = annularPlane.normal;
           const length = Math.sqrt(normal[0]**2 + normal[1]**2 + normal[2]**2);
           normalizedNormal = [normal[0]/length, normal[1]/length, normal[2]/length];
@@ -3490,12 +3461,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         // INVERTED: Negate the normal to flip valve direction 180 degrees
         const targetZ = [-normalizedNormal[0], -normalizedNormal[1], -normalizedNormal[2]];
 
-        console.log('[VALVE DEBUG] targetZ (inverted normal):', targetZ, `[${targetZ[0].toFixed(6)}, ${targetZ[1].toFixed(6)}, ${targetZ[2].toFixed(6)}]`);
-        console.log('[VALVE DEBUG] Original normal:', normalizedNormal, `[${normalizedNormal[0].toFixed(6)}, ${normalizedNormal[1].toFixed(6)}, ${normalizedNormal[2].toFixed(6)}]`);
-        console.log('[VALVE DEBUG] Cusp points:', `p1:[${p1[0].toFixed(2)}, ${p1[1].toFixed(2)}, ${p1[2].toFixed(2)}]`,
-                                                    `p2:[${p2[0].toFixed(2)}, ${p2[1].toFixed(2)}, ${p2[2].toFixed(2)}]`,
-                                                    `p3:[${p3[0].toFixed(2)}, ${p3[1].toFixed(2)}, ${p3[2].toFixed(2)}]`);
-
         // Find perpendicular vectors using arbitrary reference
         let tempVec = [0, 1, 0];
         if (Math.abs(targetZ[1]) > 0.9) {
@@ -3519,20 +3484,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         ];
 
         const targetX = targetX_temp;
-
-        console.log('[VALVE DEBUG] targetX:', targetX, `[${targetX[0].toFixed(6)}, ${targetX[1].toFixed(6)}, ${targetX[2].toFixed(6)}]`);
-        console.log('[VALVE DEBUG] targetY:', targetY, `[${targetY[0].toFixed(6)}, ${targetY[1].toFixed(6)}, ${targetY[2].toFixed(6)}]`);
-
-        // Verify orthonormality
-        const dotXY = targetX[0]*targetY[0] + targetX[1]*targetY[1] + targetX[2]*targetY[2];
-        const dotXZ = targetX[0]*targetZ[0] + targetX[1]*targetZ[1] + targetX[2]*targetZ[2];
-        const dotYZ = targetY[0]*targetZ[0] + targetY[1]*targetZ[1] + targetY[2]*targetZ[2];
-        console.log('[VALVE DEBUG] Orthogonality check - X·Y:', dotXY, 'X·Z:', dotXZ, 'Y·Z:', dotYZ);
-
-        const lenX = Math.sqrt(targetX[0]**2 + targetX[1]**2 + targetX[2]**2);
-        const lenY = Math.sqrt(targetY[0]**2 + targetY[1]**2 + targetY[2]**2);
-        const lenZ = Math.sqrt(targetZ[0]**2 + targetZ[1]**2 + targetZ[2]**2);
-        console.log('[VALVE DEBUG] Normality check - |X|:', lenX, '|Y|:', lenY, '|Z|:', lenZ);
 
         // Build 4x4 transformation matrix with BOTH rotation AND translation
         // IMPORTANT: Map valve's Z-axis (longitudinal) to centerline
@@ -4364,22 +4315,15 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
         setTimeout(() => {
 
           // [CL_DEBUG] CRITICAL: Use centerline from props if available (already has annular plane modification)
-          console.log(`[CL_DEBUG] 🔄 ANNULUS_DEFINITION stage - checking for existing centerline`);
-          console.log(`[CL_DEBUG]    centerlineDataRef.current exists: ${!!centerlineDataRef.current}`);
-          console.log(`[CL_DEBUG]    centerlineDataRef has annulusPlaneIndex: ${centerlineDataRef.current?.annulusPlaneIndex ?? 'no'}`);
 
           // Skip centerline regeneration if we already have the modified one from props
           let centerlineData: CenterlineData;
 
           if (centerlineDataRef.current && centerlineDataRef.current.annulusPlaneIndex !== undefined && centerlineDataRef.current.annulusPlaneIndex >= 0) {
-            console.log(`[CL_DEBUG]    ✅ Using existing modified centerline with annular plane (index: ${centerlineDataRef.current.annulusPlaneIndex})`);
-            console.log(`[CL_DEBUG]    Skipping regeneration to preserve perpendicular segment`);
 
             // Use the existing modified centerline
             centerlineData = centerlineDataRef.current;
           } else {
-            console.log(`[CL_DEBUG]    ⚠️ No modified centerline yet, generating TEMPORARY one from existingSpheres`);
-            console.log(`[CL_DEBUG]    This is expected BEFORE cusp dots are placed. TAVIApp will provide correct centerline after.`);
 
             // Generate TEMPORARY centerline from root points (this happens before annular plane is calculated)
             // Once cusp dots are placed, TAVIApp will generate correct centerline WITH annular plane
@@ -4938,14 +4882,8 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
         // Wait longer to ensure volumes are fully loaded before positioning cameras
         setTimeout(() => {
-          console.log(`[CL_DEBUG] 🎯 [MEASUREMENTS] Setting up cameras at annular plane`);
-
           const annulusCenter = lockedFocalPointRef.current!;
           const centerlineData = centerlineDataRef.current;
-
-          console.log(`[CL_DEBUG]    Locked focal point: [${annulusCenter[0].toFixed(6)}, ${annulusCenter[1].toFixed(6)}, ${annulusCenter[2].toFixed(6)}]`);
-          console.log(`[CL_DEBUG]    Has centerlineData: ${!!centerlineData}`);
-          console.log(`[CL_DEBUG]    Annulus plane index: ${centerlineData?.annulusPlaneIndex ?? 'not set'}`);
 
           // CRITICAL SAFETY CHECK: Must use annulusPlaneIndex, no fallback allowed
           // This is medical software - using nearest point is not acceptable
@@ -4956,30 +4894,11 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           }
 
           const nearestIndex = centerlineData.annulusPlaneIndex;
-          console.log(`[CL_DEBUG]    ✅ Using exact annulus plane index: ${nearestIndex}`);
 
           const position = getCenterlinePositionAtIndex(nearestIndex);
           const tangent = getCenterlineTangentAtIndex(nearestIndex);
 
-          if (position) {
-            console.log(`[CL_DEBUG]    Position at index ${nearestIndex}: [${position[0].toFixed(6)}, ${position[1].toFixed(6)}, ${position[2].toFixed(6)}]`);
-
-            // Verify position matches locked focal point
-            const dx = position[0] - annulusCenter[0];
-            const dy = position[1] - annulusCenter[1];
-            const dz = position[2] - annulusCenter[2];
-            const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
-            console.log(`[CL_DEBUG]    Distance from locked focal point: ${distance.toFixed(6)} mm`);
-
-            if (distance > 0.001) {
-              console.warn(`[CL_DEBUG]    ❌ ERROR: Position mismatch! This should not happen.`);
-            } else {
-              console.log(`[CL_DEBUG]    ✅ Position match (within 0.001mm tolerance)`);
-            }
-          }
-
           if (!position || !tangent) {
-            console.error(`[CL_DEBUG]    ❌ Failed to get position or tangent`);
             return;
           }
 
@@ -6170,14 +6089,23 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
       const renderingEngine = renderingEngineRef.current;
       if (renderingEngine) {
+        let addedCount = 0;
         viewportIds.forEach((id) => {
           // Skip if viewport doesn't exist yet
           const viewport = renderingEngine.getViewport(id);
           if (!viewport) {
+            console.warn(`⚠️ Viewport ${id} not found, skipping toolGroup binding`);
             return;
           }
           toolGroup.addViewport(id, renderingEngineId);
+          addedCount++;
         });
+        console.log(`✅ Added ${addedCount}/3 viewports to toolGroup`);
+
+        // Ensure viewports render before tool activation
+        if (addedCount > 0) {
+          renderingEngine.renderViewports(viewportIds);
+        }
       }
 
       // Add volume3D viewport to tool group for ROOT_DEFINITION stage
@@ -7804,7 +7732,15 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
 
       if (pendingToolRef.current) {
-        handleToolChange(pendingToolRef.current);
+        console.log(`🔄 Activating pending tool: ${pendingToolRef.current}`);
+        // Add delay to ensure viewports are fully bound to toolGroup AND rendered
+        // This fixes the race condition where tool activates before viewports are ready
+        setTimeout(() => {
+          if (pendingToolRef.current) {
+            console.log(`🔄 Executing delayed activation for: ${pendingToolRef.current}`);
+            handleToolChange(pendingToolRef.current);
+          }
+        }, 300);
       }
     } catch (error) {
       throw error;
@@ -7812,7 +7748,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
   };
 
   const handleToolChange = (toolName: string) => {
-
     try {
       const toolGroup = ToolGroupManager.getToolGroup(toolGroupId);
       if (!toolGroup) {
@@ -7897,11 +7832,13 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
           bindings: [{ mouseButton: MouseBindings.Primary }],
         });
       } else if (toolName === 'SmoothPolygon') {
+        console.log('🎨 Activating SmoothPolygon with Primary mouse button');
         toolGroup.setToolActive('SmoothPolygon', {
           bindings: [
             { mouseButton: MouseBindings.Primary }
           ],
         });
+        console.log('🎨 SmoothPolygon activated successfully');
       } else if (toolName === 'Length') {
         toolGroup.setToolActive('Length', {
           bindings: [{ mouseButton: MouseBindings.Primary }],
@@ -7977,7 +7914,6 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
       return; // Only activate when workflow is in control
     }
 
-
     // CRITICAL: Restore grid layout if any viewport is maximized
     // The workflow step might require a specific viewport (e.g., axial for polygons)
     // If another viewport is maximized, the required viewport will be hidden
@@ -7989,16 +7925,16 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
     const workflowManager = getWorkflowManager();
     const toolName = workflowManager.getToolNameForStep(currentWorkflowStep);
 
-
     if (!toolName) {
       return;
     }
 
-    // Simple tool activation - no workarounds or delays
+    // Delay tool activation to ensure viewports are fully initialized and bound to toolGroup
+    // This fixes race condition where tool activates before setupTools completes
     setTimeout(() => {
       handleToolChange(toolName);
-    }, 100);
-  }, [currentWorkflowStep, workflowControlled]);
+    }, 500);
+  }, [currentWorkflowStep, workflowControlled, maximizedViewport]);
 
   // Workflow auto-scroll: automatically scroll to the correct slice height for the current measurement step
   useEffect(() => {
@@ -8352,9 +8288,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
           const sphereSource = vtkSphereSource.newInstance();
           sphereSource.setCenter(point.position[0], point.position[1], point.position[2]);
-          sphereSource.setRadius(5.0); // 5mm radius - larger to ensure visibility
-          sphereSource.setPhiResolution(20);
-          sphereSource.setThetaResolution(20);
+          sphereSource.setRadius(2.0); // 2mm radius - smaller to avoid clipping plane issues
+          sphereSource.setPhiResolution(16);
+          sphereSource.setThetaResolution(16);
 
           // Color based on cusp type
           const color = point.type === 'left' ? [1.0, 0.0, 0.0] :  // Red
@@ -8393,9 +8329,9 @@ const ProperMPRViewport: React.FC<ProperMPRViewportProps> = ({
 
           const centerSphereSource = vtkSphereSource.newInstance();
           centerSphereSource.setCenter(annulusCenter[0], annulusCenter[1], annulusCenter[2]);
-          centerSphereSource.setRadius(6.0); // Larger to distinguish from cusp spheres
-          centerSphereSource.setPhiResolution(20);
-          centerSphereSource.setThetaResolution(20);
+          centerSphereSource.setRadius(2.5); // Slightly larger to distinguish from cusp spheres
+          centerSphereSource.setPhiResolution(16);
+          centerSphereSource.setThetaResolution(16);
 
           enabledElements.forEach(({ viewport }) => {
             const mapper = vtkMapper.newInstance();

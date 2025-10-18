@@ -112,7 +112,8 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
       if (firstStep) {
         const initialTool = workflowManager.getToolNameForStep(firstStep);
         setRequestedTool(initialTool);
-        setActiveTool(initialTool);
+        // Don't set activeTool here - let it be updated by onActiveToolChange callback
+        // when ProperMPRViewport actually activates the tool
       }
     }
   }, [state.currentStage, state.measurementWorkflowActive, workflowManager, actions]);
@@ -139,7 +140,7 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
       const stepTool = workflowManager.getToolNameForStep(managerStep);
       if (stepTool) {
         setRequestedTool(stepTool);
-        setActiveTool(stepTool);
+        // Don't set activeTool here - let it be updated by onActiveToolChange callback
       }
     }
   }, [
@@ -554,18 +555,7 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
               </select>
             </div>
           </div>
-          <div className="grid grid-cols-5 gap-1">
-            <button
-              onClick={() => handleToolClick('Crosshairs')}
-              className={`p-1.5 rounded transition-colors flex items-center justify-center ${
-                activeTool === 'Crosshairs'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-              }`}
-              title="Crosshairs"
-            >
-              <FaCrosshairs className="text-sm" />
-            </button>
+          <div className="grid grid-cols-4 gap-1">
             <button
               onClick={() => handleToolClick('WindowLevel')}
               className={`p-1.5 rounded transition-colors flex items-center justify-center ${
@@ -955,13 +945,6 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
             state.currentStage === WorkflowStage.ANNULUS_DEFINITION ||
             state.currentStage === WorkflowStage.MEASUREMENTS) && state.patientInfo ? (
         <div className="relative w-full h-full">
-          {/* Debug log for centerline prop */}
-          {console.log('🔍 [TAVIApp RENDER] Passing centerlineData to ProperMPRViewport:', {
-            hasCenterline: !!state.centerline,
-            numPoints: state.centerline?.position ? (state.centerline.position.length / 3) : 0,
-            annulusPlaneIndex: state.centerline?.annulusPlaneIndex ?? 'not set',
-            currentStage: state.currentStage
-          })}
           <ProperMPRViewport
             renderMode={viewType}
             onRenderModeChange={setViewType}
@@ -1152,14 +1135,10 @@ const TAVIApp: React.FC<TAVIAppProps> = () => {
 
                   actions.updateMeasurement({ annulus: annulusMeasurements });
 
-                  // [CL_DEBUG] Regenerate centerline WITH annular plane
+                  // Regenerate centerline WITH annular plane
                   // This inserts ±5mm control points around annulus for natural 10mm straight segment
-                  console.log(`[CL_DEBUG] 🔄 Regenerating centerline with annular plane...`);
                   const { CenterlineGenerator } = await import('../utils/CenterlineGenerator');
                   const centerlineData = CenterlineGenerator.generateFromRootPoints(state.rootPoints, annularPlane);
-
-                  console.log(`[CL_DEBUG] ✅ Centerline regenerated with perpendicular segment`);
-                  console.log(`[CL_DEBUG]    Annulus plane index in centerline: ${centerlineData.annulusPlaneIndex}`);
 
                   actions.setCenterline(centerlineData);
 
